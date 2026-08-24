@@ -1,0 +1,17 @@
+[package]
+name = "argus-rust"
+description = "Rust workspace and semantic adapter for Argus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+argus-core = { path = "../argus-core" }
+argus-language = { path = "../argus-language" }
+serde.workspace = true
+serde_json.workspace = true
+ra_ap_syntax.workspace = true
+
+[lints]
+workspace = true

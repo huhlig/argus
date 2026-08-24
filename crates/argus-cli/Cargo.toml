@@ -1,0 +1,26 @@
+[package]
+name = "argus-cli"
+description = "Command-line interface for Argus source intelligence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "argus"
+path = "src/main.rs"
+
+[dependencies]
+argus-core = { path = "../argus-core" }
+argus-language = { path = "../argus-language" }
+argus-rust = { path = "../argus-rust" }
+argus-snapshot = { path = "../argus-snapshot" }
+argus-storage = { path = "../argus-storage" }
+serde_json.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

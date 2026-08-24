@@ -1,0 +1,18 @@
+[package]
+name = "argus-language"
+description = "Language adapter contracts for Argus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+argus-core = { path = "../argus-core" }
+serde.workspace = true
+
+[dev-dependencies]
+argus-snapshot = { path = "../argus-snapshot" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

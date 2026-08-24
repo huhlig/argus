@@ -1,0 +1,13 @@
+[package]
+name = "argus-test-support"
+description = "Fixture builders and fault injection for Argus tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+argus-core = { path = "../argus-core" }
+
+[lints]
+workspace = true

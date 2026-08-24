@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/argus-cli",
+    "crates/argus-core",
+    "crates/argus-evidence",
+    "crates/argus-language",
+    "crates/argus-rust",
+    "crates/argus-snapshot",
+    "crates/argus-storage",
+    "crates/argus-test-support",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+blake3 = "1.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+proptest = "1.7"
+tempfile = "3.27"
+redb = "4.2"
+ra_ap_syntax = "=0.0.270"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
