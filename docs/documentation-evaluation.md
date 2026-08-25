@@ -6,6 +6,9 @@ documentation defects plus one known-clean control. Corpus and evaluation record
 schema-versioned; changing ground truth requires a new corpus version.
 The serialized corpus is checked in at `docs/evaluation/documentation-corpus-v1.json` and is tested
 against the fixture builder to prevent drift.
+Its executable Cargo workspace is checked in at
+`docs/evaluation/documentation-corpus-v1-workspace`. The corpus uses logical target IDs, which are
+independent of snapshot, analysis configuration, VCS state, and source byte offsets.
 
 Human decisions use the generic `HumanAdjudication` record and existing `AdjudicationState` rather
 than a documentation-specific verdict. Records are append-only per run and finding. Revision writes
@@ -53,4 +56,14 @@ Evaluate one run, or pass additional run IDs to measure stability:
 argus evaluate documentation \
   --corpus docs/evaluation/documentation-corpus-v1.json \
   <run-id> [<run-id> ...]
+```
+
+Create each repeated evaluation run from the executable corpus workspace:
+
+```text
+cd docs/evaluation/documentation-corpus-v1-workspace
+argus prime --adapter rust
+argus audit documentation
+argus work documentation --profile <provider-profile.json> --limit 3
+argus finalize <run-id>
 ```

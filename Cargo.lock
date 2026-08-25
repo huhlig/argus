@@ -50,6 +50,7 @@ dependencies = [
  "argus-rust",
  "argus-snapshot",
  "argus-storage",
+ "argus-test-support",
  "argus-workflow",
  "serde",
  "serde_json",

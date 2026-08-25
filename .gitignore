@@ -1,10 +1,20 @@
-/target
-/.idea
-/.argus/state
-/.argus/reviews
-
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
+# Beads / Dolt files
 .beads-credential-key
 .beads/proxieddb/
+.dolt/
+*.db
+
+# Rust files
+/target
+Cargo.lock
+
+# Agentic IDE Files
+/.agents
+/.claude
+/.codex
+/.junie
+/.idea
+
+# Argus Files
+/.argus/state
+

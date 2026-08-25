@@ -1,3 +1,17 @@
+// Copyright 2026 Hans W. Uhlig
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use argus_core::{
     ConfigurationId, PortableTargetKind, SnapshotId, SourcePath, TargetKind, TargetVisibility,
 };
@@ -43,6 +57,36 @@ fn provider() -> RustSyntaxProvider {
         ConfigurationId::derive([b"edition-2024".as_slice()]),
         RustEdition::Edition2024,
     )
+}
+
+#[test]
+fn logical_target_ids_survive_snapshot_configuration_and_line_shifts() {
+    let (first_source, path) = source("pub fn stable() {}\n");
+    let first = provider()
+        .inventory_file(&first_source, &path, None)
+        .unwrap();
+    let (mut shifted_source, shifted_path) = source("// unrelated line\npub fn stable() {}\n");
+    shifted_source.snapshot = SnapshotId::derive([b"different-snapshot".as_slice()]);
+    let shifted_provider = RustSyntaxProvider::new(
+        ConfigurationId::derive([b"different-configuration".as_slice()]),
+        RustEdition::Edition2024,
+    );
+    let shifted = shifted_provider
+        .inventory_file(&shifted_source, &shifted_path, None)
+        .unwrap();
+
+    let first_target = first
+        .targets
+        .iter()
+        .find(|target| target.name == "stable")
+        .unwrap();
+    let shifted_target = shifted
+        .targets
+        .iter()
+        .find(|target| target.name == "stable")
+        .unwrap();
+    assert_eq!(first_target.id, shifted_target.id);
+    assert_ne!(first_target.location, shifted_target.location);
 }
 
 #[test]

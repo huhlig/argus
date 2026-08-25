@@ -1,3 +1,17 @@
+// Copyright 2026 Hans W. Uhlig
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use argus_language::{InventorySink, LanguageAdapter as _, SourceAccess};
 use std::{
     collections::BTreeSet,
@@ -1364,6 +1378,37 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), argus_core::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn seeded_documentation_workspace_emits_corpus_target_ids() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/evaluation/documentation-corpus-v1-workspace");
+        for path in ["Cargo.toml", "Cargo.lock", "src/lib.rs"] {
+            std::fs::copy(fixture_root.join(path), temporary.path().join(path)).unwrap();
+        }
+
+        run(
+            ["prime", "--adapter", "rust"]
+                .map(str::to_owned)
+                .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let listed = run(
+            ["targets", "list"].map(str::to_owned).into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        for source in argus_test_support::seeded_documentation_fixture().sources {
+            let expected = format!(
+                "{}\tcore:callable\t{}\t",
+                source.target, source.logical_name
+            );
+            assert!(listed.lines().any(|line| line.starts_with(&expected)));
+        }
     }
 
     #[test]

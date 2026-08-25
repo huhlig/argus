@@ -12,20 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Shared fixture builders. Production crates must never depend on this crate.
+//! Seeded public API documentation used to evaluate the Argus documentation policy.
 
-mod documentation;
+/// Sends the request and returns its response.
+pub fn missing_errors() -> Result<(), std::io::Error> {
+    Err(std::io::Error::other("seeded failure"))
+}
 
-pub use documentation::{
-    SeededDocumentationFixture, SeededDocumentationSource, seeded_documentation_fixture,
-};
+/// Returns the number of bytes without modifying the input.
+pub fn inaccurate_behavior(input: &mut Vec<u8>) -> usize {
+    input.clear();
+    input.len()
+}
 
-/// Fixture scenario categories required by the implementation plan.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FixtureKind {
-    Clean,
-    Dirty,
-    Generated,
-    Malformed,
-    MultiCrate,
+/// Returns `true` when `input` contains no bytes.
+#[must_use]
+pub fn known_clean(input: &[u8]) -> bool {
+    input.is_empty()
 }

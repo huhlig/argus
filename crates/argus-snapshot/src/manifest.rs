@@ -1,4 +1,18 @@
-use argus_core::{ConfigurationId, ContentHash, SnapshotId, SourcePath};
+// Copyright 2026 Hans W. Uhlig
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use argus_core::{ConfigurationId, ContentHash, SnapshotId, SourcePath, SourceTreeId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -227,11 +241,12 @@ pub struct VcsState {
     pub dirty: bool,
 }
 
-/// Portable manifest. Host paths and timestamps are excluded from identity.
+/// Portable capture manifest with separate source-content and occurrence identities.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotManifest {
     pub schema_version: u32,
     pub id: SnapshotId,
+    pub source_tree: SourceTreeId,
     pub configuration: AnalysisConfiguration,
     pub vcs: VcsState,
     pub files: BTreeMap<SourcePath, FileRecord>,
@@ -245,7 +260,10 @@ impl SnapshotManifest {
                 "unsupported snapshot schema version",
             ));
         }
-        if !self.configuration.has_valid_identity() || self.derive_id()? != self.id {
+        if !self.configuration.has_valid_identity()
+            || self.derive_source_tree_id()? != self.source_tree
+            || self.derive_id()? != self.id
+        {
             return Err(argus_core::ArgusError::invariant(
                 "snapshot or configuration identity mismatch",
             ));
@@ -256,15 +274,23 @@ impl SnapshotManifest {
     pub(crate) fn derive_id(&self) -> Result<SnapshotId, argus_core::ArgusError> {
         let identity = serde_json::to_vec(&(
             self.schema_version,
+            &self.source_tree,
             &self.configuration,
             &self.vcs,
-            &self.files,
-            &self.issues,
         ))
         .map_err(|error| {
             argus_core::ArgusError::invariant("snapshot identity serialization failed")
                 .with_source(error)
         })?;
         Ok(SnapshotId::derive([identity.as_slice()]))
+    }
+
+    pub(crate) fn derive_source_tree_id(&self) -> Result<SourceTreeId, argus_core::ArgusError> {
+        let identity = serde_json::to_vec(&(self.schema_version, &self.files, &self.issues))
+            .map_err(|error| {
+                argus_core::ArgusError::invariant("source tree identity serialization failed")
+                    .with_source(error)
+            })?;
+        Ok(SourceTreeId::derive([identity.as_slice()]))
     }
 }

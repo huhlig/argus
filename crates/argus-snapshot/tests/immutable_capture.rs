@@ -1,3 +1,17 @@
+// Copyright 2026 Hans W. Uhlig
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use argus_core::{ByteSpan, SourcePath};
 use argus_snapshot::{
     AnalysisConfiguration, CaptureIssueKind, CaptureOptions, CompilerInput, DriftKind,
@@ -81,6 +95,12 @@ fn identical_declared_inputs_have_deterministic_identity() {
         capture_snapshot(&repository_root, &state_root, &CaptureOptions::default()).unwrap();
     assert_eq!(first.id, second.id);
     assert_eq!(first, second);
+
+    let mut different_vcs = first.clone();
+    different_vcs.vcs.revision = Some("different-revision".to_owned());
+    different_vcs.vcs.dirty = !different_vcs.vcs.dirty;
+    assert_eq!(different_vcs.source_tree, first.source_tree);
+    assert!(different_vcs.validate_identity().is_err());
 }
 
 #[test]
@@ -135,7 +155,7 @@ fn non_utf8_text_is_preserved_and_reported() {
 }
 
 #[test]
-fn analysis_inputs_change_configuration_and_snapshot_identity() {
+fn analysis_inputs_change_capture_but_not_source_tree_identity() {
     let temporary = tempfile::tempdir().unwrap();
     let repository_root = temporary.path().join("repo");
     let state_root = temporary.path().join("state");
@@ -163,6 +183,7 @@ fn analysis_inputs_change_configuration_and_snapshot_identity() {
 
     assert_ne!(baseline.configuration.id, changed.configuration.id);
     assert_ne!(baseline.id, changed.id);
+    assert_eq!(baseline.source_tree, changed.source_tree);
     assert!(changed.configuration.has_valid_identity());
     assert!(changed.validate_identity().is_ok());
 }

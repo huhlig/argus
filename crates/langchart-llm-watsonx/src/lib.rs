@@ -1,3 +1,17 @@
+// Copyright 2026 Hans W. Uhlig
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! IBM watsonx.ai transport for Langchart.
 //!
 //! [`WatsonxAdapter`] implements Langchart's [`LlmAdapter`] contract using the
@@ -19,7 +33,9 @@ use url::Url;
 
 const IAM_TOKEN_URL: &str = "https://iam.cloud.ibm.com/identity/token";
 const IAM_GRANT_TYPE: &str = "urn:ibm:params:oauth:grant-type:apikey";
+#[allow(clippy::duration_suboptimal_units)] // `from_mins` is newer than the workspace MSRV.
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(60);
+#[allow(clippy::duration_suboptimal_units)] // `from_mins` is newer than the workspace MSRV.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A watsonx deployment scope. Exactly one project or space ID is required.

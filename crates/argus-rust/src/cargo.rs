@@ -1,3 +1,17 @@
+// Copyright 2026 Hans W. Uhlig
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use argus_core::{
     ByteSpan, Capability, CapabilityStatus, ConfigurationId, InventoryState, PortableTargetKind,
     Relation, RelationId, SourceLocation, SourcePath, Target, TargetId, TargetKind,
@@ -68,18 +82,18 @@ impl LanguageAdapter for CargoMetadataAdapter {
             .iter()
             .filter(|package| members.contains(&package.id))
             .map(|package| {
-                (
+                let manifest = normalized_path(&root, &package.manifest_path)?;
+                Ok((
                     package.id.clone(),
                     TargetId::derive([
                         b"rust".as_slice(),
-                        source.snapshot_id().as_str().as_bytes(),
-                        self.configuration.as_str().as_bytes(),
                         b"package".as_slice(),
-                        package.id.as_bytes(),
+                        manifest.as_str().as_bytes(),
+                        package.name.as_bytes(),
                     ]),
-                )
+                ))
             })
-            .collect::<BTreeMap<_, _>>();
+            .collect::<Result<BTreeMap<_, _>, argus_core::ArgusError>>()?;
         let mut targets = Vec::new();
         let mut relations = Vec::new();
         for package in metadata
@@ -104,10 +118,8 @@ impl LanguageAdapter for CargoMetadataAdapter {
             for feature in package.features.keys() {
                 let feature_id = TargetId::derive([
                     b"rust".as_slice(),
-                    source.snapshot_id().as_str().as_bytes(),
-                    self.configuration.as_str().as_bytes(),
                     b"cargo-feature".as_slice(),
-                    package.id.as_bytes(),
+                    package_id.as_str().as_bytes(),
                     feature.as_bytes(),
                 ]);
                 targets.push(Target {
@@ -134,10 +146,8 @@ impl LanguageAdapter for CargoMetadataAdapter {
             for cargo_target in package.targets {
                 let target_id = TargetId::derive([
                     b"rust".as_slice(),
-                    source.snapshot_id().as_str().as_bytes(),
-                    self.configuration.as_str().as_bytes(),
                     b"cargo-target".as_slice(),
-                    package.id.as_bytes(),
+                    package_id.as_str().as_bytes(),
                     cargo_target.name.as_bytes(),
                     cargo_target.kind.join(",").as_bytes(),
                 ]);
@@ -252,17 +262,20 @@ fn normalized_location(
     absolute: &str,
     source: &dyn SourceAccess,
 ) -> Result<Option<SourceLocation>, argus_core::ArgusError> {
-    let path = Path::new(absolute);
-    let relative = path.strip_prefix(root).map_err(|_| {
-        argus_core::ArgusError::invalid_input("cargo metadata path escapes workspace root")
-    })?;
-    let source_path = SourcePath::new(relative.to_string_lossy().replace('\\', "/"))?;
+    let source_path = normalized_path(root, absolute)?;
     Ok(source.contains(&source_path).then_some(SourceLocation {
         path: source_path,
         bytes: ByteSpan::new(0, 0)?,
         start: None,
         end: None,
     }))
+}
+
+fn normalized_path(root: &Path, absolute: &str) -> Result<SourcePath, argus_core::ArgusError> {
+    let relative = Path::new(absolute).strip_prefix(root).map_err(|_| {
+        argus_core::ArgusError::invalid_input("cargo metadata path escapes workspace root")
+    })?;
+    SourcePath::new(relative.to_string_lossy().replace('\\', "/"))
 }
 
 #[derive(Deserialize)]

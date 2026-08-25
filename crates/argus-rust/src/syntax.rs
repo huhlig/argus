@@ -1,3 +1,17 @@
+// Copyright 2026 Hans W. Uhlig
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use argus_core::{
     ByteSpan, Capability, CapabilityStatus, ConfigurationId, InventoryState, PortableTargetKind,
     SourceLocation, SourcePath, Target, TargetId, TargetKind, TargetVisibility,
@@ -41,17 +55,13 @@ pub struct RustSyntaxInventory {
 
 #[derive(Clone, Debug)]
 pub struct RustSyntaxProvider {
-    configuration: ConfigurationId,
     edition: RustEdition,
 }
 
 impl RustSyntaxProvider {
     #[must_use]
-    pub const fn new(configuration: ConfigurationId, edition: RustEdition) -> Self {
-        Self {
-            configuration,
-            edition,
-        }
+    pub fn new(_configuration: ConfigurationId, edition: RustEdition) -> Self {
+        Self { edition }
     }
 
     pub fn inventory_file(
@@ -72,7 +82,7 @@ impl RustSyntaxProvider {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let file = parse.tree();
-        let file_id = self.target_id(source, path, "file", path.as_str(), 0);
+        let file_id = Self::target_id(path, "file", path.as_str());
         let mut targets = vec![Target {
             id: file_id.clone(),
             kind: TargetKind::Portable {
@@ -88,8 +98,7 @@ impl RustSyntaxProvider {
         }];
         let mut documentation = BTreeMap::new();
         let mut conditions = BTreeMap::new();
-        self.collect_items(
-            source,
+        Self::collect_items(
             path,
             file.items(),
             &file_id,
@@ -175,8 +184,7 @@ impl RustSyntaxProvider {
             .filter_map(|item| match item {
                 ast::Item::Module(module) if module.item_list().is_none() => {
                     let name = module.name()?.text().to_string();
-                    let start = u64::from(u32::from(module.syntax().text_range().start()));
-                    let target = self.target_id(source, path, "module", &name, start);
+                    let target = Self::target_id(path, "module", &name);
                     Some(ExternalModule {
                         name,
                         target,
@@ -190,8 +198,6 @@ impl RustSyntaxProvider {
 
     #[allow(clippy::too_many_arguments)]
     fn collect_items(
-        &self,
-        source: &dyn SourceAccess,
         path: &SourcePath,
         items: impl Iterator<Item = ast::Item>,
         parent: &TargetId,
@@ -202,14 +208,12 @@ impl RustSyntaxProvider {
     ) -> Result<(), argus_core::ArgusError> {
         for item in items {
             let (kind, name) = item_identity(&item);
-            let range = item.syntax().text_range();
-            let start = u64::from(u32::from(range.start()));
             let qualified = if prefix.is_empty() {
                 name.clone()
             } else {
                 format!("{prefix}::{name}")
             };
-            let id = self.target_id(source, path, kind_key(&kind), &qualified, start);
+            let id = Self::target_id(path, kind_key(&kind), &qualified);
             targets.push(Target {
                 id: id.clone(),
                 kind,
@@ -231,8 +235,7 @@ impl RustSyntaxProvider {
             if let ast::Item::Module(module) = &item
                 && let Some(list) = module.item_list()
             {
-                self.collect_items(
-                    source,
+                Self::collect_items(
                     path,
                     list.items(),
                     &id,
@@ -244,8 +247,7 @@ impl RustSyntaxProvider {
             } else if let ast::Item::Impl(item) = &item
                 && let Some(list) = item.assoc_item_list()
             {
-                self.collect_associated_items(
-                    source,
+                Self::collect_associated_items(
                     path,
                     list.assoc_items(),
                     &id,
@@ -259,8 +261,7 @@ impl RustSyntaxProvider {
             } else if let ast::Item::Trait(item) = &item
                 && let Some(list) = item.assoc_item_list()
             {
-                self.collect_associated_items(
-                    source,
+                Self::collect_associated_items(
                     path,
                     list.assoc_items(),
                     &id,
@@ -278,8 +279,6 @@ impl RustSyntaxProvider {
 
     #[allow(clippy::too_many_arguments)]
     fn collect_associated_items(
-        &self,
-        source: &dyn SourceAccess,
         path: &SourcePath,
         items: impl Iterator<Item = ast::AssocItem>,
         parent: &TargetId,
@@ -292,9 +291,8 @@ impl RustSyntaxProvider {
     ) -> Result<(), argus_core::ArgusError> {
         for item in items {
             let (kind, name) = associated_item_identity(&item, callable_kind);
-            let start = u64::from(u32::from(item.syntax().text_range().start()));
             let qualified = format!("{prefix}::{name}");
-            let id = self.target_id(source, path, kind_key(&kind), &qualified, start);
+            let id = Self::target_id(path, kind_key(&kind), &qualified);
             targets.push(Target {
                 id: id.clone(),
                 kind,
@@ -317,22 +315,12 @@ impl RustSyntaxProvider {
         Ok(())
     }
 
-    fn target_id(
-        &self,
-        source: &dyn SourceAccess,
-        path: &SourcePath,
-        kind: &str,
-        name: &str,
-        start: u64,
-    ) -> TargetId {
+    fn target_id(path: &SourcePath, kind: &str, name: &str) -> TargetId {
         TargetId::derive([
             b"rust-syntax".as_slice(),
-            source.snapshot_id().as_str().as_bytes(),
-            self.configuration.as_str().as_bytes(),
             path.as_str().as_bytes(),
             kind.as_bytes(),
             name.as_bytes(),
-            &start.to_be_bytes(),
         ])
     }
 }
