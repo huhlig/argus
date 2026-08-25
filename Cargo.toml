@@ -45,11 +45,11 @@ tempfile = "3.27"
 redb = "4.2"
 ra_ap_syntax = "=0.0.270"
 async-trait = "0.1"
-langchart-model = { git = "https://github.com/huhlig/collaborite.git", rev = "c5cc69b699b2bf32b0372a394cde77c9182be0de" }
-langchart-runtime = { git = "https://github.com/huhlig/collaborite.git", rev = "c5cc69b699b2bf32b0372a394cde77c9182be0de" }
-langchart-adapters = { git = "https://github.com/huhlig/collaborite.git", rev = "c5cc69b699b2bf32b0372a394cde77c9182be0de" }
-langchart-checkpoint-redb = { git = "https://github.com/huhlig/collaborite.git", rev = "c5cc69b699b2bf32b0372a394cde77c9182be0de" }
-langchart-llm-generic = { git = "https://github.com/huhlig/collaborite.git", rev = "c5cc69b699b2bf32b0372a394cde77c9182be0de" }
+langchart-model = { git = "https://github.com/huhlig/langchart.git" }
+langchart-runtime = { git = "https://github.com/huhlig/langchart.git" }
+langchart-adapters = { git = "https://github.com/huhlig/langchart.git" }
+langchart-checkpoint-redb = { git = "https://github.com/huhlig/langchart.git" }
+langchart-llm-generic = { git = "https://github.com/huhlig/langchart.git" }
 langchart-llm-watsonx = { path = "crates/langchart-llm-watsonx" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2"

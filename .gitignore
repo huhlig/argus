@@ -12,9 +12,4 @@ Cargo.lock
 /.agents
 /.claude
 /.codex
-/.junie
 /.idea
-
-# Argus Files
-/.argus/state
-
