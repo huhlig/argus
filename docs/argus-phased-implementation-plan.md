@@ -465,6 +465,8 @@ A target-policy work item can run, request evidence, pass, produce candidate fin
 - Langchart and Argus durability boundaries
 - Unbounded evidence or retry loops
 
+Acceptance evidence is recorded in [Phase 8 Acceptance Record](phase-8-acceptance.md).
+
 ---
 
 ## 14. Phase 9 — Documentation Review Vertical Slice

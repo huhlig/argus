@@ -21,7 +21,7 @@ pub use lifecycle::{
     InventoryState, VerificationState,
 };
 pub use source::{ByteSpan, ContentHash, LineColumn, SourceLocation, SourcePath};
-pub use target::{Capability, CapabilityStatus, PortableTargetKind, TargetKind};
+pub use target::{Capability, CapabilityStatus, PortableTargetKind, TargetKind, TargetVisibility};
 
 /// Schema version for records introduced by the core crate.
 pub const CORE_SCHEMA_VERSION: u32 = 1;
@@ -53,6 +53,6 @@ impl<T> Versioned<T> {
     }
 }
 pub use audit::{
-    Assessment, Attempt, AuditModel, Confidence, Finding, InventoryCoverage, Recommendation,
-    Relation, RelationProvenance, Severity, Target, WorkItem,
+    Assessment, Attempt, AuditModel, Confidence, Finding, HumanAdjudication, InventoryCoverage,
+    Recommendation, Relation, RelationProvenance, Severity, Target, WorkItem,
 };

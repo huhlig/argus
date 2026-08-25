@@ -1,7 +1,8 @@
 use argus_core::{
     AdjudicationState, ApplicabilityState, AssessmentState, AuditState, ByteSpan, Capability,
     CapabilityStatus, ExecutionState, InventoryState, LineColumn, PortableTargetKind,
-    SourceLocation, SourcePath, TargetId, TargetKind, VerificationState, Versioned,
+    SourceLocation, SourcePath, Target, TargetId, TargetKind, TargetVisibility, VerificationState,
+    Versioned,
 };
 
 #[test]
@@ -50,6 +51,33 @@ fn unknown_language_specific_kind_is_retained() {
         }
     );
     assert_eq!(serde_json::to_string(&decoded).unwrap(), json);
+}
+
+#[test]
+fn target_visibility_round_trips_and_defaults_for_existing_records() {
+    let target = Target {
+        id: TargetId::derive([b"restricted-api".as_slice()]),
+        kind: TargetKind::Portable {
+            kind: PortableTargetKind::Callable,
+        },
+        visibility: TargetVisibility::Restricted,
+        name: "restricted_api".to_owned(),
+        parent: None,
+        location: None,
+        inventory: InventoryState::Represented,
+        capabilities: Vec::new(),
+        diagnostic: None,
+    };
+    let value = serde_json::to_value(&target).unwrap();
+    assert_eq!(
+        serde_json::from_value::<Target>(value.clone()).unwrap(),
+        target
+    );
+
+    let mut existing = value.as_object().unwrap().clone();
+    existing.remove("visibility");
+    let decoded: Target = serde_json::from_value(existing.into()).unwrap();
+    assert_eq!(decoded.visibility, TargetVisibility::Unknown);
 }
 
 #[test]

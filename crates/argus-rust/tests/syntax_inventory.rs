@@ -1,4 +1,6 @@
-use argus_core::{ConfigurationId, PortableTargetKind, SnapshotId, SourcePath, TargetKind};
+use argus_core::{
+    ConfigurationId, PortableTargetKind, SnapshotId, SourcePath, TargetKind, TargetVisibility,
+};
 use argus_language::SourceAccess;
 use argus_rust::{RustEdition, RustSyntaxProvider};
 use std::collections::BTreeMap;
@@ -130,6 +132,47 @@ fn throughput() {}
         TargetKind::LanguageSpecific { language, kind }
             if language == "rust" && kind == "benchmark"
     )));
+}
+
+#[test]
+fn preserves_declared_and_inherited_visibility() {
+    let text = r"
+pub fn public_api() {}
+pub(crate) fn crate_api() {}
+fn private_api() {}
+pub trait PublicTrait {
+    fn inherited();
+}
+struct Widget;
+impl PublicTrait for Widget {
+    fn inherited() {}
+}
+";
+    let (source, path) = source(text);
+    let inventory = provider().inventory_file(&source, &path, None).unwrap();
+
+    let visibility = |name: &str| {
+        inventory
+            .targets
+            .iter()
+            .find(|target| target.name == name)
+            .map(|target| target.visibility)
+            .unwrap()
+    };
+    assert_eq!(visibility("public_api"), TargetVisibility::Public);
+    assert_eq!(visibility("crate_api"), TargetVisibility::Restricted);
+    assert_eq!(visibility("private_api"), TargetVisibility::Private);
+
+    let inherited = inventory
+        .targets
+        .iter()
+        .filter(|target| target.name == "inherited")
+        .map(|target| target.visibility)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        inherited,
+        vec![TargetVisibility::Inherited, TargetVisibility::Unknown]
+    );
 }
 
 #[test]

@@ -1,5 +1,5 @@
-use crate::{DurableQueue, STORAGE_SCHEMA_VERSION, queue::StoredOutcome};
-use argus_core::{ContentHash, RunId};
+use crate::{BUNDLE_SCHEMA_VERSION, DurableQueue, StoredArtifact, queue::OutcomeRecord};
+use argus_core::{ContentHash, HumanAdjudication, RunId};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
 
@@ -8,11 +8,23 @@ pub struct BundleManifest {
     pub schema_version: u32,
     pub work_records: usize,
     pub outcome_records: usize,
+    pub artifact_records: usize,
+    pub adjudication_records: usize,
     pub event_records: usize,
     pub run_id: Option<RunId>,
     pub work_hash: ContentHash,
     pub outcome_hash: ContentHash,
+    pub artifact_hash: ContentHash,
+    pub adjudication_hash: ContentHash,
     pub event_hash: ContentHash,
+}
+
+struct BundleRecords<'a> {
+    work: &'a [crate::QueueWork],
+    outcomes: &'a [OutcomeRecord],
+    artifacts: &'a [StoredArtifact],
+    adjudications: &'a [HumanAdjudication],
+    events: &'a [crate::QueueEvent],
 }
 
 /// Writes a portable bundle to a sibling temporary directory, then atomically renames it.
@@ -34,7 +46,20 @@ pub fn finalize_bundle(
     let work = queue.all_work()?;
     let outcomes = queue.all_outcomes()?;
     let events = queue.events()?;
-    publish(destination, None, &work, &outcomes, &events, false)
+    let artifacts = referenced_artifacts(queue, &outcomes)?;
+    let adjudications = queue.all_adjudications()?;
+    publish(
+        destination,
+        None,
+        &BundleRecords {
+            work: &work,
+            outcomes: &outcomes,
+            artifacts: &artifacts,
+            adjudications: &adjudications,
+            events: &events,
+        },
+        false,
+    )
 }
 
 /// Publishes only records owned by `run_id`, then durably marks that run finalized.
@@ -73,12 +98,18 @@ pub fn finalize_run_bundle(
         .into_iter()
         .filter(|event| work_ids.contains(&event.work_id))
         .collect();
+    let artifacts = referenced_artifacts(queue, &outcomes)?;
+    let adjudications = queue.adjudications(run_id)?;
     let manifest = publish(
         destination,
         Some(run_id.clone()),
-        &work,
-        &outcomes,
-        &events,
+        &BundleRecords {
+            work: &work,
+            outcomes: &outcomes,
+            artifacts: &artifacts,
+            adjudications: &adjudications,
+            events: &events,
+        },
         true,
     )?;
     queue.mark_run_finalized(run_id, at_millis)?;
@@ -88,22 +119,26 @@ pub fn finalize_run_bundle(
 fn publish(
     destination: &Path,
     run_id: Option<RunId>,
-    work: &[crate::QueueWork],
-    outcomes: &[StoredOutcome],
-    events: &[crate::QueueEvent],
+    records: &BundleRecords<'_>,
     reconcile_existing: bool,
 ) -> Result<BundleManifest, argus_core::ArgusError> {
-    let work_bytes = encode_jsonl(work.iter())?;
-    let event_bytes = encode_jsonl(events.iter())?;
-    let outcome_bytes = encode_jsonl(outcomes.iter())?;
+    let work_bytes = encode_jsonl(records.work.iter())?;
+    let event_bytes = encode_jsonl(records.events.iter())?;
+    let outcome_bytes = encode_jsonl(records.outcomes.iter())?;
+    let artifact_bytes = encode_jsonl(records.artifacts.iter())?;
+    let adjudication_bytes = encode_jsonl(records.adjudications.iter())?;
     let expected = BundleManifest {
-        schema_version: STORAGE_SCHEMA_VERSION,
-        work_records: work.len(),
-        outcome_records: outcomes.len(),
-        event_records: events.len(),
+        schema_version: BUNDLE_SCHEMA_VERSION,
+        work_records: records.work.len(),
+        outcome_records: records.outcomes.len(),
+        artifact_records: records.artifacts.len(),
+        adjudication_records: records.adjudications.len(),
+        event_records: records.events.len(),
         run_id,
         work_hash: ContentHash::digest(&work_bytes),
         outcome_hash: ContentHash::digest(&outcome_bytes),
+        artifact_hash: ContentHash::digest(&artifact_bytes),
+        adjudication_hash: ContentHash::digest(&adjudication_bytes),
         event_hash: ContentHash::digest(&event_bytes),
     };
     if destination.exists() {
@@ -129,6 +164,10 @@ fn publish(
         .map_err(io_error("cannot write event JSONL"))?;
     fs::write(temporary.join("outcomes.jsonl"), outcome_bytes)
         .map_err(io_error("cannot write outcome JSONL"))?;
+    fs::write(temporary.join("artifacts.jsonl"), artifact_bytes)
+        .map_err(io_error("cannot write artifact JSONL"))?;
+    fs::write(temporary.join("adjudications.jsonl"), adjudication_bytes)
+        .map_err(io_error("cannot write adjudication JSONL"))?;
     fs::rename(&temporary, destination).map_err(io_error("cannot atomically publish bundle"))?;
     Ok(expected)
 }
@@ -168,6 +207,8 @@ fn validate_existing(
         ("work.jsonl", &expected.work_hash),
         ("events.jsonl", &expected.event_hash),
         ("outcomes.jsonl", &expected.outcome_hash),
+        ("artifacts.jsonl", &expected.artifact_hash),
+        ("adjudications.jsonl", &expected.adjudication_hash),
     ] {
         let bytes = fs::read(destination.join(name))
             .map_err(io_error("cannot read existing bundle content"))?;
@@ -178,6 +219,26 @@ fn validate_existing(
         }
     }
     Ok(())
+}
+
+fn referenced_artifacts(
+    queue: &DurableQueue,
+    outcomes: &[OutcomeRecord],
+) -> Result<Vec<StoredArtifact>, argus_core::ArgusError> {
+    let references = outcomes
+        .iter()
+        .flat_map(|outcome| outcome.artifact_references.iter())
+        .collect::<std::collections::BTreeSet<_>>();
+    references
+        .into_iter()
+        .map(|reference| {
+            queue.artifact(reference)?.ok_or_else(|| {
+                argus_core::ArgusError::invariant(
+                    "portable bundle outcome references a missing artifact",
+                )
+            })
+        })
+        .collect()
 }
 
 fn serialization_error(error: serde_json::Error) -> argus_core::ArgusError {

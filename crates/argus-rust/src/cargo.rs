@@ -1,6 +1,7 @@
 use argus_core::{
     ByteSpan, Capability, CapabilityStatus, ConfigurationId, InventoryState, PortableTargetKind,
     Relation, RelationId, SourceLocation, SourcePath, Target, TargetId, TargetKind,
+    TargetVisibility,
 };
 use argus_language::{
     AdapterIdentity, AdapterInventory, AdapterProvider, DiscoveryPartition, LanguageAdapter,
@@ -92,6 +93,7 @@ impl LanguageAdapter for CargoMetadataAdapter {
                 kind: TargetKind::Portable {
                     kind: PortableTargetKind::Package,
                 },
+                visibility: TargetVisibility::NotApplicable,
                 name: package.name,
                 parent: None,
                 location: normalized_location(&root, &package.manifest_path, source)?,
@@ -114,6 +116,7 @@ impl LanguageAdapter for CargoMetadataAdapter {
                         language: "rust".to_owned(),
                         kind: "cargo_feature".to_owned(),
                     },
+                    visibility: TargetVisibility::NotApplicable,
                     name: feature.clone(),
                     parent: Some(package_id.clone()),
                     location: normalized_location(&root, &package.manifest_path, source)?,
@@ -155,6 +158,7 @@ impl LanguageAdapter for CargoMetadataAdapter {
                         language: "rust".to_owned(),
                         kind: format!("cargo_target:{}", cargo_target.kind.join(",")),
                     },
+                    visibility: TargetVisibility::NotApplicable,
                     name: cargo_target.name,
                     parent: Some(package_id.clone()),
                     location,
@@ -196,6 +200,7 @@ impl LanguageAdapter for CargoMetadataAdapter {
                 diagnostic: None,
             }],
             targets,
+            evidence: Vec::new(),
             relations,
             conflicts: vec![],
         })

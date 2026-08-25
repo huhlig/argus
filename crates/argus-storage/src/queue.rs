@@ -1,9 +1,12 @@
-use argus_core::{ConfigurationId, RunId, SnapshotId, WorkItemId};
+use argus_core::{ConfigurationId, ContentHash, HumanAdjudication, RunId, SnapshotId, WorkItemId};
+use argus_provider::{ProviderError, ProviderIdentity, ProviderTelemetry, ProviderTelemetrySink};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const METADATA: TableDefinition<&str, u64> = TableDefinition::new("metadata_v1");
@@ -11,6 +14,10 @@ const WORK: TableDefinition<&str, &[u8]> = TableDefinition::new("work_v1");
 const OUTCOMES: TableDefinition<&str, &[u8]> = TableDefinition::new("outcomes_v1");
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("events_v1");
 const RUNS: TableDefinition<&str, &[u8]> = TableDefinition::new("runs_v1");
+const PROVIDER_TELEMETRY: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("provider_telemetry_v1");
+const ARTIFACTS: TableDefinition<&str, &[u8]> = TableDefinition::new("artifacts_v1");
+const ADJUDICATIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("adjudications_v1");
 const SCHEMA_KEY: &str = "schema_version";
 const EVENT_SEQUENCE_KEY: &str = "event_sequence";
 
@@ -147,10 +154,34 @@ pub struct QueueEvent {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct StoredOutcome {
+pub struct OutcomeRecord {
     pub key: String,
     pub work_id: WorkItemId,
     pub payload: Vec<u8>,
+    #[serde(default)]
+    pub artifact_references: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StoredArtifact {
+    pub reference: String,
+    pub kind: String,
+    pub content_hash: ContentHash,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunRecords {
+    pub work: Vec<QueueWork>,
+    pub outcomes: Vec<OutcomeRecord>,
+    pub artifacts: Vec<StoredArtifact>,
+    pub adjudications: Vec<HumanAdjudication>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OutcomeWrite {
+    Inserted(OutcomeRecord),
+    Existing(OutcomeRecord),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -170,6 +201,150 @@ pub struct QueueTelemetry {
     pub retry_count: u64,
     pub last_successful_work: Option<WorkItemId>,
     pub database_bytes: u64,
+    pub providers: Vec<ProviderTelemetrySummary>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProviderTelemetrySnapshot {
+    pub session_id: String,
+    pub provider: ProviderIdentity,
+    pub captured_at_millis: u64,
+    pub telemetry: ProviderTelemetry,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderTelemetrySummary {
+    pub provider: ProviderIdentity,
+    pub sessions: u64,
+    pub telemetry: ProviderTelemetry,
+}
+
+pub struct DurableProviderTelemetryPublisher {
+    queue: Arc<DurableQueue>,
+    session_id: String,
+}
+
+struct ProviderTelemetryAggregate {
+    provider: ProviderIdentity,
+    sessions: u64,
+    latest_capture_millis: u64,
+    telemetry: ProviderTelemetry,
+}
+
+impl ProviderTelemetryAggregate {
+    fn new(provider: ProviderIdentity) -> Self {
+        Self {
+            provider,
+            sessions: 0,
+            latest_capture_millis: 0,
+            telemetry: ProviderTelemetry::default(),
+        }
+    }
+
+    fn merge(&mut self, snapshot: &ProviderTelemetrySnapshot) {
+        self.sessions = self.sessions.saturating_add(1);
+        if snapshot.captured_at_millis >= self.latest_capture_millis {
+            self.latest_capture_millis = snapshot.captured_at_millis;
+            self.telemetry.last_health = snapshot.telemetry.last_health;
+        }
+        self.telemetry.requests = self
+            .telemetry
+            .requests
+            .saturating_add(snapshot.telemetry.requests);
+        self.telemetry.successes = self
+            .telemetry
+            .successes
+            .saturating_add(snapshot.telemetry.successes);
+        self.telemetry.failures = self
+            .telemetry
+            .failures
+            .saturating_add(snapshot.telemetry.failures);
+        self.telemetry.repair_attempts = self
+            .telemetry
+            .repair_attempts
+            .saturating_add(snapshot.telemetry.repair_attempts);
+        self.telemetry.provider_call_millis = self
+            .telemetry
+            .provider_call_millis
+            .saturating_add(snapshot.telemetry.provider_call_millis);
+        self.telemetry.input_tokens = self
+            .telemetry
+            .input_tokens
+            .saturating_add(snapshot.telemetry.input_tokens);
+        self.telemetry.output_tokens = self
+            .telemetry
+            .output_tokens
+            .saturating_add(snapshot.telemetry.output_tokens);
+        self.telemetry.estimated_cost_microusd = self
+            .telemetry
+            .estimated_cost_microusd
+            .saturating_add(snapshot.telemetry.estimated_cost_microusd);
+        self.telemetry.unreported_token_responses = self
+            .telemetry
+            .unreported_token_responses
+            .saturating_add(snapshot.telemetry.unreported_token_responses);
+        self.telemetry.unreported_cost_responses = self
+            .telemetry
+            .unreported_cost_responses
+            .saturating_add(snapshot.telemetry.unreported_cost_responses);
+        self.telemetry.waiting = self
+            .telemetry
+            .waiting
+            .saturating_add(snapshot.telemetry.waiting);
+        self.telemetry.in_flight = self
+            .telemetry
+            .in_flight
+            .saturating_add(snapshot.telemetry.in_flight);
+        self.telemetry.peak_waiting = self
+            .telemetry
+            .peak_waiting
+            .max(snapshot.telemetry.peak_waiting);
+        self.telemetry.peak_in_flight = self
+            .telemetry
+            .peak_in_flight
+            .max(snapshot.telemetry.peak_in_flight);
+    }
+
+    fn finish(self) -> ProviderTelemetrySummary {
+        ProviderTelemetrySummary {
+            provider: self.provider,
+            sessions: self.sessions,
+            telemetry: self.telemetry,
+        }
+    }
+}
+
+impl DurableProviderTelemetryPublisher {
+    pub fn new(
+        queue: Arc<DurableQueue>,
+        session_id: impl Into<String>,
+    ) -> Result<Self, argus_core::ArgusError> {
+        let session_id = session_id.into();
+        if session_id.trim().is_empty() || session_id.trim() != session_id {
+            return Err(argus_core::ArgusError::invalid_input(
+                "provider telemetry session ID must be non-empty and normalized",
+            ));
+        }
+        Ok(Self { queue, session_id })
+    }
+}
+
+impl ProviderTelemetrySink for DurableProviderTelemetryPublisher {
+    fn publish(
+        &self,
+        identity: &ProviderIdentity,
+        telemetry: &ProviderTelemetry,
+    ) -> Result<(), ProviderError> {
+        let captured_at_millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| ProviderError::Unavailable(error.to_string()))?
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        self.queue
+            .publish_provider_telemetry(&self.session_id, identity, telemetry, captured_at_millis)
+            .map_err(|error| ProviderError::Unavailable(error.to_string()))
+    }
 }
 
 impl QueueStatus {
@@ -240,6 +415,15 @@ impl DurableQueue {
             write
                 .open_table(RUNS)
                 .map_err(database_error("cannot create run table"))?;
+            write
+                .open_table(PROVIDER_TELEMETRY)
+                .map_err(database_error("cannot create provider telemetry table"))?;
+            write
+                .open_table(ARTIFACTS)
+                .map_err(database_error("cannot create artifact table"))?;
+            write
+                .open_table(ADJUDICATIONS)
+                .map_err(database_error("cannot create adjudication table"))?;
         }
         write
             .commit()
@@ -577,6 +761,34 @@ impl DurableQueue {
         now_millis: u64,
         lease_duration_millis: u64,
     ) -> Result<Option<LeasedWork>, argus_core::ArgusError> {
+        self.lease_next_matching(now_millis, lease_duration_millis, |_| true)
+    }
+
+    /// Atomically leases the next available item owned by one run and audit partition.
+    pub fn lease_next_for_partition(
+        &self,
+        now_millis: u64,
+        lease_duration_millis: u64,
+        run: &RunId,
+        adapter: &str,
+        policy: &str,
+    ) -> Result<Option<LeasedWork>, argus_core::ArgusError> {
+        if adapter.is_empty() || policy.is_empty() {
+            return Err(argus_core::ArgusError::invalid_input(
+                "queue lease partition adapter and policy must not be empty",
+            ));
+        }
+        self.lease_next_matching(now_millis, lease_duration_millis, |work| {
+            work.run == *run && work.coverage.adapter == adapter && work.coverage.policy == policy
+        })
+    }
+
+    fn lease_next_matching(
+        &self,
+        now_millis: u64,
+        lease_duration_millis: u64,
+        matches_partition: impl Fn(&QueueWork) -> bool,
+    ) -> Result<Option<LeasedWork>, argus_core::ArgusError> {
         let lease_until = now_millis
             .checked_add(lease_duration_millis)
             .ok_or_else(|| argus_core::ArgusError::invalid_input("lease deadline overflow"))?;
@@ -601,7 +813,7 @@ impl DurableQueue {
                             && work
                                 .lease_until_millis
                                 .is_some_and(|until| until <= now_millis));
-                    if available {
+                    if available && matches_partition(&work) {
                         found = Some((key.value().to_owned(), work));
                         break;
                     }
@@ -766,11 +978,59 @@ impl DurableQueue {
         outcome_key: &str,
         outcome: &[u8],
     ) -> Result<bool, argus_core::ArgusError> {
+        match self.record_or_get(work_id, outcome_key, outcome)? {
+            OutcomeWrite::Inserted(_) => Ok(true),
+            OutcomeWrite::Existing(existing) if existing.payload == outcome => Ok(false),
+            OutcomeWrite::Existing(_) => Err(argus_core::ArgusError::invariant(
+                "outcome key payload conflict",
+            )),
+        }
+    }
+
+    /// Atomically records an outcome or returns the result already effective for the key.
+    ///
+    /// Replay callers use this inbox operation after an uncertain commit. Once a logical key
+    /// exists for the same work item, its original payload wins even when a replay proposes
+    /// different bytes. A key owned by another work item remains an invariant violation.
+    pub fn record_or_get(
+        &self,
+        work_id: &WorkItemId,
+        outcome_key: &str,
+        outcome: &[u8],
+    ) -> Result<OutcomeWrite, argus_core::ArgusError> {
+        self.record_or_get_with_artifacts(work_id, outcome_key, outcome, &[])
+    }
+
+    pub fn record_or_get_with_artifacts(
+        &self,
+        work_id: &WorkItemId,
+        outcome_key: &str,
+        outcome: &[u8],
+        artifact_references: &[String],
+    ) -> Result<OutcomeWrite, argus_core::ArgusError> {
+        if outcome_key.trim().is_empty() {
+            return Err(argus_core::ArgusError::invalid_input(
+                "outcome key must not be empty",
+            ));
+        }
+        let mut unique_artifacts = BTreeSet::new();
+        for reference in artifact_references {
+            if !unique_artifacts.insert(reference.clone()) {
+                return Err(argus_core::ArgusError::invalid_input(
+                    "outcome artifact references must be unique",
+                ));
+            }
+            if self.artifact(reference)?.is_none() {
+                return Err(argus_core::ArgusError::invariant(
+                    "outcome references an unknown artifact",
+                ));
+            }
+        }
         let write = self
             .database
             .begin_write()
             .map_err(database_error("cannot complete work"))?;
-        let inserted = {
+        let result = {
             let mut outcomes = write
                 .open_table(OUTCOMES)
                 .map_err(database_error("cannot open outcomes"))?;
@@ -779,14 +1039,13 @@ impl DurableQueue {
                 .map_err(database_error("cannot read outcome"))?
                 .map(|value| value.value().to_vec());
             if let Some(existing) = existing {
-                let existing: StoredOutcome = decode(&existing)?;
-                if existing.work_id == *work_id && existing.payload == outcome {
-                    false
-                } else {
+                let existing: OutcomeRecord = decode(&existing)?;
+                if existing.work_id != *work_id {
                     return Err(argus_core::ArgusError::invariant(
-                        "outcome key payload conflict",
+                        "outcome key belongs to different work",
                     ));
                 }
+                OutcomeWrite::Existing(existing)
             } else {
                 let mut work_table = write
                     .open_table(WORK)
@@ -810,19 +1069,20 @@ impl DurableQueue {
                 work_table
                     .insert(work_id.as_str(), work_bytes.as_slice())
                     .map_err(database_error("cannot mark work complete"))?;
-                let stored = StoredOutcome {
+                let stored = OutcomeRecord {
                     key: outcome_key.to_owned(),
                     work_id: work_id.clone(),
                     payload: outcome.to_vec(),
+                    artifact_references: artifact_references.to_vec(),
                 };
                 let outcome_bytes = encode(&stored)?;
                 outcomes
                     .insert(outcome_key, outcome_bytes.as_slice())
                     .map_err(database_error("cannot insert outcome"))?;
-                true
+                OutcomeWrite::Inserted(stored)
             }
         };
-        if inserted {
+        if matches!(result, OutcomeWrite::Inserted(_)) {
             append_event(
                 &write,
                 work_id,
@@ -834,7 +1094,25 @@ impl DurableQueue {
         write
             .commit()
             .map_err(database_error("cannot commit outcome"))?;
-        Ok(inserted)
+        Ok(result)
+    }
+
+    pub fn outcome(
+        &self,
+        outcome_key: &str,
+    ) -> Result<Option<OutcomeRecord>, argus_core::ArgusError> {
+        let read = self
+            .database
+            .begin_read()
+            .map_err(database_error("cannot read outcome"))?;
+        let table = read
+            .open_table(OUTCOMES)
+            .map_err(database_error("cannot open outcomes"))?;
+        table
+            .get(outcome_key)
+            .map_err(database_error("cannot read outcome"))?
+            .map(|value| decode(value.value()))
+            .transpose()
     }
 
     pub fn get(&self, id: &WorkItemId) -> Result<Option<QueueWork>, argus_core::ArgusError> {
@@ -850,6 +1128,206 @@ impl DurableQueue {
             .map_err(database_error("cannot read work"))?
             .map(|value| decode(value.value()))
             .transpose()
+    }
+
+    /// Returns a consistent logical view of one run for read-only reporting.
+    pub fn run_records(&self, run_id: &RunId) -> Result<RunRecords, argus_core::ArgusError> {
+        let read = self
+            .database
+            .begin_read()
+            .map_err(database_error("cannot read run records"))?;
+        {
+            let runs = read
+                .open_table(RUNS)
+                .map_err(database_error("cannot open runs table"))?;
+            if runs
+                .get(run_id.as_str())
+                .map_err(database_error("cannot read run"))?
+                .is_none()
+            {
+                return Err(argus_core::ArgusError::invalid_input("unknown run"));
+            }
+        }
+        let work = {
+            let table = read
+                .open_table(WORK)
+                .map_err(database_error("cannot open work table"))?;
+            let mut records = Vec::new();
+            for entry in table
+                .iter()
+                .map_err(database_error("cannot scan run work"))?
+            {
+                let (_, value) = entry.map_err(database_error("cannot read run work"))?;
+                let item: QueueWork = decode(value.value())?;
+                if item.run == *run_id {
+                    records.push(item);
+                }
+            }
+            records
+        };
+        let work_ids = work
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<BTreeSet<_>>();
+        let outcomes = {
+            let table = read
+                .open_table(OUTCOMES)
+                .map_err(database_error("cannot open outcomes table"))?;
+            let mut records = Vec::new();
+            for entry in table
+                .iter()
+                .map_err(database_error("cannot scan run outcomes"))?
+            {
+                let (_, value) = entry.map_err(database_error("cannot read run outcome"))?;
+                let outcome: OutcomeRecord = decode(value.value())?;
+                if work_ids.contains(&outcome.work_id) {
+                    records.push(outcome);
+                }
+            }
+            records
+        };
+        let references = outcomes
+            .iter()
+            .flat_map(|outcome| outcome.artifact_references.iter())
+            .collect::<BTreeSet<_>>();
+        let artifacts = {
+            let table = read
+                .open_table(ARTIFACTS)
+                .map_err(database_error("cannot open artifacts table"))?;
+            references
+                .into_iter()
+                .map(|reference| {
+                    let artifact = table
+                        .get(reference.as_str())
+                        .map_err(database_error("cannot read run artifact"))?
+                        .map(|value| decode::<StoredArtifact>(value.value()))
+                        .transpose()?
+                        .ok_or_else(|| {
+                            argus_core::ArgusError::invariant(
+                                "run outcome references a missing report artifact",
+                            )
+                        })?;
+                    validate_stored_artifact(reference, &artifact)?;
+                    Ok(artifact)
+                })
+                .collect::<Result<Vec<_>, argus_core::ArgusError>>()?
+        };
+        let adjudications = read_adjudications(&read, run_id)?;
+        Ok(RunRecords {
+            work,
+            outcomes,
+            artifacts,
+            adjudications,
+        })
+    }
+
+    /// Appends one human decision using compare-and-swap revision semantics.
+    pub fn record_adjudication(
+        &self,
+        adjudication: &HumanAdjudication,
+        expected_previous_revision: Option<u64>,
+    ) -> Result<(), argus_core::ArgusError> {
+        adjudication.validate()?;
+        let write = self
+            .database
+            .begin_write()
+            .map_err(database_error("cannot begin adjudication update"))?;
+        {
+            let runs = write
+                .open_table(RUNS)
+                .map_err(database_error("cannot open runs table"))?;
+            if runs
+                .get(adjudication.run.as_str())
+                .map_err(database_error("cannot read adjudication run"))?
+                .is_none()
+            {
+                return Err(argus_core::ArgusError::invalid_input(
+                    "adjudication references an unknown run",
+                ));
+            }
+        }
+        let key = adjudication_key(adjudication);
+        {
+            let mut table = write
+                .open_table(ADJUDICATIONS)
+                .map_err(database_error("cannot open adjudications table"))?;
+            let mut latest = None;
+            for entry in table
+                .iter()
+                .map_err(database_error("cannot scan adjudications"))?
+            {
+                let (_, value) = entry.map_err(database_error("cannot read adjudication"))?;
+                let existing: HumanAdjudication = decode(value.value())?;
+                if existing.run == adjudication.run && existing.finding == adjudication.finding {
+                    latest = Some(latest.map_or(existing.revision, |revision: u64| {
+                        revision.max(existing.revision)
+                    }));
+                }
+            }
+            if latest != expected_previous_revision
+                || adjudication.revision != latest.map_or(1, |revision| revision + 1)
+            {
+                return Err(argus_core::ArgusError::invariant(
+                    "adjudication revision conflict",
+                ));
+            }
+            if table
+                .get(key.as_str())
+                .map_err(database_error("cannot read adjudication revision"))?
+                .is_some()
+            {
+                return Err(argus_core::ArgusError::invariant(
+                    "adjudication revision already exists",
+                ));
+            }
+            let bytes = encode(adjudication)?;
+            table
+                .insert(key.as_str(), bytes.as_slice())
+                .map_err(database_error("cannot append adjudication"))?;
+        }
+        write
+            .commit()
+            .map_err(database_error("cannot commit adjudication"))
+    }
+
+    pub fn adjudications(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Vec<HumanAdjudication>, argus_core::ArgusError> {
+        let read = self
+            .database
+            .begin_read()
+            .map_err(database_error("cannot read adjudications"))?;
+        read_adjudications(&read, run_id)
+    }
+
+    pub(crate) fn all_adjudications(
+        &self,
+    ) -> Result<Vec<HumanAdjudication>, argus_core::ArgusError> {
+        let read = self
+            .database
+            .begin_read()
+            .map_err(database_error("cannot read adjudications"))?;
+        let table = read
+            .open_table(ADJUDICATIONS)
+            .map_err(database_error("cannot open adjudications table"))?;
+        let mut records = Vec::new();
+        for entry in table
+            .iter()
+            .map_err(database_error("cannot scan adjudications"))?
+        {
+            let (_, value) = entry.map_err(database_error("cannot read adjudication"))?;
+            let record: HumanAdjudication = decode(value.value())?;
+            record.validate()?;
+            records.push(record);
+        }
+        records.sort_by(|left, right| {
+            left.run
+                .cmp(&right.run)
+                .then_with(|| left.finding.cmp(&right.finding))
+                .then_with(|| left.revision.cmp(&right.revision))
+        });
+        Ok(records)
     }
 
     pub fn status(&self, now_millis: u64) -> Result<QueueStatus, argus_core::ArgusError> {
@@ -922,7 +1400,155 @@ impl DurableQueue {
                 .find(|event| event.kind == QueueEventKind::Succeeded)
                 .map(|event| event.work_id.clone()),
             database_bytes: std::fs::metadata(&self.path).map_or(0, |metadata| metadata.len()),
+            providers: self.provider_telemetry()?,
         })
+    }
+
+    pub fn publish_provider_telemetry(
+        &self,
+        session_id: &str,
+        provider: &ProviderIdentity,
+        telemetry: &ProviderTelemetry,
+        captured_at_millis: u64,
+    ) -> Result<(), argus_core::ArgusError> {
+        if session_id.trim().is_empty() || session_id.trim() != session_id {
+            return Err(argus_core::ArgusError::invalid_input(
+                "provider telemetry session ID must be non-empty and normalized",
+            ));
+        }
+        provider
+            .validate()
+            .map_err(|error| argus_core::ArgusError::invalid_input(error.to_string()))?;
+        let provider_key = serde_json::to_string(provider)
+            .map_err(|error| argus_core::ArgusError::invariant(error.to_string()))?;
+        let key = format!("{session_id}\n{provider_key}");
+        let snapshot = ProviderTelemetrySnapshot {
+            session_id: session_id.to_owned(),
+            provider: provider.clone(),
+            captured_at_millis,
+            telemetry: telemetry.clone(),
+        };
+        let bytes = encode(&snapshot)?;
+        let write = self
+            .database
+            .begin_write()
+            .map_err(database_error("cannot begin provider telemetry update"))?;
+        {
+            let mut table = write
+                .open_table(PROVIDER_TELEMETRY)
+                .map_err(database_error("cannot open provider telemetry table"))?;
+            table
+                .insert(key.as_str(), bytes.as_slice())
+                .map_err(database_error("cannot publish provider telemetry"))?;
+        }
+        write
+            .commit()
+            .map_err(database_error("cannot commit provider telemetry"))
+    }
+
+    pub fn provider_telemetry(
+        &self,
+    ) -> Result<Vec<ProviderTelemetrySummary>, argus_core::ArgusError> {
+        let read = self
+            .database
+            .begin_read()
+            .map_err(database_error("cannot read provider telemetry"))?;
+        let table = read
+            .open_table(PROVIDER_TELEMETRY)
+            .map_err(database_error("cannot open provider telemetry table"))?;
+        let mut summaries = BTreeMap::<String, ProviderTelemetryAggregate>::new();
+        for entry in table
+            .iter()
+            .map_err(database_error("cannot scan provider telemetry"))?
+        {
+            let (_, value) = entry.map_err(database_error("cannot read provider telemetry"))?;
+            let snapshot: ProviderTelemetrySnapshot = decode(value.value())?;
+            let key = serde_json::to_string(&snapshot.provider)
+                .map_err(|error| argus_core::ArgusError::invariant(error.to_string()))?;
+            summaries
+                .entry(key)
+                .or_insert_with(|| ProviderTelemetryAggregate::new(snapshot.provider.clone()))
+                .merge(&snapshot);
+        }
+        Ok(summaries
+            .into_values()
+            .map(ProviderTelemetryAggregate::finish)
+            .collect())
+    }
+
+    pub fn store_artifact(
+        &self,
+        kind: &str,
+        payload: &[u8],
+    ) -> Result<StoredArtifact, argus_core::ArgusError> {
+        validate_artifact_kind(kind)?;
+        if payload.is_empty() {
+            return Err(argus_core::ArgusError::invalid_input(
+                "artifact payload must not be empty",
+            ));
+        }
+        let content_hash = ContentHash::digest(payload);
+        let reference = format!("artifact:{kind}:{}", content_hash.as_str());
+        let artifact = StoredArtifact {
+            reference: reference.clone(),
+            kind: kind.to_owned(),
+            content_hash,
+            payload: payload.to_vec(),
+        };
+        let bytes = encode(&artifact)?;
+        let write = self
+            .database
+            .begin_write()
+            .map_err(database_error("cannot begin artifact update"))?;
+        {
+            let mut table = write
+                .open_table(ARTIFACTS)
+                .map_err(database_error("cannot open artifact table"))?;
+            let existing = table
+                .get(reference.as_str())
+                .map_err(database_error("cannot read artifact"))?
+                .map(|value| value.value().to_vec());
+            match existing {
+                Some(existing) if existing == bytes => {}
+                Some(_) => {
+                    return Err(argus_core::ArgusError::invariant(
+                        "artifact reference payload conflict",
+                    ));
+                }
+                None => {
+                    table
+                        .insert(reference.as_str(), bytes.as_slice())
+                        .map_err(database_error("cannot store artifact"))?;
+                }
+            }
+        }
+        write
+            .commit()
+            .map_err(database_error("cannot commit artifact"))?;
+        Ok(artifact)
+    }
+
+    pub fn artifact(
+        &self,
+        reference: &str,
+    ) -> Result<Option<StoredArtifact>, argus_core::ArgusError> {
+        let read = self
+            .database
+            .begin_read()
+            .map_err(database_error("cannot read artifact"))?;
+        let table = read
+            .open_table(ARTIFACTS)
+            .map_err(database_error("cannot open artifact table"))?;
+        let Some(bytes) = table
+            .get(reference)
+            .map_err(database_error("cannot find artifact"))?
+            .map(|value| value.value().to_vec())
+        else {
+            return Ok(None);
+        };
+        let artifact: StoredArtifact = decode(&bytes)?;
+        validate_stored_artifact(reference, &artifact)?;
+        Ok(Some(artifact))
     }
 
     /// Marks a run finalized after all owned work reaches a terminal state.
@@ -1011,7 +1637,7 @@ impl DurableQueue {
             .collect()
     }
 
-    pub(crate) fn all_outcomes(&self) -> Result<Vec<StoredOutcome>, argus_core::ArgusError> {
+    pub(crate) fn all_outcomes(&self) -> Result<Vec<OutcomeRecord>, argus_core::ArgusError> {
         let read = self
             .database
             .begin_read()
@@ -1144,10 +1770,75 @@ fn append_event(
     Ok(())
 }
 
+fn adjudication_key(adjudication: &HumanAdjudication) -> String {
+    format!(
+        "{}:{}:{:020}",
+        adjudication.run, adjudication.finding, adjudication.revision
+    )
+}
+
+fn read_adjudications(
+    read: &redb::ReadTransaction,
+    run_id: &RunId,
+) -> Result<Vec<HumanAdjudication>, argus_core::ArgusError> {
+    let table = read
+        .open_table(ADJUDICATIONS)
+        .map_err(database_error("cannot open adjudications table"))?;
+    let mut records = Vec::new();
+    for entry in table
+        .iter()
+        .map_err(database_error("cannot scan adjudications"))?
+    {
+        let (_, value) = entry.map_err(database_error("cannot read adjudication"))?;
+        let record: HumanAdjudication = decode(value.value())?;
+        record.validate()?;
+        if record.run == *run_id {
+            records.push(record);
+        }
+    }
+    records.sort_by(|left, right| {
+        left.finding
+            .cmp(&right.finding)
+            .then_with(|| left.revision.cmp(&right.revision))
+    });
+    Ok(records)
+}
+
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, argus_core::ArgusError> {
     serde_json::to_vec(value).map_err(|error| {
         argus_core::ArgusError::invariant("cannot serialize storage record").with_source(error)
     })
+}
+
+fn validate_artifact_kind(kind: &str) -> Result<(), argus_core::ArgusError> {
+    if kind.is_empty()
+        || !kind.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        })
+    {
+        return Err(argus_core::ArgusError::invalid_input(
+            "artifact kind must use lowercase ASCII letters, digits, dots, underscores, or hyphens",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stored_artifact(
+    reference: &str,
+    artifact: &StoredArtifact,
+) -> Result<(), argus_core::ArgusError> {
+    validate_artifact_kind(&artifact.kind)?;
+    let actual_hash = ContentHash::digest(&artifact.payload);
+    let expected_reference = format!("artifact:{}:{}", artifact.kind, actual_hash.as_str());
+    if artifact.reference != reference
+        || artifact.reference != expected_reference
+        || artifact.content_hash != actual_hash
+    {
+        return Err(argus_core::ArgusError::invariant(
+            "stored artifact identity or content hash mismatch",
+        ));
+    }
+    Ok(())
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, argus_core::ArgusError> {

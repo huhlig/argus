@@ -1,6 +1,6 @@
 use argus_core::{
     ByteSpan, Capability, CapabilityStatus, ConfigurationId, InventoryState, PortableTargetKind,
-    SourceLocation, SourcePath, Target, TargetId, TargetKind,
+    SourceLocation, SourcePath, Target, TargetId, TargetKind, TargetVisibility,
 };
 use argus_language::SourceAccess;
 use ra_ap_syntax::{
@@ -78,6 +78,7 @@ impl RustSyntaxProvider {
             kind: TargetKind::Portable {
                 kind: PortableTargetKind::File,
             },
+            visibility: TargetVisibility::NotApplicable,
             name: path.as_str().to_owned(),
             parent,
             location: Some(location(path, file.syntax())?),
@@ -212,6 +213,7 @@ impl RustSyntaxProvider {
             targets.push(Target {
                 id: id.clone(),
                 kind,
+                visibility: item_visibility(&item),
                 name,
                 parent: Some(parent.clone()),
                 location: Some(location(path, item.syntax())?),
@@ -249,6 +251,7 @@ impl RustSyntaxProvider {
                     &id,
                     &qualified,
                     "method",
+                    TargetVisibility::Unknown,
                     targets,
                     documentation,
                     conditions,
@@ -263,6 +266,7 @@ impl RustSyntaxProvider {
                     &id,
                     &qualified,
                     "trait_method",
+                    TargetVisibility::Inherited,
                     targets,
                     documentation,
                     conditions,
@@ -281,6 +285,7 @@ impl RustSyntaxProvider {
         parent: &TargetId,
         prefix: &str,
         callable_kind: &str,
+        absent_visibility: TargetVisibility,
         targets: &mut Vec<Target>,
         documentation: &mut BTreeMap<TargetId, String>,
         conditions: &mut BTreeMap<TargetId, Vec<String>>,
@@ -293,6 +298,7 @@ impl RustSyntaxProvider {
             targets.push(Target {
                 id: id.clone(),
                 kind,
+                visibility: associated_item_visibility(&item, absent_visibility),
                 name,
                 parent: Some(parent.clone()),
                 location: Some(location(path, item.syntax())?),
@@ -481,6 +487,39 @@ fn documentation_text(item: &impl HasDocComments) -> Option<String> {
         }
     }));
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn item_visibility(item: &ast::Item) -> TargetVisibility {
+    declared_visibility(
+        item.syntax().children().find_map(ast::Visibility::cast),
+        TargetVisibility::Private,
+    )
+}
+
+fn associated_item_visibility(
+    item: &ast::AssocItem,
+    absent_visibility: TargetVisibility,
+) -> TargetVisibility {
+    declared_visibility(
+        item.syntax().children().find_map(ast::Visibility::cast),
+        absent_visibility,
+    )
+}
+
+fn declared_visibility(
+    visibility: Option<ast::Visibility>,
+    absent_visibility: TargetVisibility,
+) -> TargetVisibility {
+    visibility.map_or_else(
+        || absent_visibility,
+        |visibility| {
+            if visibility.syntax().text() == "pub" {
+                TargetVisibility::Public
+            } else {
+                TargetVisibility::Restricted
+            }
+        },
+    )
 }
 
 fn configuration_predicates(item: &impl HasAttrs) -> Vec<String> {

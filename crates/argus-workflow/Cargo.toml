@@ -1,0 +1,30 @@
+[package]
+name = "argus-workflow"
+description = "Langchart integration and bounded review workflows for Argus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+argus-core = { path = "../argus-core" }
+argus-evidence = { path = "../argus-evidence" }
+argus-policies = { path = "../argus-policies" }
+argus-provider = { path = "../argus-provider" }
+argus-storage = { path = "../argus-storage" }
+async-trait.workspace = true
+blake3.workspace = true
+langchart-checkpoint-redb.workspace = true
+langchart-adapters.workspace = true
+langchart-model.workspace = true
+langchart-runtime.workspace = true
+redb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

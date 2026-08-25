@@ -1,7 +1,10 @@
-use argus_core::{ConfigurationId, RunId, SnapshotId, WorkItemId};
+use argus_core::{
+    AdjudicationState, ConfigurationId, FindingId, HumanAdjudication, RunId, SnapshotId, WorkItemId,
+};
+use argus_provider::{ProviderHealth, ProviderIdentity, ProviderTelemetry};
 use argus_storage::{
-    CoverageKey, DurableQueue, QueueEventKind, QueueState, QueueWork, RunRecord, RunState,
-    finalize_bundle, finalize_run_bundle,
+    CoverageKey, DurableQueue, OutcomeWrite, QueueEventKind, QueueState, QueueWork, RunRecord,
+    RunState, finalize_bundle, finalize_run_bundle,
 };
 
 fn work(name: &str) -> QueueWork {
@@ -21,6 +24,53 @@ fn run(name: &str, timestamp: u64) -> RunRecord {
         updated_at_millis: timestamp,
         finalized_at_millis: None,
     }
+}
+
+fn adjudication(run: RunId, revision: u64, state: AdjudicationState) -> HumanAdjudication {
+    HumanAdjudication {
+        run,
+        finding: FindingId::derive([b"seeded-documentation-defect".as_slice()]),
+        revision,
+        state,
+        expected_issue: (state == AdjudicationState::Accepted)
+            .then(|| "documentation-v1:missing-errors".to_owned()),
+        reviewer: "reviewer@example.test".to_owned(),
+        rationale: "Compared the finding with the seeded source and rubric.".to_owned(),
+        recorded_at_millis: revision,
+    }
+}
+
+#[test]
+fn human_adjudications_are_append_only_revisioned_and_restart_safe() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("state.redb");
+    let audit_run = run("adjudicated-run", 1);
+    let queue = DurableQueue::open(&path).unwrap();
+    queue.create_run(&audit_run).unwrap();
+
+    let first = adjudication(audit_run.id.clone(), 1, AdjudicationState::Deferred);
+    queue.record_adjudication(&first, None).unwrap();
+    assert!(queue.record_adjudication(&first, None).is_err());
+
+    let second = adjudication(audit_run.id.clone(), 2, AdjudicationState::Accepted);
+    assert!(queue.record_adjudication(&second, None).is_err());
+    queue.record_adjudication(&second, Some(1)).unwrap();
+    drop(queue);
+
+    let reopened = DurableQueue::open(&path).unwrap();
+    assert_eq!(
+        reopened.adjudications(&audit_run.id).unwrap(),
+        vec![first.clone(), second.clone()]
+    );
+    assert_eq!(
+        reopened.run_records(&audit_run.id).unwrap().adjudications,
+        vec![first, second]
+    );
+    let destination = temporary.path().join("adjudicated-bundle");
+    let manifest = finalize_run_bundle(&reopened, &audit_run.id, &destination, 3).unwrap();
+    assert_eq!(manifest.adjudication_records, 2);
+    let exported = std::fs::read_to_string(destination.join("adjudications.jsonl")).unwrap();
+    assert_eq!(exported.lines().count(), 2);
 }
 
 #[test]
@@ -64,6 +114,33 @@ fn outcome_replay_is_idempotent_and_conflicts_are_rejected() {
 }
 
 #[test]
+fn inbox_replay_returns_the_original_effective_outcome() {
+    let temporary = tempfile::tempdir().unwrap();
+    let queue = DurableQueue::open(&temporary.path().join("state.redb")).unwrap();
+    let item = work("inbox-replay");
+    queue.admit(&item).unwrap();
+    queue.lease_next(0, 100).unwrap().unwrap();
+
+    let inserted = queue
+        .record_or_get(&item.id, "logical-key", b"first-result")
+        .unwrap();
+    assert!(matches!(inserted, OutcomeWrite::Inserted(_)));
+
+    let replayed = queue
+        .record_or_get(&item.id, "logical-key", b"changed-replay-proposal")
+        .unwrap();
+    let OutcomeWrite::Existing(existing) = replayed else {
+        panic!("replay must return the effective outcome");
+    };
+    assert_eq!(existing.payload, b"first-result");
+    assert_eq!(queue.outcome("logical-key").unwrap().unwrap(), existing);
+    assert_eq!(
+        queue.events().unwrap().last().unwrap().kind,
+        QueueEventKind::Succeeded
+    );
+}
+
+#[test]
 fn queue_lease_order_is_deterministic_by_work_id() {
     let temporary = tempfile::tempdir().unwrap();
     let queue = DurableQueue::open(&temporary.path().join("state.redb")).unwrap();
@@ -79,6 +156,118 @@ fn queue_lease_order_is_deterministic_by_work_id() {
         second.id
     };
     assert_eq!(leased.id, expected);
+}
+
+#[test]
+fn partitioned_lease_does_not_consume_unrelated_work() {
+    let temporary = tempfile::tempdir().unwrap();
+    let queue = DurableQueue::open(&temporary.path().join("state.redb")).unwrap();
+    let documentation_run = run("documentation-run", 0);
+    let other_run = run("other-run", 0);
+    queue.create_run(&documentation_run).unwrap();
+    queue.create_run(&other_run).unwrap();
+    let documentation_coverage = CoverageKey {
+        snapshot: documentation_run.snapshot.to_string(),
+        configuration: documentation_run.configuration.to_string(),
+        adapter: "rust".to_owned(),
+        target_kind: "callable".to_owned(),
+        policy: "documentation-public-api@1".to_owned(),
+    };
+    let desired = QueueWork::pending_for(
+        WorkItemId::derive([b"documentation-work".as_slice()]),
+        Vec::new(),
+        documentation_run.id.clone(),
+        documentation_coverage.clone(),
+    );
+    let wrong_policy = QueueWork::pending_for(
+        WorkItemId::derive([b"wrong-policy".as_slice()]),
+        Vec::new(),
+        documentation_run.id.clone(),
+        CoverageKey {
+            policy: "correctness@1".to_owned(),
+            ..documentation_coverage.clone()
+        },
+    );
+    let wrong_run = QueueWork::pending_for(
+        WorkItemId::derive([b"wrong-run".as_slice()]),
+        Vec::new(),
+        other_run.id,
+        documentation_coverage,
+    );
+    queue
+        .admit_batch(
+            &[wrong_policy.clone(), wrong_run.clone(), desired.clone()],
+            0,
+        )
+        .unwrap();
+
+    let leased = queue
+        .lease_next_for_partition(
+            0,
+            100,
+            &documentation_run.id,
+            "rust",
+            "documentation-public-api@1",
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(leased.id, desired.id);
+    assert_eq!(
+        queue.get(&wrong_policy.id).unwrap().unwrap().state,
+        QueueState::Pending
+    );
+    assert_eq!(
+        queue.get(&wrong_run.id).unwrap().unwrap().state,
+        QueueState::Pending
+    );
+}
+
+#[test]
+fn run_records_are_scoped_and_include_referenced_artifacts() {
+    let temporary = tempfile::tempdir().unwrap();
+    let queue = DurableQueue::open(&temporary.path().join("state.redb")).unwrap();
+    let selected_run = run("selected-report-run", 0);
+    let unrelated_run = run("unrelated-report-run", 0);
+    queue.create_run(&selected_run).unwrap();
+    queue.create_run(&unrelated_run).unwrap();
+    let selected = QueueWork::pending_for(
+        WorkItemId::derive([b"selected-report-work".as_slice()]),
+        Vec::new(),
+        selected_run.id.clone(),
+        CoverageKey::unspecified(),
+    );
+    let unrelated = QueueWork::pending_for(
+        WorkItemId::derive([b"unrelated-report-work".as_slice()]),
+        Vec::new(),
+        unrelated_run.id,
+        CoverageKey::unspecified(),
+    );
+    queue
+        .admit_batch(&[selected.clone(), unrelated], 0)
+        .unwrap();
+    let leased = queue.lease_next(1, 100).unwrap().unwrap();
+    if leased.id != selected.id {
+        queue.cancel(&leased.id, 2).unwrap();
+        assert_eq!(queue.lease_next(3, 100).unwrap().unwrap().id, selected.id);
+    }
+    let artifact = queue
+        .store_artifact("report-fixture", b"assessment")
+        .unwrap();
+    queue
+        .record_or_get_with_artifacts(
+            &selected.id,
+            "selected-outcome",
+            b"outcome",
+            std::slice::from_ref(&artifact.reference),
+        )
+        .unwrap();
+
+    let records = queue.run_records(&selected_run.id).unwrap();
+    assert_eq!(records.work.len(), 1);
+    assert_eq!(records.work[0].id, selected.id);
+    assert_eq!(records.outcomes.len(), 1);
+    assert_eq!(records.artifacts, vec![artifact]);
 }
 
 #[test]
@@ -199,14 +388,28 @@ fn finalization_atomically_publishes_valid_portable_records() {
     let manifest = finalize_bundle(&queue, &destination).unwrap();
     assert!(destination.is_dir());
     assert!(!temporary.path().join("bundle.argus-tmp").exists());
+    assert_eq!(
+        manifest.schema_version,
+        argus_storage::BUNDLE_SCHEMA_VERSION
+    );
+    assert_eq!(manifest.schema_version, 1);
     assert_eq!(manifest.work_records, 1);
     assert_eq!(manifest.outcome_records, 1);
+    assert_eq!(manifest.artifact_records, 0);
+    assert_eq!(manifest.adjudication_records, 0);
     assert!(manifest.event_records >= 3);
 
     let manifest_json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(destination.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest_json["schema_version"], 1);
     assert_eq!(manifest_json["work_records"], 1);
-    for name in ["work.jsonl", "events.jsonl", "outcomes.jsonl"] {
+    for name in [
+        "work.jsonl",
+        "events.jsonl",
+        "outcomes.jsonl",
+        "artifacts.jsonl",
+        "adjudications.jsonl",
+    ] {
         let contents = std::fs::read_to_string(destination.join(name)).unwrap();
         assert!(
             contents
@@ -330,8 +533,17 @@ fn run_bundle_excludes_records_owned_by_other_runs() {
     }
     for index in 0..2 {
         let leased = queue.lease_next(index, 100).unwrap().unwrap();
+        let owner = queue.get(&leased.id).unwrap().unwrap().run;
+        let artifact = queue
+            .store_artifact("fixture-assessment.v1", owner.as_str().as_bytes())
+            .unwrap();
         queue
-            .complete(&leased.id, &format!("outcome-{index}"), b"pass")
+            .record_or_get_with_artifacts(
+                &leased.id,
+                &format!("outcome-{index}"),
+                b"pass",
+                &[artifact.reference],
+            )
             .unwrap();
     }
 
@@ -340,6 +552,11 @@ fn run_bundle_excludes_records_owned_by_other_runs() {
     assert_eq!(manifest.run_id, Some(run_a.id.clone()));
     assert_eq!(manifest.work_records, 1);
     assert_eq!(manifest.outcome_records, 1);
+    assert_eq!(manifest.artifact_records, 1);
+    let artifact_lines = std::fs::read_to_string(destination.join("artifacts.jsonl")).unwrap();
+    let bundled_artifact: argus_storage::StoredArtifact =
+        serde_json::from_str(artifact_lines.trim()).unwrap();
+    assert_eq!(bundled_artifact.payload, run_a.id.as_str().as_bytes());
     assert_eq!(
         queue
             .get_run(&run_a.id)
@@ -390,4 +607,138 @@ fn large_batch_admission_replays_and_survives_restart() {
     assert_eq!(telemetry.status.total(), 20_000);
     assert_eq!(telemetry.event_count, 20_000);
     assert!(telemetry.database_bytes > 0);
+}
+
+#[test]
+fn provider_telemetry_replaces_session_snapshots_and_aggregates_after_restart() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("state.redb");
+    let queue = DurableQueue::open(&path).unwrap();
+    let provider = ProviderIdentity {
+        provider: "fixture-local".to_owned(),
+        provider_version: "1".to_owned(),
+        model: "reviewer".to_owned(),
+        model_version: "pinned".to_owned(),
+    };
+    let mut first = ProviderTelemetry {
+        last_health: Some(ProviderHealth::Ready),
+        requests: 1,
+        successes: 1,
+        input_tokens: 10,
+        output_tokens: 2,
+        ..ProviderTelemetry::default()
+    };
+    queue
+        .publish_provider_telemetry("session-1", &provider, &first, 1)
+        .unwrap();
+    first.requests = 2;
+    first.successes = 2;
+    first.input_tokens = 20;
+    first.output_tokens = 4;
+    queue
+        .publish_provider_telemetry("session-1", &provider, &first, 2)
+        .unwrap();
+    let second = ProviderTelemetry {
+        last_health: Some(ProviderHealth::Degraded),
+        requests: 3,
+        successes: 2,
+        failures: 1,
+        input_tokens: 30,
+        output_tokens: 6,
+        estimated_cost_microusd: 25,
+        ..ProviderTelemetry::default()
+    };
+    queue
+        .publish_provider_telemetry("session-2", &provider, &second, 3)
+        .unwrap();
+    drop(queue);
+
+    let reopened = DurableQueue::open(&path).unwrap();
+    let providers = reopened.provider_telemetry().unwrap();
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0].sessions, 2);
+    assert_eq!(providers[0].telemetry.requests, 5);
+    assert_eq!(providers[0].telemetry.successes, 4);
+    assert_eq!(providers[0].telemetry.failures, 1);
+    assert_eq!(providers[0].telemetry.input_tokens, 50);
+    assert_eq!(providers[0].telemetry.output_tokens, 10);
+    assert_eq!(providers[0].telemetry.estimated_cost_microusd, 25);
+    assert_eq!(
+        providers[0].telemetry.last_health,
+        Some(ProviderHealth::Degraded)
+    );
+}
+
+#[test]
+fn content_addressed_artifacts_replay_and_survive_restart() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("review.redb");
+    let reference = {
+        let queue = DurableQueue::open(&path).unwrap();
+        let first = queue
+            .store_artifact("documentation-assessment.v1", br#"{"state":"passed"}"#)
+            .unwrap();
+        let replay = queue
+            .store_artifact("documentation-assessment.v1", br#"{"state":"passed"}"#)
+            .unwrap();
+        assert_eq!(first, replay);
+        assert!(
+            queue
+                .store_artifact("Documentation Assessment", b"invalid")
+                .is_err()
+        );
+        first.reference
+    };
+
+    let reopened = DurableQueue::open(&path).unwrap();
+    let artifact = reopened.artifact(&reference).unwrap().unwrap();
+    assert_eq!(artifact.reference, reference);
+    assert_eq!(artifact.payload, br#"{"state":"passed"}"#);
+    assert!(
+        reopened
+            .artifact("artifact:missing:value")
+            .unwrap()
+            .is_none()
+    );
+    let item = work("dangling-artifact");
+    reopened.admit(&item).unwrap();
+    reopened.lease_next(0, 100).unwrap().unwrap();
+    assert!(
+        reopened
+            .record_or_get_with_artifacts(
+                &item.id,
+                "dangling-outcome",
+                b"outcome",
+                &["artifact:fixture.v1:missing".to_owned()],
+            )
+            .is_err()
+    );
+    assert_eq!(
+        reopened.get(&item.id).unwrap().unwrap().state,
+        QueueState::Leased
+    );
+}
+
+#[test]
+fn schema_one_initialization_adds_all_current_tables() {
+    const METADATA: redb::TableDefinition<&str, u64> = redb::TableDefinition::new("metadata_v1");
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("state.redb");
+    let database = redb::Database::create(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut metadata = write.open_table(METADATA).unwrap();
+        metadata.insert("schema_version", 1).unwrap();
+        metadata.insert("event_sequence", 0).unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let queue = DurableQueue::open(&path).unwrap();
+    assert!(queue.provider_telemetry().unwrap().is_empty());
+    let artifact = queue.store_artifact("fixture.v1", b"payload").unwrap();
+    assert_eq!(
+        queue.artifact(&artifact.reference).unwrap().unwrap(),
+        artifact
+    );
 }

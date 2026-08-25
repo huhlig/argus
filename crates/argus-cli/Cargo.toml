@@ -12,12 +12,18 @@ path = "src/main.rs"
 
 [dependencies]
 argus-core = { path = "../argus-core" }
+argus-evidence = { path = "../argus-evidence" }
 argus-language = { path = "../argus-language" }
+argus-policies = { path = "../argus-policies" }
+argus-provider = { path = "../argus-provider" }
+argus-report = { path = "../argus-report" }
 argus-rust = { path = "../argus-rust" }
 argus-snapshot = { path = "../argus-snapshot" }
 argus-storage = { path = "../argus-storage" }
+argus-workflow = { path = "../argus-workflow" }
 serde_json.workspace = true
 serde.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -22,6 +22,18 @@ pub enum TargetKind {
     LanguageSpecific { language: String, kind: String },
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetVisibility {
+    Public,
+    Restricted,
+    Private,
+    Inherited,
+    NotApplicable,
+    #[default]
+    Unknown,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityStatus {

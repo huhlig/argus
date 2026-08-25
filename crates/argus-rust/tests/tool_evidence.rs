@@ -32,6 +32,7 @@ fn target(name: &str) -> Target {
         kind: TargetKind::Portable {
             kind: PortableTargetKind::Test,
         },
+        visibility: argus_core::TargetVisibility::Unknown,
         name: name.to_owned(),
         parent: None,
         location: None,

@@ -95,6 +95,7 @@ impl LanguageAdapter for SyntheticAdapter {
                 kind: TargetKind::Portable {
                     kind: PortableTargetKind::Module,
                 },
+                visibility: argus_core::TargetVisibility::Unknown,
                 name: format!("{}-module", self.name),
                 parent: None,
                 location: Some(SourceLocation {
@@ -112,6 +113,7 @@ impl LanguageAdapter for SyntheticAdapter {
                 }],
                 diagnostic: None,
             }],
+            evidence: Vec::new(),
             relations: vec![],
             conflicts: (self.mode == SyntheticMode::Conflict)
                 .then(|| crate::ConflictRecord {

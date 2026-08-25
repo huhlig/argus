@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 argus-core = { path = "../argus-core" }
+argus-provider = { path = "../argus-provider" }
 redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "langchart-llm-watsonx"
+description = "IBM watsonx.ai LlmAdapter for Langchart with IAM authentication"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+langchart-adapters.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url = "2"
+
+[dev-dependencies]
+langchart-model.workspace = true

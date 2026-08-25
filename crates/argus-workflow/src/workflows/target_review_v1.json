@@ -1,0 +1,101 @@
+{
+  "schema_version": "1.0.0",
+  "id": "argus.target-review",
+  "version": "1.0.0",
+  "name": "Argus Target Review",
+  "description": "A bounded target-policy semantic assessment.",
+  "inputs": [],
+  "outputs": [],
+  "data_schema": { "fields": {} },
+  "policy": {},
+  "agents": [],
+  "initial": "prepare_evidence",
+  "states": [
+    {
+      "id": "prepare_evidence", "name": "Prepare Evidence", "type": "agentic",
+      "agent": { "id": "argus.prepare-evidence", "version": "1.0.0" },
+      "prompt": "Resolve the immutable evidence package reference for this work item.",
+      "limits": { "max_turns": 1, "max_tool_calls": 0, "timeout": 60, "max_tokens_total": 1 },
+      "on": { "evidence.prepared": [{ "target": "primary_review", "priority": 0, "actions": [] }] }
+    },
+    {
+      "id": "primary_review", "name": "Primary Review", "type": "agentic",
+      "agent": { "id": "argus.review", "version": "1.0.0" },
+      "prompt": "Assess only the target and bounded evidence. Return a declared review event.",
+      "model": { "profile": "local_primary", "model": null, "temperature": 0.0, "max_tokens": 4096 },
+      "limits": { "max_turns": 3, "max_tool_calls": 0, "timeout": 300, "max_tokens_total": 50000 },
+      "on": {
+        "review.pass": [{ "target": "record_outcome", "priority": 0, "actions": [] }],
+        "review.suggestion": [{ "target": "record_outcome", "priority": 0, "actions": [] }],
+        "review.unable_to_verify": [{ "target": "evaluate_evidence_request", "priority": 0, "actions": [] }],
+        "review.candidate_found": [{ "target": "record_candidates", "priority": 0, "actions": [] }],
+        "review.failed": [{ "target": "record_failure", "priority": 0, "actions": [] }]
+      }
+    },
+    {
+      "id": "evaluate_evidence_request", "name": "Evaluate Evidence Request", "type": "agentic",
+      "agent": { "id": "argus.evaluate-evidence-request", "version": "1.0.0" },
+      "prompt": "Apply deterministic request, size, relationship-depth, and policy limits.",
+      "limits": { "max_turns": 1, "max_tool_calls": 0, "timeout": 60, "max_tokens_total": 1 },
+      "on": {
+        "request.allowed": [{ "target": "expand_evidence", "priority": 0, "actions": [] }],
+        "request.denied": [{ "target": "record_unable_to_verify", "priority": 0, "actions": [] }],
+        "budget.exhausted": [{ "target": "record_unable_to_verify", "priority": 0, "actions": [] }]
+      }
+    },
+    {
+      "id": "expand_evidence", "name": "Expand Evidence", "type": "agentic",
+      "agent": { "id": "argus.expand-evidence", "version": "1.0.0" },
+      "prompt": "Resolve only the approved evidence request and record a new evidence revision.",
+      "limits": { "max_turns": 1, "max_tool_calls": 0, "timeout": 60, "max_tokens_total": 1 },
+      "on": { "evidence.expanded": [{ "target": "primary_review", "priority": 0, "actions": [] }] }
+    },
+    {
+      "id": "record_candidates", "name": "Record Candidates", "type": "agentic",
+      "agent": { "id": "argus.record-candidates", "version": "1.0.0" },
+      "prompt": "Canonicalize and durably record candidate findings.",
+      "limits": { "max_turns": 1, "max_tool_calls": 0, "timeout": 60, "max_tokens_total": 1 },
+      "on": { "candidates.recorded": [{ "target": "schedule_finding_work", "priority": 0, "actions": [] }] }
+    },
+    {
+      "id": "schedule_finding_work", "name": "Schedule Finding Work", "type": "agentic",
+      "agent": { "id": "argus.schedule-finding-work", "version": "1.0.0" },
+      "prompt": "Idempotently schedule one verification work item per candidate.",
+      "limits": { "max_turns": 1, "max_tool_calls": 0, "timeout": 60, "max_tokens_total": 1 },
+      "on": { "finding_work.scheduled": [{ "target": "record_outcome", "priority": 0, "actions": [] }] }
+    },
+    {
+      "id": "record_unable_to_verify", "name": "Record Unable To Verify", "type": "agentic",
+      "agent": { "id": "argus.record-unable-to-verify", "version": "1.0.0" },
+      "prompt": "Create an unable-to-verify assessment with its explicit reason.",
+      "limits": { "max_turns": 1, "max_tool_calls": 0, "timeout": 60, "max_tokens_total": 1 },
+      "on": { "unable_to_verify.recorded": [{ "target": "record_outcome", "priority": 0, "actions": [] }] }
+    },
+    {
+      "id": "record_failure", "name": "Record Failure", "type": "agentic",
+      "agent": { "id": "argus.record-failure", "version": "1.0.0" },
+      "prompt": "Record the provider or workflow failure without creating a pass assessment.",
+      "limits": { "max_turns": 1, "max_tool_calls": 0, "timeout": 60, "max_tokens_total": 1 },
+      "on": { "failure.recorded": [{ "target": "failed", "priority": 0, "actions": [] }] }
+    },
+    {
+      "id": "record_outcome", "name": "Record Outcome", "type": "agentic",
+      "agent": { "id": "argus.record-outcome", "version": "1.0.0" },
+      "prompt": "Conditionally commit or retrieve the outcome using the Argus durable inbox.",
+      "limits": { "max_turns": 1, "max_tool_calls": 0, "timeout": 60, "max_tokens_total": 1 },
+      "output_schemas": {
+        "outcome.recorded": {
+          "fields": {
+            "result_ref": "string",
+            "disposition": "string",
+            "storage_key": "string"
+          }
+        }
+      },
+      "on": { "outcome.recorded": [{ "target": "complete", "priority": 0, "actions": [] }] }
+    },
+    { "id": "complete", "name": "Complete", "type": "final", "on": {} },
+    { "id": "failed", "name": "Failed", "type": "final", "on": {} }
+  ],
+  "_editor": null
+}

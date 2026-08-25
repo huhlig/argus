@@ -1,7 +1,8 @@
 use crate::{CargoMetadataAdapter, RustEdition, RustSyntaxProvider};
 use argus_core::{
-    CapabilityStatus, ConfigurationId, InventoryState, Relation, RelationId, RelationProvenance,
-    SourcePath, Target, TargetId, TargetKind,
+    CapabilityStatus, ConfigurationId, EvidenceId, EvidenceKind, EvidenceOrigin,
+    EvidenceProvenance, EvidenceRecord, InventoryState, Relation, RelationId, RelationProvenance,
+    ResolutionQuality, SourcePath, Target, TargetId, TargetKind,
 };
 use argus_language::{
     AdapterIdentity, AdapterInventory, AdapterProvider, CollectingInventorySink, ConflictRecord,
@@ -64,7 +65,9 @@ impl RustWorkspaceAdapter {
                 .syntax
                 .inventory_crate(source, &path, Some(cargo_target))?;
             sink.partition(syntax_partition(&path, &syntax))?;
+            let documentation = syntax_documentation_evidence(&syntax, &self.configuration);
             let mut crate_relations = Vec::new();
+            let mut new_targets = BTreeSet::new();
             for target in syntax.targets {
                 if let Some(parent) = &target.parent {
                     crate_relations.push(contains_relation(
@@ -74,6 +77,7 @@ impl RustWorkspaceAdapter {
                     ));
                 }
                 if seen_targets.insert(target.id.clone()) {
+                    new_targets.insert(target.id.clone());
                     sink.target(target)?;
                 } else {
                     sink.conflict(ConflictRecord {
@@ -84,6 +88,15 @@ impl RustWorkspaceAdapter {
                     })?;
                 }
             }
+            for evidence in documentation {
+                if evidence
+                    .target
+                    .as_ref()
+                    .is_some_and(|target| new_targets.contains(target))
+                {
+                    sink.evidence(evidence)?;
+                }
+            }
             for relation in crate_relations {
                 if seen_relations.insert(relation.id.clone()) {
                     sink.relation(relation)?;
@@ -92,6 +105,49 @@ impl RustWorkspaceAdapter {
         }
         sink.finish()
     }
+}
+
+fn syntax_documentation_evidence(
+    syntax: &crate::RustSyntaxInventory,
+    configuration: &ConfigurationId,
+) -> Vec<EvidenceRecord> {
+    syntax
+        .targets
+        .iter()
+        .map(|target| {
+            let documentation = syntax.documentation.get(&target.id);
+            let presence = if documentation.is_some() {
+                b"present".as_slice()
+            } else {
+                b"absent".as_slice()
+            };
+            EvidenceRecord {
+                id: EvidenceId::derive([
+                    b"rust-syntax-documentation".as_slice(),
+                    target.id.as_str().as_bytes(),
+                    presence,
+                    documentation.map_or(b"".as_slice(), |text| text.as_bytes()),
+                ]),
+                kind: EvidenceKind::Documentation,
+                origin: EvidenceOrigin::Direct,
+                target: Some(target.id.clone()),
+                location: target.location.clone(),
+                summary: if documentation.is_some() {
+                    format!("Rust documentation for {}", target.name)
+                } else {
+                    format!("No Rust documentation is attached to {}", target.name)
+                },
+                detail: documentation.cloned(),
+                provenance: EvidenceProvenance {
+                    provider: "ra_ap_syntax".to_owned(),
+                    provider_version: "0.0.270".to_owned(),
+                    configuration: configuration.clone(),
+                    ingest_only: true,
+                    resolution: ResolutionQuality::Exact,
+                },
+            }
+        })
+        .collect()
 }
 
 impl LanguageAdapter for RustWorkspaceAdapter {

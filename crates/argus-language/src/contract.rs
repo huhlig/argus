@@ -1,4 +1,4 @@
-use argus_core::{CapabilityStatus, Relation, SnapshotId, SourcePath, Target};
+use argus_core::{CapabilityStatus, EvidenceRecord, Relation, SnapshotId, SourcePath, Target};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -53,6 +53,9 @@ pub trait LanguageAdapter: Send + Sync {
         for target in inventory.targets {
             sink.target(target)?;
         }
+        for evidence in inventory.evidence {
+            sink.evidence(evidence)?;
+        }
         for relation in inventory.relations {
             sink.relation(relation)?;
         }
@@ -71,6 +74,9 @@ pub trait InventorySink {
     ) -> Result<(), argus_core::ArgusError>;
     fn partition(&mut self, partition: DiscoveryPartition) -> Result<(), argus_core::ArgusError>;
     fn target(&mut self, target: Target) -> Result<(), argus_core::ArgusError>;
+    fn evidence(&mut self, _evidence: EvidenceRecord) -> Result<(), argus_core::ArgusError> {
+        Ok(())
+    }
     fn relation(&mut self, relation: Relation) -> Result<(), argus_core::ArgusError>;
     fn conflict(&mut self, conflict: ConflictRecord) -> Result<(), argus_core::ArgusError>;
     fn finish(&mut self) -> Result<(), argus_core::ArgusError>;
@@ -82,6 +88,7 @@ pub struct CollectingInventorySink {
     snapshot: Option<SnapshotId>,
     partitions: Vec<DiscoveryPartition>,
     targets: Vec<Target>,
+    evidence: Vec<EvidenceRecord>,
     relations: Vec<Relation>,
     conflicts: Vec<ConflictRecord>,
 }
@@ -97,6 +104,7 @@ impl CollectingInventorySink {
             })?,
             partitions: self.partitions,
             targets: self.targets,
+            evidence: self.evidence,
             relations: self.relations,
             conflicts: self.conflicts,
         })
@@ -134,6 +142,11 @@ impl InventorySink for CollectingInventorySink {
         Ok(())
     }
 
+    fn evidence(&mut self, evidence: EvidenceRecord) -> Result<(), argus_core::ArgusError> {
+        self.evidence.push(evidence);
+        Ok(())
+    }
+
     fn conflict(&mut self, conflict: ConflictRecord) -> Result<(), argus_core::ArgusError> {
         self.conflicts.push(conflict);
         Ok(())
@@ -164,6 +177,8 @@ pub struct AdapterInventory {
     pub snapshot: SnapshotId,
     pub partitions: Vec<DiscoveryPartition>,
     pub targets: Vec<Target>,
+    #[serde(default)]
+    pub evidence: Vec<EvidenceRecord>,
     pub relations: Vec<Relation>,
     pub conflicts: Vec<ConflictRecord>,
 }
@@ -202,6 +217,24 @@ pub fn normalize_inventory(
             ));
         }
     }
+    let mut evidence_ids = BTreeSet::new();
+    for evidence in &inventory.evidence {
+        evidence.validate()?;
+        if !evidence_ids.insert(evidence.id.clone())
+            || evidence
+                .target
+                .as_ref()
+                .is_some_and(|target| !ids.contains(target))
+            || evidence
+                .location
+                .as_ref()
+                .is_some_and(|location| !source.contains(&location.path))
+        {
+            return Err(argus_core::ArgusError::invariant(
+                "adapter evidence identity or source mapping is invalid",
+            ));
+        }
+    }
     for partition in &inventory.partitions {
         if partition.name.trim().is_empty()
             || matches!(
@@ -216,6 +249,7 @@ pub fn normalize_inventory(
     }
     inventory.targets.sort_by(|a, b| a.id.cmp(&b.id));
     inventory.relations.sort_by(|a, b| a.id.cmp(&b.id));
+    inventory.evidence.sort_by(|a, b| a.id.cmp(&b.id));
     inventory.partitions.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(inventory)
 }

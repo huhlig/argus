@@ -8,6 +8,7 @@ fn target(name: &str, kind: PortableTargetKind, inventory: InventoryState) -> Ta
     Target {
         id: TargetId::derive([name.as_bytes()]),
         kind: TargetKind::Portable { kind },
+        visibility: argus_core::TargetVisibility::Unknown,
         name: name.to_owned(),
         parent: None,
         location: None,

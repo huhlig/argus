@@ -8,6 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 argus-core = { path = "../argus-core" }
+argus-policies = { path = "../argus-policies" }
+argus-report = { path = "../argus-report" }
+serde_json.workspace = true
 
 [lints]
 workspace = true

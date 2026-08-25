@@ -4,10 +4,15 @@ members = [
     "crates/argus-core",
     "crates/argus-evidence",
     "crates/argus-language",
+    "crates/argus-policies",
+    "crates/argus-provider",
+    "crates/argus-report",
     "crates/argus-rust",
     "crates/argus-snapshot",
     "crates/argus-storage",
     "crates/argus-test-support",
+    "crates/argus-workflow",
+    "crates/langchart-llm-watsonx",
 ]
 resolver = "2"
 
@@ -25,6 +30,16 @@ proptest = "1.7"
 tempfile = "3.27"
 redb = "4.2"
 ra_ap_syntax = "=0.0.270"
+async-trait = "0.1"
+langchart-model = { git = "https://github.com/huhlig/collaborite.git", rev = "c5cc69b699b2bf32b0372a394cde77c9182be0de" }
+langchart-runtime = { git = "https://github.com/huhlig/collaborite.git", rev = "c5cc69b699b2bf32b0372a394cde77c9182be0de" }
+langchart-adapters = { git = "https://github.com/huhlig/collaborite.git", rev = "c5cc69b699b2bf32b0372a394cde77c9182be0de" }
+langchart-checkpoint-redb = { git = "https://github.com/huhlig/collaborite.git", rev = "c5cc69b699b2bf32b0372a394cde77c9182be0de" }
+langchart-llm-generic = { git = "https://github.com/huhlig/collaborite.git", rev = "c5cc69b699b2bf32b0372a394cde77c9182be0de" }
+langchart-llm-watsonx = { path = "crates/langchart-llm-watsonx" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+url = "2"
+thiserror = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

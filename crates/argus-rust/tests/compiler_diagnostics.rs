@@ -36,6 +36,7 @@ fn target(name: &str, kind: PortableTargetKind, start: u64, end: u64) -> Target 
     Target {
         id: TargetId::derive([name.as_bytes()]),
         kind: TargetKind::Portable { kind },
+        visibility: argus_core::TargetVisibility::Unknown,
         name: name.to_owned(),
         parent: None,
         location: Some(SourceLocation {

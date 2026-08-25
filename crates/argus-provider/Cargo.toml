@@ -1,0 +1,23 @@
+[package]
+name = "argus-provider"
+description = "Governed model-provider contracts, privacy policy, and budgets for Argus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+langchart-adapters.workspace = true
+langchart-llm-generic.workspace = true
+langchart-llm-watsonx.workspace = true
+langchart-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+
+[lints]
+workspace = true

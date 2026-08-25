@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "argus-seeded-documentation",
+  "version": "1.0.0",
+  "policy_version": "documentation-public-api@1",
+  "expected_issues": [
+    {
+      "id": "missing-errors",
+      "target": "d3d6851088943bc23736a36b3f78ff51a60a0b359a00f16904ebab9c27afe663",
+      "dimensions": ["errors"]
+    },
+    {
+      "id": "inaccurate-behavior",
+      "target": "b3102b0b842e0b626f0d8936b03d4472f3543ef45e6633f51a1f5cf055053bf5",
+      "dimensions": ["behavior", "accuracy"]
+    }
+  ],
+  "known_clean_targets": [
+    "b117eb033c0500c78df2355e7adfebb723f1bc96b40cae9e7970968c3e7fe547"
+  ]
+}

@@ -1,0 +1,22 @@
+[package]
+name = "argus-report"
+description = "Markdown and structured report generation for Argus audits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+argus-core = { path = "../argus-core" }
+argus-policies = { path = "../argus-policies" }
+argus-storage = { path = "../argus-storage" }
+argus-workflow = { path = "../argus-workflow" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+argus-provider = { path = "../argus-provider" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

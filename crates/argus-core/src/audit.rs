@@ -1,7 +1,7 @@
 use crate::{
     AdjudicationState, ApplicabilityState, AssessmentId, AssessmentState, AttemptId, Capability,
     ExecutionState, FindingId, InventoryState, PolicyId, RelationId, ResolutionQuality,
-    SourceLocation, TargetId, TargetKind, VerificationState, WorkItemId,
+    SourceLocation, TargetId, TargetKind, TargetVisibility, VerificationState, WorkItemId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 pub struct Target {
     pub id: TargetId,
     pub kind: TargetKind,
+    #[serde(default)]
+    pub visibility: TargetVisibility,
     pub name: String,
     pub parent: Option<TargetId>,
     pub location: Option<SourceLocation>,
@@ -133,6 +135,46 @@ pub struct Finding {
     pub confidence: Confidence,
     pub location: Option<SourceLocation>,
     pub recommendation: Option<Recommendation>,
+}
+
+/// Append-only human decision about one candidate finding.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HumanAdjudication {
+    pub run: crate::RunId,
+    pub finding: FindingId,
+    /// Monotonic revision for this run/finding pair, beginning at one.
+    pub revision: u64,
+    pub state: AdjudicationState,
+    /// Versioned corpus issue matched by the reviewer, when applicable.
+    pub expected_issue: Option<String>,
+    pub reviewer: String,
+    pub rationale: String,
+    pub recorded_at_millis: u64,
+}
+
+impl HumanAdjudication {
+    pub fn validate(&self) -> Result<(), crate::ArgusError> {
+        if self.revision == 0
+            || self.state == AdjudicationState::Unreviewed
+            || self.reviewer.trim().is_empty()
+            || self.reviewer.trim() != self.reviewer
+            || self.rationale.trim().is_empty()
+            || self
+                .expected_issue
+                .as_deref()
+                .is_some_and(|issue| issue.trim().is_empty() || issue.trim() != issue)
+        {
+            return Err(crate::ArgusError::invalid_input(
+                "human adjudication is incomplete or not normalized",
+            ));
+        }
+        if self.state != AdjudicationState::Accepted && self.expected_issue.is_some() {
+            return Err(crate::ArgusError::invariant(
+                "only accepted findings can match an expected issue",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// In-memory aggregate that enforces cross-record Phase 1 invariants.

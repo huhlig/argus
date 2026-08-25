@@ -46,7 +46,7 @@ fn source() -> MemorySource {
             (SourcePath::new("Cargo.toml").unwrap(), Vec::new()),
             (
                 SourcePath::new("src/lib.rs").unwrap(),
-                b"mod model;\npub fn run() {}\n".to_vec(),
+                b"mod model;\n/// Runs the application.\npub fn run() {}\n".to_vec(),
             ),
             (
                 SourcePath::new("src/model.rs").unwrap(),
@@ -70,6 +70,25 @@ fn reconciles_cargo_roots_with_syntax_targets_and_containment() {
     assert_eq!(first, second);
     assert!(first.conflicts.is_empty());
     assert_eq!(first.targets.len(), 7);
+    let run_documentation = first
+        .evidence
+        .iter()
+        .find(|evidence| evidence.target.as_ref() == ids_for_name(&first, "run"))
+        .unwrap();
+    assert_eq!(
+        run_documentation.kind,
+        argus_core::EvidenceKind::Documentation
+    );
+    assert_eq!(
+        run_documentation.detail.as_deref(),
+        Some("Runs the application.")
+    );
+    let record = ids_for_name(&first, "Record").unwrap();
+    assert!(first.evidence.iter().any(|evidence| {
+        evidence.target.as_ref() == Some(record)
+            && evidence.detail.is_none()
+            && evidence.summary.starts_with("No Rust documentation")
+    }));
     assert_eq!(first.relations.len(), 6);
     assert!(first.partitions.iter().any(|partition| {
         partition.name == "rust-syntax:src/lib.rs"
@@ -107,6 +126,17 @@ fn reconciles_cargo_roots_with_syntax_targets_and_containment() {
             .iter()
             .any(|relation| relation.source == cargo_target.id && relation.target == root.id)
     );
+}
+
+fn ids_for_name<'a>(
+    inventory: &'a argus_language::AdapterInventory,
+    name: &str,
+) -> Option<&'a argus_core::TargetId> {
+    inventory
+        .targets
+        .iter()
+        .find(|target| target.name == name)
+        .map(|target| &target.id)
 }
 
 #[test]
