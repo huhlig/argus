@@ -87,6 +87,7 @@ impl LlmAdapter for NoopLlm {
                 total_tokens: 120,
             },
             finish_reason: FinishReason::Stop,
+            refusal: None,
             model: "pinned".to_owned(),
         })
     }

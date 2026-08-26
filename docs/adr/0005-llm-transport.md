@@ -10,10 +10,9 @@ implement Langchart's `LlmAdapter` contract. Anthropic, OpenAI, Ollama,
 Lemonade, and LM Studio use Langchart's `langchart-llm-generic` adapter.
 Ollama, Lemonade, and LM Studio use their OpenAI-compatible endpoints.
 
-watsonx implements the same `LlmAdapter` contract in the independent
+watsonx implements the same `LlmAdapter` contract in Langchart's
 `langchart-llm-watsonx` crate because IBM Cloud requires an IAM API-key exchange
-and a project or space scope. The crate has no Argus dependency and is structured
-for contribution to Langchart. It caches short-lived IAM bearer tokens and
+and a project or space scope. It caches short-lived IAM bearer tokens and
 requests JSON output from the watsonx text-chat API. Credentials remain in
 memory and are not part of provider identity, workflow state, or durable audit
 records.
@@ -47,7 +46,7 @@ double-counting and preserves earlier process totals after restart.
 Argus reuses Langchart routing and transports without coupling durable audit
 records to provider SDK types. Adding Rig later remains possible behind
 `LlmAdapter`, but requires a demonstrated transport capability that Langchart's
-adapters cannot provide. Provider-native schema enforcement will require a
-corresponding schema field in Langchart's request contract; until then the
-generic bridge advertises only best-effort structured output and Argus validates
-every response.
+adapters cannot provide. Langchart's shared response-format contract carries
+text, JSON-object, and native JSON-schema requests across routing boundaries.
+Argus maps each configured capability to the corresponding request format and
+still validates every response against its evidence-bound policy contract.

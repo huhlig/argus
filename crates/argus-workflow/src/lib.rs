@@ -78,7 +78,7 @@ pub use workflow_data::{
 };
 
 pub const TARGET_REVIEW_WORKFLOW_ID: &str = "argus.target-review";
-pub const TARGET_REVIEW_WORKFLOW_VERSION: &str = "1.0.0";
+pub const TARGET_REVIEW_WORKFLOW_VERSION: &str = "1.3.0";
 
 const TARGET_REVIEW_SOURCE: &str = include_str!("workflows/target_review_v1.json");
 

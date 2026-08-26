@@ -571,6 +571,7 @@ mod tests {
                     total_tokens: 150,
                 },
                 finish_reason: FinishReason::Stop,
+                refusal: None,
                 model: "pinned".to_owned(),
             })
         }
@@ -712,6 +713,24 @@ mod tests {
                 resolution: ResolutionQuality::Exact,
             },
         };
+        let source_evidence_id = EvidenceId::derive([b"worker-source".as_slice()]);
+        let source_evidence = EvidenceRecord {
+            id: source_evidence_id.clone(),
+            kind: EvidenceKind::Source,
+            origin: EvidenceOrigin::Direct,
+            target: Some(target.id.clone()),
+            location: None,
+            summary: "The public API implementation.".to_owned(),
+            detail: Some("Performs the documented operation.".to_owned()),
+            provenance: EvidenceProvenance {
+                provider: "fixture".to_owned(),
+                provider_version: "1".to_owned(),
+                configuration: configuration.clone(),
+                ingest_only: true,
+                resolution: ResolutionQuality::Exact,
+            },
+        };
+        let evidence_records = vec![evidence, source_evidence];
         let policy = argus_policies::DocumentationApplicabilityPolicy::public_api().unwrap();
         let plan = crate::DocumentationReviewPlanner::new(
             &policy,
@@ -723,7 +742,7 @@ mod tests {
             &snapshot,
             &configuration,
             std::slice::from_ref(&target),
-            std::slice::from_ref(&evidence),
+            &evidence_records,
         )
         .unwrap();
         assert_eq!(
@@ -735,7 +754,7 @@ mod tests {
             &evidence_store,
             &snapshot,
             EvidenceClassification::Internal,
-            std::slice::from_ref(&evidence),
+            &evidence_records,
         )
         .unwrap();
         let batch = plan
@@ -762,9 +781,12 @@ mod tests {
                 .into_iter()
                 .map(|dimension| DocumentationDimensionDraft {
                     dimension,
+                    documentation_coverage: argus_policies::DocumentationCoverage::Stated,
+                    source_materiality: argus_policies::SourceMateriality::MaterialBehavior,
+                    comparison: argus_policies::DocumentationComparison::Consistent,
                     status: DocumentationDimensionStatus::Satisfied,
                     rationale: "Satisfied by the bounded documentation evidence.".to_owned(),
-                    evidence: vec![evidence_id.clone()],
+                    evidence: vec![evidence_id.clone(), source_evidence_id.clone()],
                 })
                 .collect(),
             claims: Vec::new(),

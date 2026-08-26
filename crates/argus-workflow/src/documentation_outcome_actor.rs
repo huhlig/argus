@@ -230,15 +230,16 @@ fn recorded_event(receipt: &OutcomeReceipt) -> AgentOutputEvent {
 mod tests {
     use super::*;
     use argus_core::{
-        ApplicabilityState, Confidence, EvidenceId, InventoryState, PolicyId, RunId, Severity,
-        SnapshotId, TargetId, WorkItemId,
+        ApplicabilityState, Confidence, EvidenceId, EvidenceKind, InventoryState, PolicyId, RunId,
+        Severity, SnapshotId, TargetId, WorkItemId,
     };
     use argus_policies::{
         ALL_DOCUMENTATION_DIMENSIONS, DOCUMENTATION_ASSESSMENT_SCHEMA_VERSION,
-        DocumentationCandidate, DocumentationCandidateDraft, DocumentationDimension,
-        DocumentationDimensionDraft, DocumentationDimensionResult, DocumentationDimensionStatus,
-        DocumentationResultDraft, DocumentationTargetClass, DocumentationTargetProfile,
-        DocumentationVisibility, EvidenceCitation,
+        DocumentationCandidate, DocumentationCandidateDraft, DocumentationComparison,
+        DocumentationCoverage, DocumentationDimension, DocumentationDimensionDraft,
+        DocumentationDimensionResult, DocumentationDimensionStatus, DocumentationResultDraft,
+        DocumentationTargetClass, DocumentationTargetProfile, DocumentationVisibility,
+        EvidenceCitation, SourceMateriality,
     };
     use argus_provider::ProviderIdentity;
     use argus_storage::{OutcomeWrite, QueueWork};
@@ -253,6 +254,11 @@ mod tests {
         let target = TargetId::derive([b"documented-target".as_slice()]);
         let citation = EvidenceCitation {
             evidence: EvidenceId::derive([b"documentation-evidence".as_slice()]),
+            target: target.clone(),
+            location: None,
+        };
+        let source_citation = EvidenceCitation {
+            evidence: EvidenceId::derive([b"source-evidence".as_slice()]),
             target: target.clone(),
             location: None,
         };
@@ -279,7 +285,7 @@ mod tests {
                         DocumentationDimensionStatus::Satisfied
                     },
                     rationale: "evaluated against captured evidence".to_owned(),
-                    citations: vec![citation.clone()],
+                    citations: vec![citation.clone(), source_citation.clone()],
                 })
                 .collect(),
             claims: Vec::new(),
@@ -290,7 +296,7 @@ mod tests {
                     severity: Severity::Medium,
                     confidence: Confidence::from_basis_points(9_000).unwrap(),
                     dimensions: BTreeSet::from([DocumentationDimension::Errors]),
-                    citations: vec![citation],
+                    citations: vec![citation, source_citation],
                 }],
             },
         };
@@ -384,6 +390,7 @@ mod tests {
         let queue = Arc::new(DurableQueue::open(&temporary.path().join("review.redb")).unwrap());
         let (assessment, logical_key, provenance) = fixture();
         let citation = assessment.dimensions[0].citations[0].clone();
+        let source_citation = assessment.dimensions[0].citations[1].clone();
         let binding = DocumentationAssessmentBinding {
             work_item: assessment.work_item.clone(),
             target: assessment.target.clone(),
@@ -391,7 +398,14 @@ mod tests {
             policy_version: assessment.policy_version.clone(),
             applicability: assessment.applicability,
             evidence_revision: assessment.evidence_revision,
-            evidence: BTreeMap::from([(citation.evidence.clone(), citation.clone())]),
+            evidence: BTreeMap::from([
+                (citation.evidence.clone(), citation.clone()),
+                (source_citation.evidence.clone(), source_citation.clone()),
+            ]),
+            evidence_kinds: BTreeMap::from([
+                (citation.evidence.clone(), EvidenceKind::Documentation),
+                (source_citation.evidence.clone(), EvidenceKind::Source),
+            ]),
         };
         let draft = DocumentationAssessmentDraft {
             dimensions: assessment
@@ -399,9 +413,20 @@ mod tests {
                 .iter()
                 .map(|item| DocumentationDimensionDraft {
                     dimension: item.dimension,
+                    documentation_coverage: if item.dimension == DocumentationDimension::Errors {
+                        DocumentationCoverage::Omitted
+                    } else {
+                        DocumentationCoverage::Stated
+                    },
+                    source_materiality: SourceMateriality::MaterialBehavior,
+                    comparison: if item.dimension == DocumentationDimension::Errors {
+                        DocumentationComparison::MaterialOmission
+                    } else {
+                        DocumentationComparison::Consistent
+                    },
                     status: item.status,
                     rationale: item.rationale.clone(),
-                    evidence: vec![citation.evidence.clone()],
+                    evidence: vec![citation.evidence.clone(), source_citation.evidence.clone()],
                 })
                 .collect(),
             claims: Vec::new(),
@@ -412,7 +437,7 @@ mod tests {
                     severity: Severity::Medium,
                     confidence_basis_points: 9_000,
                     dimensions: BTreeSet::from([DocumentationDimension::Errors]),
-                    evidence: vec![citation.evidence],
+                    evidence: vec![citation.evidence, source_citation.evidence],
                 }],
             },
         };
@@ -446,6 +471,7 @@ mod tests {
         );
         let (assessment, logical_key, provenance) = fixture();
         let citation = assessment.dimensions[0].citations[0].clone();
+        let source_citation = assessment.dimensions[0].citations[1].clone();
         let contract = Arc::new(DocumentationAssessmentContract::new(
             DocumentationAssessmentBinding {
                 work_item: assessment.work_item.clone(),
@@ -454,7 +480,14 @@ mod tests {
                 policy_version: assessment.policy_version.clone(),
                 applicability: assessment.applicability,
                 evidence_revision: assessment.evidence_revision,
-                evidence: BTreeMap::from([(citation.evidence.clone(), citation.clone())]),
+                evidence: BTreeMap::from([
+                    (citation.evidence.clone(), citation.clone()),
+                    (source_citation.evidence.clone(), source_citation.clone()),
+                ]),
+                evidence_kinds: BTreeMap::from([
+                    (citation.evidence.clone(), EvidenceKind::Documentation),
+                    (source_citation.evidence.clone(), EvidenceKind::Source),
+                ]),
             },
         ));
         let decision = PrimaryReviewDecision {

@@ -17,7 +17,9 @@ use crate::{
     ProviderError, ProviderHealth, StructuredOutputSupport,
 };
 use async_trait::async_trait;
-use langchart_adapters::llm::{FinishReason, LlmAdapter, LlmError, LlmRequest, Message};
+use langchart_adapters::llm::{
+    FinishReason, LlmAdapter, LlmError, LlmRequest, Message, ResponseFormat,
+};
 use langchart_llm_generic::GenericLlmAdapter;
 use langchart_llm_watsonx::{WatsonxAdapter, WatsonxConfig, WatsonxCredentials};
 use langchart_model::policy::ModelPolicy;
@@ -41,12 +43,12 @@ impl LangchartModelProvider {
         adapter: Arc<dyn LlmAdapter>,
     ) -> Result<Self, ProviderError> {
         capabilities.validate()?;
-        if capabilities.structured_output != StructuredOutputSupport::BestEffort
+        if capabilities.structured_output == StructuredOutputSupport::None
             || capabilities.tool_calling
             || capabilities.reports_estimated_cost
         {
             return Err(ProviderError::InvalidProfile(
-                "Langchart transport bridge supports best-effort JSON without tools or cost reporting"
+                "Langchart transport bridge requires structured JSON without tools or cost reporting"
                     .to_owned(),
             ));
         }
@@ -288,6 +290,25 @@ impl ModelProvider for LangchartModelProvider {
     }
 
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ProviderError> {
+        let response_format = match self.capabilities.structured_output {
+            StructuredOutputSupport::None => ResponseFormat::Text,
+            StructuredOutputSupport::BestEffort => ResponseFormat::JsonObject,
+            StructuredOutputSupport::SchemaConstrained => ResponseFormat::JsonSchema {
+                name: "argus_review".to_owned(),
+                description: Some("Argus policy review decision".to_owned()),
+                schema: request.structured_output_schema.clone(),
+                strict: true,
+            },
+        };
+        let system_content = match self.capabilities.structured_output {
+            StructuredOutputSupport::SchemaConstrained => {
+                "Return only JSON matching the supplied response schema.".to_owned()
+            }
+            StructuredOutputSupport::None | StructuredOutputSupport::BestEffort => format!(
+                "Return only JSON matching this schema: {}",
+                request.structured_output_schema
+            ),
+        };
         let response = self
             .adapter
             .complete(LlmRequest {
@@ -299,16 +320,14 @@ impl ModelProvider for LangchartModelProvider {
                 },
                 messages: vec![
                     Message::System {
-                        content: format!(
-                            "Return only JSON matching this schema: {}",
-                            request.structured_output_schema
-                        ),
+                        content: system_content,
                     },
                     Message::User {
                         content: request.prompt,
                     },
                 ],
                 tools: Vec::new(),
+                response_format,
             })
             .await
             .map_err(map_error)?;
@@ -340,6 +359,11 @@ impl ModelProvider for LangchartModelProvider {
             return Err(ProviderError::InvalidOutput(
                 "model tool calls are not authorized for review".to_owned(),
             ));
+        }
+        if let Some(refusal) = response.refusal {
+            return Err(ProviderError::InvalidOutput(format!(
+                "model refused the review request: {refusal}"
+            )));
         }
         let content = response.content.ok_or_else(|| {
             ProviderError::InvalidOutput("model response has no JSON content".to_owned())
@@ -381,6 +405,11 @@ fn map_error(error: LlmError) -> ProviderError {
         }
         LlmError::ModelNotFound { model } => {
             ProviderError::Unavailable(format!("provider model `{model}` was not found"))
+        }
+        LlmError::UnsupportedResponseFormat { adapter, requested } => {
+            ProviderError::InvalidProfile(format!(
+                "adapter `{adapter}` cannot honor required response format `{requested}`"
+            ))
         }
         LlmError::Provider(message) => ProviderError::Unavailable(message),
         LlmError::Timeout => ProviderError::Unavailable("provider request timed out".to_owned()),
@@ -462,6 +491,7 @@ mod tests {
                 total_tokens: 49,
             },
             finish_reason: FinishReason::Stop,
+            refusal: None,
             model: model.to_owned(),
         }
     }
@@ -522,10 +552,42 @@ mod tests {
         let seen = transport.seen.lock().unwrap();
         assert_eq!(seen[0].model_policy.model.as_deref(), Some("reviewer"));
         assert_eq!(seen[0].tools.len(), 0);
+        assert_eq!(seen[0].response_format, ResponseFormat::JsonObject);
         let Message::System { content } = &seen[0].messages[0] else {
             panic!("first transport message must contain the trusted schema");
         };
         assert!(content.contains(r#""type":"object""#));
+    }
+
+    #[tokio::test]
+    async fn schema_constrained_capability_uses_the_native_schema_contract() {
+        let transport = adapter(
+            ["reviewer"],
+            [Ok(response("{}", "reviewer@sha256:fixture"))],
+        );
+        let mut native = capabilities();
+        native.structured_output = StructuredOutputSupport::SchemaConstrained;
+        let provider = LangchartModelProvider::new(native, transport.clone()).unwrap();
+
+        provider.complete(request()).await.unwrap();
+
+        let seen = transport.seen.lock().unwrap();
+        let ResponseFormat::JsonSchema {
+            name,
+            schema,
+            strict,
+            ..
+        } = &seen[0].response_format
+        else {
+            panic!("schema-constrained capability must use native JSON Schema");
+        };
+        assert_eq!(name, "argus_review");
+        assert_eq!(schema, &json!({"type": "object"}));
+        assert!(*strict);
+        let Message::System { content } = &seen[0].messages[0] else {
+            panic!("first transport message must contain trusted instructions");
+        };
+        assert!(!content.contains(r#""type":"object""#));
     }
 
     #[tokio::test]
@@ -600,6 +662,19 @@ mod tests {
         assert!(matches!(
             tools.complete(request()).await,
             Err(ProviderError::InvalidOutput(_))
+        ));
+
+        let mut refusal_response = response("", "reviewer@sha256:fixture");
+        refusal_response.content = None;
+        refusal_response.refusal = Some("declined".to_owned());
+        let refusal = LangchartModelProvider::new(
+            capabilities(),
+            adapter(["reviewer"], [Ok(refusal_response)]),
+        )
+        .unwrap();
+        assert!(matches!(
+            refusal.complete(request()).await,
+            Err(ProviderError::InvalidOutput(message)) if message.contains("declined")
         ));
     }
 

@@ -20,8 +20,9 @@ use argus_core::{ApplicabilityState, WorkItemId};
 use argus_evidence::ReviewContextFrame;
 use argus_policies::{
     ALL_DOCUMENTATION_DIMENSIONS, DocumentationAssessment, DocumentationAssessmentBinding,
-    DocumentationAssessmentDraft, DocumentationDimensionDraft, DocumentationDimensionStatus,
-    DocumentationResult, DocumentationResultDraft, DocumentationTargetProfile, EvidenceCitation,
+    DocumentationAssessmentDraft, DocumentationComparison, DocumentationCoverage,
+    DocumentationDimensionDraft, DocumentationDimensionStatus, DocumentationResult,
+    DocumentationResultDraft, DocumentationTargetProfile, EvidenceCitation, SourceMateriality,
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
@@ -95,6 +96,7 @@ impl DocumentationAssessmentContract {
             ));
         }
         let mut evidence = BTreeMap::new();
+        let mut evidence_kinds = BTreeMap::new();
         for item in &context.untrusted_evidence {
             let Some(evidence_target) = item.target.clone() else {
                 continue;
@@ -109,6 +111,7 @@ impl DocumentationAssessmentContract {
                     "trusted review context repeats an evidence identity",
                 ));
             }
+            evidence_kinds.insert(item.id.clone(), item.kind);
         }
         Ok(Self::new(DocumentationAssessmentBinding {
             work_item,
@@ -118,6 +121,7 @@ impl DocumentationAssessmentContract {
             applicability,
             evidence_revision: context.trusted_control.package_revision,
             evidence,
+            evidence_kinds,
         }))
     }
 
@@ -144,6 +148,9 @@ impl DocumentationAssessmentContract {
                         .into_iter()
                         .map(|dimension| DocumentationDimensionDraft {
                             dimension,
+                            documentation_coverage: DocumentationCoverage::UnableToVerify,
+                            source_materiality: SourceMateriality::UnableToVerify,
+                            comparison: DocumentationComparison::UnableToVerify,
                             status: DocumentationDimensionStatus::UnableToVerify,
                             rationale: reason.to_owned(),
                             evidence: Vec::new(),
@@ -243,11 +250,18 @@ pub fn documentation_assessment_draft_schema() -> Value {
         "currency",
         "value",
     ];
-    let evidence = json!({
+    let comparison_evidence = json!({
         "type": "array",
-        "description": "Exact evidence IDs copied from untrusted_evidence[].id in the review context. Do not use any other identifiers or invented values.",
+        "description": "Exact evidence IDs copied from untrusted_evidence[].id. For every satisfied or deficient comparison, cite both the documentation record (kind=documentation) and the source record (kind=source); presence requires at least documentation evidence.",
         "items": {"type": "string"},
         "uniqueItems": true
+    });
+    let documentation_evidence = json!({
+        "type": "array",
+        "description": "Exact IDs of kind=documentation only. These citations prove what the documentation literally states; never cite source evidence as a documentation claim.",
+        "items": {"type": "string"},
+        "uniqueItems": true,
+        "minItems": 1
     });
     let dimension_set = json!({
         "type": "array",
@@ -265,7 +279,7 @@ pub fn documentation_assessment_draft_schema() -> Value {
             "severity": {"enum": ["note", "low", "medium", "high", "critical"]},
             "confidence_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
             "dimensions": dimension_set.clone(),
-            "evidence": evidence.clone()
+            "evidence": comparison_evidence.clone()
         }
     });
     json!({
@@ -280,25 +294,49 @@ pub fn documentation_assessment_draft_schema() -> Value {
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["dimension", "status", "rationale", "evidence"],
+                    "required": ["dimension", "documentation_coverage", "source_materiality", "comparison", "status", "rationale", "evidence"],
                     "properties": {
                         "dimension": {"enum": dimensions},
-                        "status": {"enum": ["satisfied", "deficient", "unable_to_verify", "not_applicable"]},
-                        "rationale": {"type": "string", "minLength": 1},
-                        "evidence": evidence.clone()
+                        "documentation_coverage": {
+                            "description": "Whether this dimension is literally stated in documentation evidence. Use omitted when documentation is silent; never infer stated coverage from source.",
+                            "enum": ["stated", "omitted", "unable_to_verify", "not_applicable"]
+                        },
+                        "source_materiality": {
+                            "description": "Whether source evidence contains behavior material to this documentation dimension.",
+                            "enum": ["material_behavior", "no_material_behavior", "unable_to_verify", "not_applicable"]
+                        },
+                        "comparison": {
+                            "description": "The explicit comparison. Use material_omission for omitted documentation with material source behavior, and contradictory when a stated claim conflicts with material source behavior.",
+                            "enum": ["consistent", "contradictory", "material_omission", "unable_to_verify", "not_applicable"]
+                        },
+                        "status": {
+                            "description": "Use satisfied only when documentation is materially complete and consistent with the bounded evidence for this dimension. Use deficient for a contradiction or material omission, and unable_to_verify only when the evidence cannot resolve the comparison.",
+                            "enum": ["satisfied", "deficient", "unable_to_verify", "not_applicable"]
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "State separately what the documentation says or omits and what source evidence shows, then explain the comparison. Never treat behavior visible only in source as documented."
+                        },
+                        "evidence": comparison_evidence.clone()
                     }
                 }
             },
             "claims": {
                 "type": "array",
+                "description": "Literal externally observable claims extracted from documentation evidence before consulting source behavior. Omitted behavior is not a claim, and facts inferred only from signatures or implementation must not appear here.",
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
                     "required": ["text", "dimensions", "evidence"],
                     "properties": {
-                        "text": {"type": "string", "minLength": 1},
+                        "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "A faithful paraphrase of text actually present in documentation evidence, not an inference from source."
+                        },
                         "dimensions": dimension_set,
-                        "evidence": evidence
+                        "evidence": documentation_evidence
                     }
                 }
             },
@@ -308,7 +346,12 @@ pub fn documentation_assessment_draft_schema() -> Value {
                         "type": "object",
                         "additionalProperties": false,
                         "required": ["state"],
-                        "properties": {"state": {"const": "passed"}}
+                        "properties": {
+                            "state": {
+                                "description": "Pass only when every applicable dimension is resolved, materially complete, and consistent with the bounded evidence.",
+                                "const": "passed"
+                            }
+                        }
                     },
                     {
                         "type": "object",
@@ -346,9 +389,10 @@ mod tests {
     };
     use argus_policies::{
         ALL_DOCUMENTATION_DIMENSIONS, DocumentationCandidateDraft, DocumentationClaimDraft,
-        DocumentationDimension, DocumentationDimensionDraft, DocumentationDimensionStatus,
-        DocumentationResultDraft, DocumentationTargetClass, DocumentationTargetProfile,
-        DocumentationVisibility, EvidenceCitation,
+        DocumentationComparison, DocumentationCoverage, DocumentationDimension,
+        DocumentationDimensionDraft, DocumentationDimensionStatus, DocumentationResultDraft,
+        DocumentationTargetClass, DocumentationTargetProfile, DocumentationVisibility,
+        EvidenceCitation, SourceMateriality,
     };
     use argus_provider::OutputValidator;
     use std::{
@@ -358,7 +402,8 @@ mod tests {
 
     fn fixture() -> (DocumentationAssessmentBinding, DocumentationAssessmentDraft) {
         let target = TargetId::derive([b"documentation-target".as_slice()]);
-        let evidence = EvidenceId::derive([b"documentation-evidence".as_slice()]);
+        let documentation_evidence = EvidenceId::derive([b"documentation-evidence".as_slice()]);
+        let source_evidence = EvidenceId::derive([b"source-evidence".as_slice()]);
         let binding = DocumentationAssessmentBinding {
             work_item: WorkItemId::derive([b"documentation-work".as_slice()]),
             target: DocumentationTargetProfile {
@@ -371,29 +416,46 @@ mod tests {
             policy_version: "documentation@1".to_owned(),
             applicability: ApplicabilityState::Applicable,
             evidence_revision: 1,
-            evidence: BTreeMap::from([(
-                evidence.clone(),
-                EvidenceCitation {
-                    evidence: evidence.clone(),
-                    target,
-                    location: None,
-                },
-            )]),
+            evidence: BTreeMap::from([
+                (
+                    documentation_evidence.clone(),
+                    EvidenceCitation {
+                        evidence: documentation_evidence.clone(),
+                        target: target.clone(),
+                        location: None,
+                    },
+                ),
+                (
+                    source_evidence.clone(),
+                    EvidenceCitation {
+                        evidence: source_evidence.clone(),
+                        target,
+                        location: None,
+                    },
+                ),
+            ]),
+            evidence_kinds: BTreeMap::from([
+                (documentation_evidence.clone(), EvidenceKind::Documentation),
+                (source_evidence.clone(), EvidenceKind::Source),
+            ]),
         };
         let draft = DocumentationAssessmentDraft {
             dimensions: ALL_DOCUMENTATION_DIMENSIONS
                 .into_iter()
                 .map(|dimension| DocumentationDimensionDraft {
                     dimension,
+                    documentation_coverage: DocumentationCoverage::Stated,
+                    source_materiality: SourceMateriality::MaterialBehavior,
+                    comparison: DocumentationComparison::Consistent,
                     status: DocumentationDimensionStatus::Satisfied,
                     rationale: "Supported by the bounded evidence.".to_owned(),
-                    evidence: vec![evidence.clone()],
+                    evidence: vec![documentation_evidence.clone(), source_evidence.clone()],
                 })
                 .collect(),
             claims: vec![DocumentationClaimDraft {
                 text: "The public contract is documented.".to_owned(),
                 dimensions: BTreeSet::from([argus_policies::DocumentationDimension::Purpose]),
-                evidence: vec![evidence],
+                evidence: vec![documentation_evidence],
             }],
             result: DocumentationResultDraft::Passed,
         };
@@ -410,6 +472,60 @@ mod tests {
         assert_eq!(assessment.work_item, binding.work_item);
         assert_eq!(assessment.target, binding.target);
         assert_eq!(assessment.policy, binding.policy);
+    }
+
+    #[test]
+    fn validator_keeps_documentation_claims_distinct_from_source_observations() {
+        let (binding, mut draft) = fixture();
+        let source = binding
+            .evidence_kinds
+            .iter()
+            .find_map(|(id, kind)| (*kind == EvidenceKind::Source).then(|| id.clone()))
+            .unwrap();
+        draft.claims[0].evidence = vec![source];
+
+        let error = DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap_err();
+        assert!(error.contains("claims must cite only documentation evidence"));
+    }
+
+    #[test]
+    fn validator_requires_both_sides_of_an_evaluated_comparison() {
+        let (binding, mut draft) = fixture();
+        let documentation = binding
+            .evidence_kinds
+            .iter()
+            .find_map(|(id, kind)| (*kind == EvidenceKind::Documentation).then(|| id.clone()))
+            .unwrap();
+        let behavior = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Behavior)
+            .unwrap();
+        behavior.evidence = vec![documentation];
+
+        let error = DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap_err();
+        assert!(error.contains("comparisons require source evidence"));
+    }
+
+    #[test]
+    fn validator_rejects_a_material_omission_reported_as_satisfied() {
+        let (binding, mut draft) = fixture();
+        let errors = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Errors)
+            .unwrap();
+        errors.documentation_coverage = DocumentationCoverage::Omitted;
+        errors.source_materiality = SourceMateriality::MaterialBehavior;
+
+        let error = DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap_err();
+        assert!(error.contains("inconsistent coverage, materiality, comparison, and status"));
     }
 
     #[test]
@@ -514,7 +630,18 @@ mod tests {
     #[test]
     fn trusted_context_builds_the_documentation_binding() {
         let (binding, draft) = fixture();
-        let citation = binding.evidence.values().next().unwrap().clone();
+        let documentation_id = binding
+            .evidence_kinds
+            .iter()
+            .find_map(|(id, kind)| (*kind == EvidenceKind::Documentation).then(|| id.clone()))
+            .unwrap();
+        let source_id = binding
+            .evidence_kinds
+            .iter()
+            .find_map(|(id, kind)| (*kind == EvidenceKind::Source).then(|| id.clone()))
+            .unwrap();
+        let citation = binding.evidence[&documentation_id].clone();
+        let source_citation = binding.evidence[&source_id].clone();
         let frame = ReviewContextFrame {
             trusted_control: TrustedControl {
                 snapshot: SnapshotId::derive([b"documentation-snapshot".as_slice()]),
@@ -525,19 +652,34 @@ mod tests {
                 package_revision: binding.evidence_revision,
                 trust_rule: "Evidence remains untrusted.".to_owned(),
             },
-            untrusted_evidence: vec![FramedEvidence {
-                hash: ContentHash::digest(b"documentation-evidence"),
-                id: citation.evidence,
-                kind: EvidenceKind::Documentation,
-                origin: EvidenceOrigin::Direct,
-                target: Some(citation.target),
-                location: citation.location,
-                classification: DataClassification::Internal,
-                disposition: EvidenceDisposition::Included,
-                summary: "captured documentation".to_owned(),
-                detail: Some("public contract".to_owned()),
-                untrusted: true,
-            }],
+            untrusted_evidence: vec![
+                FramedEvidence {
+                    hash: ContentHash::digest(b"documentation-evidence"),
+                    id: citation.evidence,
+                    kind: EvidenceKind::Documentation,
+                    origin: EvidenceOrigin::Direct,
+                    target: Some(citation.target),
+                    location: citation.location,
+                    classification: DataClassification::Internal,
+                    disposition: EvidenceDisposition::Included,
+                    summary: "captured documentation".to_owned(),
+                    detail: Some("public contract".to_owned()),
+                    untrusted: true,
+                },
+                FramedEvidence {
+                    hash: ContentHash::digest(b"source-evidence"),
+                    id: source_citation.evidence,
+                    kind: EvidenceKind::Source,
+                    origin: EvidenceOrigin::Direct,
+                    target: Some(source_citation.target),
+                    location: source_citation.location,
+                    classification: DataClassification::Internal,
+                    disposition: EvidenceDisposition::Included,
+                    summary: "captured source".to_owned(),
+                    detail: Some("public implementation".to_owned()),
+                    untrusted: true,
+                },
+            ],
         };
         let contract = DocumentationAssessmentContract::from_context(
             binding.work_item,
@@ -556,13 +698,16 @@ mod tests {
     #[test]
     fn generic_candidates_are_derived_from_the_validated_assessment() {
         let (binding, mut draft) = fixture();
-        let evidence = draft.dimensions[0].evidence[0].clone();
+        let evidence = draft.dimensions[0].evidence.clone();
         let errors = draft
             .dimensions
             .iter_mut()
             .find(|item| item.dimension == DocumentationDimension::Errors)
             .unwrap();
         errors.status = DocumentationDimensionStatus::Deficient;
+        errors.documentation_coverage = DocumentationCoverage::Omitted;
+        errors.source_materiality = SourceMateriality::MaterialBehavior;
+        errors.comparison = DocumentationComparison::MaterialOmission;
         draft.result = DocumentationResultDraft::CandidateFindings {
             findings: vec![DocumentationCandidateDraft {
                 title: "Missing error contract".to_owned(),
@@ -570,7 +715,7 @@ mod tests {
                 severity: argus_core::Severity::Medium,
                 confidence_basis_points: 8_500,
                 dimensions: BTreeSet::from([DocumentationDimension::Errors]),
-                evidence: vec![evidence],
+                evidence,
             }],
         };
         let contract = Arc::new(DocumentationAssessmentContract::new(binding));

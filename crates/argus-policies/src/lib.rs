@@ -21,8 +21,9 @@ pub use documentation::{
     DocumentationApplicabilityDecision, DocumentationApplicabilityPolicy,
     DocumentationApplicabilityRule, DocumentationAssessment, DocumentationAssessmentBinding,
     DocumentationAssessmentDraft, DocumentationCandidate, DocumentationCandidateDraft,
-    DocumentationClaim, DocumentationClaimDraft, DocumentationDimension,
-    DocumentationDimensionDraft, DocumentationDimensionResult, DocumentationDimensionStatus,
-    DocumentationResult, DocumentationResultDraft, DocumentationTargetClass,
-    DocumentationTargetProfile, DocumentationVisibility, EvidenceCitation,
+    DocumentationClaim, DocumentationClaimDraft, DocumentationComparison, DocumentationCoverage,
+    DocumentationDimension, DocumentationDimensionDraft, DocumentationDimensionResult,
+    DocumentationDimensionStatus, DocumentationResult, DocumentationResultDraft,
+    DocumentationTargetClass, DocumentationTargetProfile, DocumentationVisibility,
+    EvidenceCitation, SourceMateriality,
 };

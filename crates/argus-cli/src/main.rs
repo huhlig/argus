@@ -762,7 +762,7 @@ async fn execute_documentation_work(
                 audit_snapshot: run.snapshot,
                 audit_run: run.id,
                 provenance: argus_workflow::OutcomeProvenance {
-                    prompt_version: "documentation-review@1".to_owned(),
+                    prompt_version: "documentation-review@4".to_owned(),
                     actor_id: "argus.review".to_owned(),
                     actor_version: "1.0.0".to_owned(),
                     workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),

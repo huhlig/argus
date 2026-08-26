@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use argus_core::{
-    ApplicabilityState, Confidence, ContentHash, EvidenceId, InventoryState, PolicyId, Severity,
-    SourceLocation, Target, TargetId, TargetKind, TargetVisibility, WorkItemId,
+    ApplicabilityState, Confidence, ContentHash, EvidenceId, EvidenceKind, InventoryState,
+    PolicyId, Severity, SourceLocation, Target, TargetId, TargetKind, TargetVisibility, WorkItemId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -249,6 +249,34 @@ pub enum DocumentationDimensionStatus {
     NotApplicable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentationCoverage {
+    Stated,
+    Omitted,
+    UnableToVerify,
+    NotApplicable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceMateriality {
+    MaterialBehavior,
+    NoMaterialBehavior,
+    UnableToVerify,
+    NotApplicable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentationComparison {
+    Consistent,
+    Contradictory,
+    MaterialOmission,
+    UnableToVerify,
+    NotApplicable,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DocumentationDimensionResult {
     pub dimension: DocumentationDimension,
@@ -313,6 +341,9 @@ pub struct DocumentationAssessmentDraft {
 #[serde(deny_unknown_fields)]
 pub struct DocumentationDimensionDraft {
     pub dimension: DocumentationDimension,
+    pub documentation_coverage: DocumentationCoverage,
+    pub source_materiality: SourceMateriality,
+    pub comparison: DocumentationComparison,
     pub status: DocumentationDimensionStatus,
     pub rationale: String,
     pub evidence: Vec<EvidenceId>,
@@ -359,6 +390,7 @@ pub struct DocumentationAssessmentBinding {
     pub applicability: ApplicabilityState,
     pub evidence_revision: u32,
     pub evidence: BTreeMap<EvidenceId, EvidenceCitation>,
+    pub evidence_kinds: BTreeMap<EvidenceId, EvidenceKind>,
 }
 
 impl DocumentationAssessmentBinding {
@@ -367,6 +399,7 @@ impl DocumentationAssessmentBinding {
         draft: DocumentationAssessmentDraft,
     ) -> Result<DocumentationAssessment, argus_core::ArgusError> {
         self.validate_catalog()?;
+        self.validate_evidence_roles(&draft)?;
         let dimensions = draft
             .dimensions
             .into_iter()
@@ -447,7 +480,81 @@ impl DocumentationAssessmentBinding {
                 "documentation evidence catalog identity mismatch",
             ));
         }
+        if self.evidence.keys().ne(self.evidence_kinds.keys()) {
+            return Err(argus_core::ArgusError::invariant(
+                "documentation evidence catalog kind identities do not match citations",
+            ));
+        }
         Ok(())
+    }
+
+    fn validate_evidence_roles(
+        &self,
+        draft: &DocumentationAssessmentDraft,
+    ) -> Result<(), argus_core::ArgusError> {
+        for claim in &draft.claims {
+            if claim
+                .evidence
+                .iter()
+                .any(|id| self.evidence_kinds.get(id) != Some(&EvidenceKind::Documentation))
+            {
+                return Err(argus_core::ArgusError::invalid_input(
+                    "documentation claims must cite only documentation evidence",
+                ));
+            }
+        }
+        for dimension in &draft.dimensions {
+            dimension.validate_comparison()?;
+            if !matches!(
+                dimension.status,
+                DocumentationDimensionStatus::Satisfied | DocumentationDimensionStatus::Deficient
+            ) {
+                continue;
+            }
+            self.require_evidence_kind(
+                &dimension.evidence,
+                EvidenceKind::Documentation,
+                "evaluated documentation dimensions require documentation evidence",
+            )?;
+            if dimension.dimension != DocumentationDimension::Presence {
+                self.require_evidence_kind(
+                    &dimension.evidence,
+                    EvidenceKind::Source,
+                    "evaluated documentation comparisons require source evidence",
+                )?;
+            }
+        }
+        if let DocumentationResultDraft::CandidateFindings { findings } = &draft.result {
+            for finding in findings {
+                self.require_evidence_kind(
+                    &finding.evidence,
+                    EvidenceKind::Documentation,
+                    "documentation findings require documentation evidence",
+                )?;
+                self.require_evidence_kind(
+                    &finding.evidence,
+                    EvidenceKind::Source,
+                    "documentation findings require source evidence",
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn require_evidence_kind(
+        &self,
+        evidence: &[EvidenceId],
+        required: EvidenceKind,
+        message: &str,
+    ) -> Result<(), argus_core::ArgusError> {
+        if evidence
+            .iter()
+            .any(|id| self.evidence_kinds.get(id) == Some(&required))
+        {
+            Ok(())
+        } else {
+            Err(argus_core::ArgusError::invalid_input(message))
+        }
     }
 
     fn bind_citations(
@@ -476,6 +583,55 @@ impl DocumentationAssessmentBinding {
                 })
             })
             .collect()
+    }
+}
+
+impl DocumentationDimensionDraft {
+    fn validate_comparison(&self) -> Result<(), argus_core::ArgusError> {
+        let valid = match self.comparison {
+            DocumentationComparison::Consistent => {
+                self.status == DocumentationDimensionStatus::Satisfied
+                    && matches!(
+                        (self.documentation_coverage, self.source_materiality),
+                        (
+                            DocumentationCoverage::Stated,
+                            SourceMateriality::MaterialBehavior
+                                | SourceMateriality::NoMaterialBehavior
+                        ) | (
+                            DocumentationCoverage::Omitted,
+                            SourceMateriality::NoMaterialBehavior
+                        )
+                    )
+            }
+            DocumentationComparison::Contradictory => {
+                self.status == DocumentationDimensionStatus::Deficient
+                    && self.documentation_coverage == DocumentationCoverage::Stated
+                    && self.source_materiality == SourceMateriality::MaterialBehavior
+            }
+            DocumentationComparison::MaterialOmission => {
+                self.status == DocumentationDimensionStatus::Deficient
+                    && self.documentation_coverage == DocumentationCoverage::Omitted
+                    && self.source_materiality == SourceMateriality::MaterialBehavior
+            }
+            DocumentationComparison::UnableToVerify => {
+                self.status == DocumentationDimensionStatus::UnableToVerify
+                    && (self.documentation_coverage == DocumentationCoverage::UnableToVerify
+                        || self.source_materiality == SourceMateriality::UnableToVerify)
+            }
+            DocumentationComparison::NotApplicable => {
+                self.status == DocumentationDimensionStatus::NotApplicable
+                    && (self.documentation_coverage == DocumentationCoverage::NotApplicable
+                        || self.source_materiality == SourceMateriality::NotApplicable)
+            }
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(argus_core::ArgusError::invalid_input(format!(
+                "documentation dimension {:?} has inconsistent coverage, materiality, comparison, and status",
+                self.dimension
+            )))
+        }
     }
 }
 
@@ -677,21 +833,27 @@ mod tests {
         }
     }
 
-    fn draft(evidence: &EvidenceId) -> DocumentationAssessmentDraft {
+    fn draft(
+        documentation_evidence: &EvidenceId,
+        source_evidence: &EvidenceId,
+    ) -> DocumentationAssessmentDraft {
         DocumentationAssessmentDraft {
             dimensions: ALL_DOCUMENTATION_DIMENSIONS
                 .into_iter()
                 .map(|dimension| DocumentationDimensionDraft {
                     dimension,
+                    documentation_coverage: DocumentationCoverage::Stated,
+                    source_materiality: SourceMateriality::MaterialBehavior,
+                    comparison: DocumentationComparison::Consistent,
                     status: DocumentationDimensionStatus::Satisfied,
                     rationale: "rubric evaluated against captured evidence".to_owned(),
-                    evidence: vec![evidence.clone()],
+                    evidence: vec![documentation_evidence.clone(), source_evidence.clone()],
                 })
                 .collect(),
             claims: vec![DocumentationClaimDraft {
                 text: "The documentation describes the behavior.".to_owned(),
                 dimensions: BTreeSet::from([DocumentationDimension::Behavior]),
-                evidence: vec![evidence.clone()],
+                evidence: vec![documentation_evidence.clone()],
             }],
             result: DocumentationResultDraft::Passed,
         }
@@ -771,6 +933,7 @@ mod tests {
     fn trusted_binding_injects_identity_and_expands_only_catalogued_evidence() {
         let profile = target(InventoryState::Represented);
         let evidence = EvidenceId::derive([b"bound-evidence".as_slice()]);
+        let source_evidence = EvidenceId::derive([b"bound-source-evidence".as_slice()]);
         let work_item = WorkItemId::derive([b"bound-work".as_slice()]);
         let policy = PolicyId::derive([b"bound-policy".as_slice()]);
         let binding = DocumentationAssessmentBinding {
@@ -780,17 +943,31 @@ mod tests {
             policy_version: "documentation@1".to_owned(),
             applicability: ApplicabilityState::Applicable,
             evidence_revision: 2,
-            evidence: BTreeMap::from([(
-                evidence.clone(),
-                EvidenceCitation {
-                    evidence: evidence.clone(),
-                    target: profile.target.clone(),
-                    location: None,
-                },
-            )]),
+            evidence: BTreeMap::from([
+                (
+                    evidence.clone(),
+                    EvidenceCitation {
+                        evidence: evidence.clone(),
+                        target: profile.target.clone(),
+                        location: None,
+                    },
+                ),
+                (
+                    source_evidence.clone(),
+                    EvidenceCitation {
+                        evidence: source_evidence.clone(),
+                        target: profile.target.clone(),
+                        location: None,
+                    },
+                ),
+            ]),
+            evidence_kinds: BTreeMap::from([
+                (evidence.clone(), EvidenceKind::Documentation),
+                (source_evidence.clone(), EvidenceKind::Source),
+            ]),
         };
 
-        let assessment = binding.bind(draft(&evidence)).unwrap();
+        let assessment = binding.bind(draft(&evidence, &source_evidence)).unwrap();
         assert_eq!(assessment.work_item, work_item);
         assert_eq!(assessment.policy, policy);
         assert_eq!(assessment.target, profile);
@@ -798,13 +975,14 @@ mod tests {
         assert_eq!(assessment.dimensions[0].citations[0].evidence, evidence);
 
         let unknown = EvidenceId::derive([b"not-in-package".as_slice()]);
-        assert!(binding.bind(draft(&unknown)).is_err());
+        assert!(binding.bind(draft(&unknown, &source_evidence)).is_err());
     }
 
     #[test]
     fn assessment_draft_rejects_model_authored_trusted_identity() {
         let evidence = EvidenceId::derive([b"draft-evidence".as_slice()]);
-        let mut value = serde_json::to_value(draft(&evidence)).unwrap();
+        let source_evidence = EvidenceId::derive([b"draft-source-evidence".as_slice()]);
+        let mut value = serde_json::to_value(draft(&evidence, &source_evidence)).unwrap();
         value.as_object_mut().unwrap().insert(
             "work_item".to_owned(),
             serde_json::json!(WorkItemId::derive([b"forged-work".as_slice()])),
