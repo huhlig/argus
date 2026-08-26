@@ -1096,7 +1096,8 @@ fn parse_run_id(value: Option<String>) -> Result<argus_core::RunId, argus_core::
 }
 
 fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
-    let telemetry = working_queue(root)?.telemetry(now_millis()?)?;
+    let queue = working_queue(root)?;
+    let telemetry = queue.telemetry(now_millis()?)?;
     let status = telemetry.status;
     let mut output = format!(
         "Queue total: {}\nPending: {}\nLeased: {}\nSucceeded: {}\nFailed: {}\nCancelled: {}\nStalled: {}\nEvents: {}\nRetries: {}\nLast successful work: {}\nDatabase bytes: {}",
@@ -1164,7 +1165,52 @@ fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusErr
         )
         .expect("writing to a String cannot fail");
     }
+    append_work_errors(root, &queue, &mut output)?;
     Ok(output.trim_end().to_owned())
+}
+
+fn append_work_errors(
+    root: &std::path::Path,
+    queue: &argus_storage::DurableQueue,
+    output: &mut String,
+) -> Result<(), argus_core::ArgusError> {
+    let Ok(run_id) = current_run(root) else {
+        return Ok(());
+    };
+    let failures = queue
+        .run_records(&run_id)?
+        .work
+        .into_iter()
+        .filter(|work| work.last_error.is_some())
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        return Ok(());
+    }
+    let events = queue.events()?;
+    writeln!(output, "\nWork errors: {}", failures.len()).expect("writing to a String cannot fail");
+    for work in failures {
+        let detail = work.last_error.as_deref().map_or_else(
+            || "no error detail recorded".to_owned(),
+            |error| error.lines().collect::<Vec<_>>().join(" "),
+        );
+        writeln!(output, "Work {} ({:?}): {detail}", work.id, work.state)
+            .expect("writing to a String cannot fail");
+        for event in events.iter().filter(|event| {
+            event.work_id == work.id
+                && matches!(
+                    event.kind,
+                    argus_storage::QueueEventKind::RetryScheduled
+                        | argus_storage::QueueEventKind::Failed
+                )
+        }) {
+            if let Some(detail) = &event.detail {
+                let detail = detail.lines().collect::<Vec<_>>().join(" ");
+                writeln!(output, "  {:?} {}: {detail}", event.kind, event.sequence)
+                    .expect("writing to a String cannot fail");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn initialize(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
@@ -1386,7 +1432,7 @@ mod tests {
         std::fs::create_dir_all(temporary.path().join("src")).unwrap();
         let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/evaluation/documentation-corpus-v1-workspace");
-        for path in ["Cargo.toml", "Cargo.lock", "src/lib.rs"] {
+        for path in ["Cargo.toml", "src/lib.rs"] {
             std::fs::copy(fixture_root.join(path), temporary.path().join(path)).unwrap();
         }
 
@@ -1576,6 +1622,39 @@ mod tests {
         assert!(output.contains("throughput_requests_per_second=2.000"));
         assert!(output.contains("input_tokens=500 output_tokens=100"));
         assert!(output.contains("estimated_cost_microusd=250"));
+    }
+
+    #[test]
+    fn status_exposes_terminal_work_failure_details() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        run(["prime".to_owned()].into_iter(), temporary.path()).unwrap();
+        let queue = working_queue(temporary.path()).unwrap();
+        let work = argus_storage::QueueWork::pending_for(
+            argus_core::WorkItemId::derive([b"failed-status-work".as_slice()]),
+            b"fixture".to_vec(),
+            current_run(temporary.path()).unwrap(),
+            argus_storage::CoverageKey::unspecified(),
+        );
+        queue.admit(&work).unwrap();
+        queue.lease_next(1, 1_000).unwrap().unwrap();
+        queue
+            .fail_attempt(
+                &work.id,
+                2,
+                "assessment binding failed\ninvalid evidence",
+                1,
+            )
+            .unwrap();
+        drop(queue);
+
+        let output = status_command(temporary.path()).unwrap();
+        assert!(output.contains("Work errors: 1"));
+        assert!(output.contains(&format!(
+            "Work {} (Failed): assessment binding failed invalid evidence",
+            work.id
+        )));
+        assert!(output.contains("Failed 3: assessment binding failed invalid evidence"));
     }
 
     #[test]

@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::DocumentationWorkerRuntime;
+use crate::{DocumentationWorkerRuntime, WorkflowFailureDiagnostics};
 use argus_provider::ProviderExecutor;
 use async_trait::async_trait;
 use langchart_adapters::{
-    event::{EventSink, EventSinkError, RuntimeEvent},
+    event::{EventSink, EventSinkError, RuntimeEvent, RuntimeEventPayload},
     llm::LlmAdapter,
     mcp::{McpAdapter, McpCredential, McpError, ResourceContent, ToolDefinition},
     memory::{MemoryAdapter, MemoryError, MemoryId, MemoryQuery, MemoryRecord, MemoryResult},
@@ -31,7 +31,10 @@ pub fn documentation_worker_runtime(
     executor: Arc<ProviderExecutor>,
     llm: Arc<dyn LlmAdapter>,
 ) -> DocumentationWorkerRuntime {
-    let sink: Arc<dyn EventSink> = Arc::new(DiscardingEventSink);
+    let failure_diagnostics = Arc::new(WorkflowFailureDiagnostics::default());
+    let sink: Arc<dyn EventSink> = Arc::new(FailureRecordingEventSink {
+        diagnostics: failure_diagnostics.clone(),
+    });
     DocumentationWorkerRuntime {
         executor,
         broker: Arc::new(CapabilityBroker::new(
@@ -42,14 +45,20 @@ pub fn documentation_worker_runtime(
             sink.clone(),
         )),
         event_sink: sink,
+        failure_diagnostics,
     }
 }
 
-struct DiscardingEventSink;
+struct FailureRecordingEventSink {
+    diagnostics: Arc<WorkflowFailureDiagnostics>,
+}
 
 #[async_trait]
-impl EventSink for DiscardingEventSink {
-    async fn append(&self, _event: RuntimeEvent) -> Result<(), EventSinkError> {
+impl EventSink for FailureRecordingEventSink {
+    async fn append(&self, event: RuntimeEvent) -> Result<(), EventSinkError> {
+        if let RuntimeEventPayload::RunFailed { message } = event.payload {
+            self.diagnostics.record(event.run_id.as_ref(), message);
+        }
         Ok(())
     }
 }

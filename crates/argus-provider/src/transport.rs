@@ -21,7 +21,7 @@ use langchart_adapters::llm::{FinishReason, LlmAdapter, LlmError, LlmRequest, Me
 use langchart_llm_generic::GenericLlmAdapter;
 use langchart_llm_watsonx::{WatsonxAdapter, WatsonxConfig, WatsonxCredentials};
 use langchart_model::policy::ModelPolicy;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use url::{Host, Url};
 
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -66,6 +66,15 @@ impl LangchartModelProvider {
         base_url: &str,
         api_key: Option<String>,
     ) -> Result<Self, ProviderError> {
+        Self::openai_compatible_with_timeout(capabilities, base_url, api_key, None)
+    }
+
+    fn openai_compatible_with_timeout(
+        capabilities: ProviderCapabilities,
+        base_url: &str,
+        api_key: Option<String>,
+        request_timeout_seconds: Option<u64>,
+    ) -> Result<Self, ProviderError> {
         if capabilities.identity.model.starts_with("claude") {
             return Err(ProviderError::InvalidProfile(
                 "OpenAI-compatible transport cannot use a Claude-prefixed model because Langchart routes it to the Anthropic API"
@@ -77,6 +86,14 @@ impl LangchartModelProvider {
         if let Some(api_key) = api_key {
             validate_secret("OpenAI-compatible API key", &api_key)?;
             builder = builder.openai_api_key(api_key);
+        }
+        if let Some(seconds) = request_timeout_seconds {
+            if seconds == 0 {
+                return Err(ProviderError::InvalidProfile(
+                    "provider request timeout must be positive".to_owned(),
+                ));
+            }
+            builder = builder.timeout(Duration::from_secs(seconds));
         }
         let adapter = builder
             .build()
@@ -105,8 +122,22 @@ impl LangchartModelProvider {
         base_url: Option<&str>,
         api_key: Option<String>,
     ) -> Result<Self, ProviderError> {
+        Self::lemonade_with_timeout(capabilities, base_url, api_key, None)
+    }
+
+    pub fn lemonade_with_timeout(
+        capabilities: ProviderCapabilities,
+        base_url: Option<&str>,
+        api_key: Option<String>,
+        request_timeout_seconds: Option<u64>,
+    ) -> Result<Self, ProviderError> {
         require_private_deployment(&capabilities, "Lemonade")?;
-        Self::openai_compatible(capabilities, base_url.unwrap_or(LEMONADE_BASE_URL), api_key)
+        Self::openai_compatible_with_timeout(
+            capabilities,
+            base_url.unwrap_or(LEMONADE_BASE_URL),
+            api_key,
+            request_timeout_seconds,
+        )
     }
 
     pub fn lm_studio(
@@ -313,7 +344,7 @@ impl ModelProvider for LangchartModelProvider {
         let content = response.content.ok_or_else(|| {
             ProviderError::InvalidOutput("model response has no JSON content".to_owned())
         })?;
-        let output = serde_json::from_str(&content).map_err(|error| {
+        let output = parse_json_response(&content).map_err(|error| {
             ProviderError::InvalidOutput(format!("model response is not valid JSON: {error}"))
         })?;
         Ok(ModelResponse {
@@ -326,6 +357,15 @@ impl ModelProvider for LangchartModelProvider {
             provider: self.capabilities.identity.clone(),
         })
     }
+}
+
+fn parse_json_response(content: &str) -> Result<serde_json::Value, serde_json::Error> {
+    let trimmed = content.trim();
+    let json = trimmed
+        .strip_prefix("```json")
+        .and_then(|fenced| fenced.strip_suffix("```"))
+        .map_or(trimmed, str::trim);
+    serde_json::from_str(json)
 }
 
 fn map_error(error: LlmError) -> ProviderError {
@@ -489,6 +529,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completion_accepts_only_a_whole_response_json_fence() {
+        let fenced = LangchartModelProvider::new(
+            capabilities(),
+            adapter(
+                ["reviewer"],
+                [Ok(response(
+                    "```json\n{\"event_type\":\"review.pass\",\"payload\":{}}\n```",
+                    "reviewer@sha256:fixture",
+                ))],
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            fenced.complete(request()).await.unwrap().output["event_type"],
+            "review.pass"
+        );
+
+        let prose = LangchartModelProvider::new(
+            capabilities(),
+            adapter(
+                ["reviewer"],
+                [Ok(response(
+                    "Result:\n```json\n{}\n```",
+                    "reviewer@sha256:fixture",
+                ))],
+            ),
+        )
+        .unwrap();
+        assert!(matches!(
+            prose.complete(request()).await,
+            Err(ProviderError::InvalidOutput(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn model_substitution_invalid_json_and_tool_calls_fail_closed() {
         let substituted = LangchartModelProvider::new(
             capabilities(),
@@ -583,6 +658,14 @@ mod tests {
         let local = capabilities();
         assert!(LangchartModelProvider::ollama(local.clone(), None).is_ok());
         assert!(LangchartModelProvider::lemonade(local.clone(), None, None).is_ok());
+        assert!(
+            LangchartModelProvider::lemonade_with_timeout(local.clone(), None, None, Some(300))
+                .is_ok()
+        );
+        assert!(
+            LangchartModelProvider::lemonade_with_timeout(local.clone(), None, None, Some(0))
+                .is_err()
+        );
         assert!(LangchartModelProvider::lm_studio(local, None, None).is_ok());
 
         let mut openai = capabilities();

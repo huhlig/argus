@@ -27,14 +27,6 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-const REVIEW_EVENTS: [&str; 5] = [
-    "review.pass",
-    "review.suggestion",
-    "review.unable_to_verify",
-    "review.candidate_found",
-    "review.failed",
-];
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ReviewDecisionValidator;
 
@@ -83,17 +75,112 @@ pub fn review_decision_schema() -> Value {
 pub fn review_decision_schema_for(assessment_schema: &Value) -> Value {
     json!({
         "type": "object",
+        "oneOf": [
+            review_decision_variant(
+                "review.pass",
+                &json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["assessment"],
+                    "properties": { "assessment": assessment_schema }
+                }),
+            ),
+            review_decision_variant(
+                "review.suggestion",
+                &json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["assessment", "suggestions"],
+                    "properties": {
+                        "assessment": assessment_schema,
+                        "suggestions": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "type": "string", "minLength": 1 }
+                        }
+                    }
+                }),
+            ),
+            review_decision_variant(
+                "review.candidate_found",
+                &json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["assessment"],
+                    "properties": { "assessment": assessment_schema }
+                }),
+            ),
+            review_decision_variant(
+                "review.unable_to_verify",
+                &json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["reason", "requested_evidence"],
+                    "properties": {
+                        "reason": { "type": "string", "minLength": 1 },
+                        "requested_evidence": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                                "requested_targets",
+                                "requested_kinds",
+                                "additional_budget",
+                                "rationale"
+                            ],
+                            "properties": {
+                                "requested_targets": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": { "type": "string" }
+                                },
+                                "requested_kinds": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": { "type": "string" }
+                                },
+                                "additional_budget": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": [
+                                        "max_bytes",
+                                        "max_tokens",
+                                        "max_items",
+                                        "max_relation_depth"
+                                    ],
+                                    "properties": {
+                                        "max_bytes": { "type": "integer", "minimum": 1 },
+                                        "max_tokens": { "type": "integer", "minimum": 1 },
+                                        "max_items": { "type": "integer", "minimum": 1 },
+                                        "max_relation_depth": { "type": "integer", "minimum": 0 }
+                                    }
+                                },
+                                "rationale": { "type": "string", "minLength": 1 }
+                            }
+                        }
+                    }
+                }),
+            ),
+            review_decision_variant(
+                "review.failed",
+                &json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["reason"],
+                    "properties": { "reason": { "type": "string", "minLength": 1 } }
+                }),
+            )
+        ]
+    })
+}
+
+fn review_decision_variant(event_type: &str, payload_schema: &Value) -> Value {
+    json!({
+        "type": "object",
         "additionalProperties": false,
         "required": ["event_type", "payload"],
         "properties": {
-            "event_type": { "enum": REVIEW_EVENTS },
-            "payload": {
-                "type": "object",
-                "description": "Event-specific payload; durable references, capability, and policy fields are forbidden.",
-                "properties": {
-                    "assessment": assessment_schema
-                }
-            }
+            "event_type": { "enum": [event_type] },
+            "payload": payload_schema
         }
     })
 }
@@ -227,11 +314,15 @@ impl PrimaryReviewActor {
         declared_events: &[String],
         record: WorkflowDataRecord,
     ) -> Result<AgentOutputEvent, AgentError> {
-        let response = self
-            .executor
-            .execute_with_provider(provider, request)
-            .await
-            .map_err(|error| AgentError::Internal(error.to_string()))?;
+        let response = if let Some(contract) = &self.policy_contract {
+            let validator = PolicyReviewDecisionValidator::new(contract.clone());
+            self.executor
+                .execute_with_provider_and_validator(provider, request, &validator)
+                .await
+        } else {
+            self.executor.execute_with_provider(provider, request).await
+        }
+        .map_err(|error| AgentError::Internal(error.to_string()))?;
         self.record_response(response, declared_events, record)
             .await
     }
@@ -527,7 +618,11 @@ fn validate_exact_keys(payload: &Value, allowed: &[&str]) -> Result<(), String> 
         .as_object()
         .ok_or_else(|| "review payload must be an object".to_owned())?;
     if object.len() != allowed.len() || object.keys().any(|key| !allowed.contains(&key.as_str())) {
-        return Err("review payload contains missing or forbidden fields".to_owned());
+        let mut received = object.keys().map(String::as_str).collect::<Vec<_>>();
+        received.sort_unstable();
+        return Err(format!(
+            "review payload must contain exactly {allowed:?}; received {received:?}"
+        ));
     }
     Ok(())
 }
@@ -703,10 +798,21 @@ mod tests {
     #[test]
     fn validator_accepts_declared_shapes_and_rejects_capability_fields() {
         let validator = ReviewDecisionValidator;
+        let schema = review_decision_schema();
+        let variants = schema["oneOf"].as_array().unwrap();
+        assert_eq!(variants.len(), 5);
+        let failed = variants
+            .iter()
+            .find(|variant| variant["properties"]["event_type"]["enum"][0] == "review.failed")
+            .unwrap();
+        assert_eq!(
+            failed["properties"]["payload"]["required"],
+            json!(["reason"])
+        );
         assert!(
             validator
                 .validate(
-                    &review_decision_schema(),
+                    &schema,
                     &json!({
                         "event_type": "review.pass",
                         "payload": {"assessment": {}}
@@ -728,6 +834,17 @@ mod tests {
                 )
                 .is_err()
         );
+        let error = validator
+            .validate(
+                &review_decision_schema(),
+                &json!({
+                    "event_type": "review.pass",
+                    "payload": {"assessment": {}, "publish": true}
+                }),
+            )
+            .unwrap_err();
+        assert!(error.contains("exactly [\"assessment\"]"));
+        assert!(error.contains("received [\"assessment\", \"publish\"]"));
         let target = argus_core::TargetId::derive([b"requested-target".as_slice()]);
         let request = json!({
             "event_type": "review.unable_to_verify",

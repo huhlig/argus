@@ -46,6 +46,8 @@ pub enum ProviderTransportProfile {
     Lemonade {
         base_url: Option<String>,
         api_key_env: Option<String>,
+        #[serde(default)]
+        request_timeout_seconds: Option<u64>,
     },
     LmStudio {
         base_url: Option<String>,
@@ -119,10 +121,12 @@ impl ProviderRuntimeProfile {
             ProviderTransportProfile::Lemonade {
                 base_url,
                 api_key_env,
-            } => LangchartModelProvider::lemonade(
+                request_timeout_seconds,
+            } => LangchartModelProvider::lemonade_with_timeout(
                 self.capabilities.clone(),
                 base_url.as_deref(),
                 resolve_optional_secret(api_key_env.as_deref(), &mut read_secret)?,
+                *request_timeout_seconds,
             ),
             ProviderTransportProfile::LmStudio {
                 base_url,
@@ -290,6 +294,7 @@ mod tests {
             profile(ProviderTransportProfile::Lemonade {
                 base_url: None,
                 api_key_env: Some("LEMONADE_API_KEY".to_owned()),
+                request_timeout_seconds: None,
             }),
             profile(ProviderTransportProfile::LmStudio {
                 base_url: None,

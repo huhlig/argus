@@ -69,7 +69,7 @@ Use one of these objects as `transport`. Online profiles must also set
 {"kind":"anthropic","api_key_env":"ANTHROPIC_API_KEY"}
 {"kind":"openai","api_key_env":"OPENAI_API_KEY"}
 {"kind":"ollama","base_url":null}
-{"kind":"lemonade","base_url":null,"api_key_env":null}
+{"kind":"lemonade","base_url":null,"api_key_env":null,"request_timeout_seconds":null}
 {"kind":"lm_studio","base_url":null,"api_key_env":null}
 {"kind":"watsonx","service_url":"https://us-south.ml.cloud.ibm.com","api_version":"2024-05-31","scope":{"kind":"project","id":"project-id"},"credential":{"kind":"api_key","env":"WATSONX_API_KEY"}}
 ```
@@ -83,3 +83,7 @@ The default local endpoints are:
 Same-network endpoints are allowed only when the capability deployment is
 `same_network`. Local deployment accepts loopback endpoints only. Online
 endpoints require HTTPS.
+
+Lemonade profiles may set `request_timeout_seconds` for slower local models. When omitted or null,
+Langchart's 120-second default applies. The timeout must be positive and should not exceed the
+workflow state's timeout.

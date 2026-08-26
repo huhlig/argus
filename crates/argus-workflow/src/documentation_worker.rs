@@ -20,7 +20,7 @@ use crate::{
 };
 use argus_core::{ArgusError, RunId as AuditRunId, WorkItemId};
 use argus_provider::ProviderExecutor;
-use argus_storage::{DurableQueue, LeasedWork, QueueState};
+use argus_storage::{DurableQueue, LeasedWork, QueueEventKind, QueueState};
 use async_trait::async_trait;
 use langchart_adapters::{
     checkpoint::CheckpointStore,
@@ -33,7 +33,11 @@ use langchart_model::{
     validation::CompiledWorkflow,
 };
 use langchart_runtime::{AgentActor, InstanceCheckpoint, RunStatus, WorkflowInstance};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    sync::{Arc, Mutex, MutexGuard},
+};
 use tokio::time::{Duration, Instant};
 
 #[derive(Clone)]
@@ -41,6 +45,22 @@ pub struct DocumentationWorkerRuntime {
     pub executor: Arc<ProviderExecutor>,
     pub broker: Arc<langchart_runtime::CapabilityBroker>,
     pub event_sink: Arc<dyn EventSink>,
+    pub failure_diagnostics: Arc<WorkflowFailureDiagnostics>,
+}
+
+#[derive(Default)]
+pub struct WorkflowFailureDiagnostics {
+    failures: Mutex<BTreeMap<String, String>>,
+}
+
+impl WorkflowFailureDiagnostics {
+    pub(crate) fn record(&self, run_id: &str, message: String) {
+        lock(&self.failures).insert(run_id.to_owned(), message);
+    }
+
+    fn get(&self, run_id: &str) -> Option<String> {
+        lock(&self.failures).get(run_id).cloned()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -187,6 +207,7 @@ impl DocumentationWorker {
 
     async fn execute(&self, leased: &LeasedWork) -> Result<(), ArgusError> {
         let (admission, materialized, langchart_run_id) = self.restore_work(leased)?;
+        let diagnostic_run_id = langchart_run_id.as_ref().to_owned();
         let prepared = self.prepare_runtime(leased, &materialized, &langchart_run_id)?;
         let checkpoint = prepared
             .checkpoint_store
@@ -229,7 +250,9 @@ impl DocumentationWorker {
                             .with_source(error)
                     })?;
                 }
-                RunStatus::Completed => return self.require_durable_outcome(leased),
+                RunStatus::Completed => {
+                    return self.require_durable_result(leased, &diagnostic_run_id);
+                }
                 RunStatus::Failed | RunStatus::Cancelled | RunStatus::Running => {
                     return Err(ArgusError::invariant(
                         "documentation checkpoint is not safely resumable",
@@ -245,11 +268,16 @@ impl DocumentationWorker {
             ArgusError::invariant("documentation workflow execution failed").with_source(error)
         })?;
         if status != RunStatus::Completed {
+            let detail = self
+                .runtime
+                .failure_diagnostics
+                .get(&diagnostic_run_id)
+                .map_or_else(String::new, |message| format!(": {message}"));
             return Err(ArgusError::invariant(format!(
-                "documentation workflow ended with {status:?}"
+                "documentation workflow ended with {status:?}{detail}"
             )));
         }
-        self.require_durable_outcome(leased)
+        self.require_durable_result(leased, &diagnostic_run_id)
     }
 
     fn restore_work(
@@ -290,7 +318,21 @@ impl DocumentationWorker {
                 "documentation package is outside the worker snapshot",
             ));
         }
-        let langchart_run_id = langchart_run_id(&self.config.identity.audit_run, &leased.id);
+        let retry_generation = self
+            .queue
+            .events()?
+            .into_iter()
+            .filter(|event| {
+                event.work_id == leased.id && event.kind == QueueEventKind::RetryScheduled
+            })
+            .count();
+        let retry_generation = u64::try_from(retry_generation)
+            .map_err(|_| ArgusError::invariant("documentation retry generation overflow"))?;
+        let langchart_run_id = langchart_run_id(
+            &self.config.identity.audit_run,
+            &leased.id,
+            retry_generation,
+        );
         materialized
             .initialize_workflow_data(&self.workflow_data, langchart_run_id.as_ref())
             .map_err(|error| {
@@ -379,13 +421,49 @@ impl DocumentationWorker {
         }
         Ok(())
     }
+
+    fn require_durable_result(
+        &self,
+        leased: &LeasedWork,
+        langchart_run_id: &str,
+    ) -> Result<(), ArgusError> {
+        let record = self
+            .workflow_data
+            .load(langchart_run_id)
+            .map_err(|error| {
+                ArgusError::invariant("cannot load terminal documentation decision")
+                    .with_source(error)
+            })?
+            .ok_or_else(|| ArgusError::invariant("terminal documentation decision is missing"))?;
+        if let Some(decision) = record
+            .data
+            .primary_decisions
+            .last()
+            .filter(|decision| decision.evidence_revision == record.data.evidence_revision)
+            && decision.event_type == "review.failed"
+        {
+            let reason = decision
+                .payload
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("no normalized reason recorded");
+            return Err(ArgusError::invariant(format!(
+                "documentation review declared failure: {reason}"
+            )));
+        }
+        self.require_durable_outcome(leased)
+    }
 }
 
-fn langchart_run_id(audit_run: &AuditRunId, work_id: &WorkItemId) -> RunId {
+fn langchart_run_id(audit_run: &AuditRunId, work_id: &WorkItemId, retry_generation: u64) -> RunId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"argus.documentation.langchart-run.v1\0");
     hasher.update(audit_run.as_str().as_bytes());
     hasher.update(work_id.as_str().as_bytes());
+    if retry_generation > 0 {
+        hasher.update(b"\0retry\0");
+        hasher.update(&retry_generation.to_be_bytes());
+    }
     RunId::new(format!(
         "argus-documentation-{}",
         hasher.finalize().to_hex()
@@ -425,6 +503,12 @@ impl ContextResolver for DocumentationContextResolver {
     }
 }
 
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +539,19 @@ mod tests {
     use langchart_runtime::simulation::CapturingSink;
     use serde_json::json;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn retry_generation_gets_a_fresh_workflow_run_without_changing_initial_identity() {
+        let audit_run = AuditRunId::derive([b"audit-run".as_slice()]);
+        let work = WorkItemId::derive([b"work".as_slice()]);
+
+        let initial = langchart_run_id(&audit_run, &work, 0);
+        let retry = langchart_run_id(&audit_run, &work, 1);
+
+        assert_eq!(initial, langchart_run_id(&audit_run, &work, 0));
+        assert_ne!(initial, retry);
+        assert_ne!(retry, langchart_run_id(&audit_run, &work, 2));
+    }
 
     struct StaticLlm {
         response: String,
@@ -710,6 +807,7 @@ mod tests {
                 executor,
                 broker,
                 event_sink: sink,
+                failure_diagnostics: Arc::new(WorkflowFailureDiagnostics::default()),
             },
             DocumentationWorkerConfig {
                 state_directory: state,

@@ -126,7 +126,21 @@ impl ProviderExecutor {
         provider: &dyn ModelProvider,
         request: ModelRequest,
     ) -> Result<ModelResponse, ProviderError> {
-        let result = self.execute_with_provider_inner(provider, request).await;
+        self.execute_with_provider_and_validator(provider, request, self.validator.as_ref())
+            .await
+    }
+
+    /// Executes through a per-invocation provider and validator without weakening
+    /// the executor's identity, privacy, concurrency, budget, or telemetry controls.
+    pub async fn execute_with_provider_and_validator(
+        &self,
+        provider: &dyn ModelProvider,
+        request: ModelRequest,
+        validator: &dyn OutputValidator,
+    ) -> Result<ModelResponse, ProviderError> {
+        let result = self
+            .execute_with_provider_inner(provider, request, validator)
+            .await;
         let published = self.publish_telemetry();
         match (result, published) {
             (Ok(response), Ok(())) => Ok(response),
@@ -141,6 +155,7 @@ impl ProviderExecutor {
         &self,
         provider: &dyn ModelProvider,
         request: ModelRequest,
+        validator: &dyn OutputValidator,
     ) -> Result<ModelResponse, ProviderError> {
         if provider.capabilities() != self.provider.capabilities() {
             return Err(ProviderError::SubstitutionDenied(
@@ -197,10 +212,7 @@ impl ProviderExecutor {
             };
             self.validate_response_identity(&current, &response)?;
             self.record_usage(&current, &response)?;
-            match self
-                .validator
-                .validate(&current.structured_output_schema, &response.output)
-            {
+            match validator.validate(&current.structured_output_schema, &response.output) {
                 Ok(()) => {
                     lock(&self.telemetry).successes += 1;
                     return Ok(response);
@@ -597,6 +609,46 @@ mod tests {
             lock(&provider.seen)[1]
                 .prompt
                 .contains("previous response was invalid")
+        );
+    }
+
+    #[tokio::test]
+    async fn invocation_validator_participates_in_bounded_repair() {
+        let provider = fixture([
+            Ok(response(json!({"status": "pass"}), 0)),
+            Ok(response(
+                json!({"status": "pass", "evidence_bound": true}),
+                1,
+            )),
+        ]);
+        let executor = ProviderExecutor::new(
+            provider.clone(),
+            identity(),
+            policy(2),
+            RepairPolicy {
+                max_repair_attempts: 1,
+            },
+            status_validator(),
+        )
+        .unwrap();
+        let evidence_bound = |_: &Value, output: &Value| {
+            (output.get("evidence_bound") == Some(&Value::Bool(true)))
+                .then_some(())
+                .ok_or_else(|| "assessment must be bound to admitted evidence".to_owned())
+        };
+
+        let result = executor
+            .execute_with_provider_and_validator(provider.as_ref(), request(), &evidence_bound)
+            .await
+            .unwrap();
+
+        assert_eq!(result.output["evidence_bound"], true);
+        assert_eq!(executor.telemetry().requests, 2);
+        assert_eq!(executor.telemetry().repair_attempts, 1);
+        assert!(
+            lock(&provider.seen)[1]
+                .prompt
+                .contains("assessment must be bound to admitted evidence")
         );
     }
 

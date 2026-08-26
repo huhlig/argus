@@ -245,6 +245,7 @@ pub fn documentation_assessment_draft_schema() -> Value {
     ];
     let evidence = json!({
         "type": "array",
+        "description": "Exact evidence IDs copied from untrusted_evidence[].id in the review context. Do not use any other identifiers or invented values.",
         "items": {"type": "string"},
         "uniqueItems": true
     });

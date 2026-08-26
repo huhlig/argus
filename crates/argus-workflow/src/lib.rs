@@ -54,7 +54,7 @@ pub use documentation_review::{
 pub use documentation_runtime::{DocumentationRuntimeIdentity, documentation_actor_registry};
 pub use documentation_worker::{
     DocumentationWorker, DocumentationWorkerConfig, DocumentationWorkerResult,
-    DocumentationWorkerRuntime,
+    DocumentationWorkerRuntime, WorkflowFailureDiagnostics,
 };
 pub use evidence_actor::{EvidenceExpander, EvidenceExpansionActor, EvidenceRequestEvaluatorActor};
 pub use outcome::{

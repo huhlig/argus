@@ -87,7 +87,10 @@ fn reconciles_cargo_roots_with_syntax_targets_and_containment() {
     let run_documentation = first
         .evidence
         .iter()
-        .find(|evidence| evidence.target.as_ref() == ids_for_name(&first, "run"))
+        .find(|evidence| {
+            evidence.target.as_ref() == ids_for_name(&first, "run")
+                && evidence.kind == argus_core::EvidenceKind::Documentation
+        })
         .unwrap();
     assert_eq!(
         run_documentation.kind,
@@ -97,6 +100,14 @@ fn reconciles_cargo_roots_with_syntax_targets_and_containment() {
         run_documentation.detail.as_deref(),
         Some("Runs the application.")
     );
+    assert!(first.evidence.iter().any(|evidence| {
+        evidence.target.as_ref() == ids_for_name(&first, "run")
+            && evidence.kind == argus_core::EvidenceKind::Source
+            && evidence
+                .detail
+                .as_deref()
+                .is_some_and(|source| source.contains("pub fn run() {}"))
+    }));
     let record = ids_for_name(&first, "Record").unwrap();
     assert!(first.evidence.iter().any(|evidence| {
         evidence.target.as_ref() == Some(record)

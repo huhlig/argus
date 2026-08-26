@@ -464,9 +464,15 @@ impl DocumentationAssessmentBinding {
                     ));
                 }
                 self.evidence.get(id).cloned().ok_or_else(|| {
-                    argus_core::ArgusError::invalid_input(
-                        "documentation draft cites evidence outside the trusted package",
-                    )
+                    let allowed = self
+                        .evidence
+                        .keys()
+                        .map(EvidenceId::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    argus_core::ArgusError::invalid_input(format!(
+                        "documentation draft cites evidence outside the trusted package; allowed evidence IDs: {allowed}"
+                    ))
                 })
             })
             .collect()

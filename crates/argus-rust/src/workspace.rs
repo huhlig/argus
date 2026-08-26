@@ -22,7 +22,7 @@ use argus_language::{
     AdapterIdentity, AdapterInventory, AdapterProvider, CollectingInventorySink, ConflictRecord,
     DiscoveryPartition, InventorySink, LanguageAdapter, ProviderRole, SourceAccess,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug)]
 pub struct RustWorkspaceAdapter {
@@ -79,7 +79,7 @@ impl RustWorkspaceAdapter {
                 .syntax
                 .inventory_crate(source, &path, Some(cargo_target))?;
             sink.partition(syntax_partition(&path, &syntax))?;
-            let documentation = syntax_documentation_evidence(&syntax, &self.configuration);
+            let review_evidence = syntax_review_evidence(source, &syntax, &self.configuration)?;
             let mut crate_relations = Vec::new();
             let mut new_targets = BTreeSet::new();
             for target in syntax.targets {
@@ -102,7 +102,7 @@ impl RustWorkspaceAdapter {
                     })?;
                 }
             }
-            for evidence in documentation {
+            for evidence in review_evidence {
                 if evidence
                     .target
                     .as_ref()
@@ -121,47 +121,91 @@ impl RustWorkspaceAdapter {
     }
 }
 
-fn syntax_documentation_evidence(
+fn syntax_review_evidence(
+    source: &dyn SourceAccess,
     syntax: &crate::RustSyntaxInventory,
     configuration: &ConfigurationId,
-) -> Vec<EvidenceRecord> {
-    syntax
-        .targets
-        .iter()
-        .map(|target| {
-            let documentation = syntax.documentation.get(&target.id);
-            let presence = if documentation.is_some() {
-                b"present".as_slice()
+) -> Result<Vec<EvidenceRecord>, argus_core::ArgusError> {
+    let mut records = Vec::with_capacity(syntax.targets.len().saturating_mul(2));
+    let mut sources = BTreeMap::new();
+    for target in &syntax.targets {
+        let documentation = syntax.documentation.get(&target.id);
+        let presence = if documentation.is_some() {
+            b"present".as_slice()
+        } else {
+            b"absent".as_slice()
+        };
+        records.push(EvidenceRecord {
+            id: EvidenceId::derive([
+                b"rust-syntax-documentation".as_slice(),
+                target.id.as_str().as_bytes(),
+                presence,
+                documentation.map_or(b"".as_slice(), |text| text.as_bytes()),
+            ]),
+            kind: EvidenceKind::Documentation,
+            origin: EvidenceOrigin::Direct,
+            target: Some(target.id.clone()),
+            location: target.location.clone(),
+            summary: if documentation.is_some() {
+                format!("Rust documentation for {}", target.name)
             } else {
-                b"absent".as_slice()
-            };
-            EvidenceRecord {
-                id: EvidenceId::derive([
-                    b"rust-syntax-documentation".as_slice(),
-                    target.id.as_str().as_bytes(),
-                    presence,
-                    documentation.map_or(b"".as_slice(), |text| text.as_bytes()),
-                ]),
-                kind: EvidenceKind::Documentation,
-                origin: EvidenceOrigin::Direct,
-                target: Some(target.id.clone()),
-                location: target.location.clone(),
-                summary: if documentation.is_some() {
-                    format!("Rust documentation for {}", target.name)
-                } else {
-                    format!("No Rust documentation is attached to {}", target.name)
-                },
-                detail: documentation.cloned(),
-                provenance: EvidenceProvenance {
-                    provider: "ra_ap_syntax".to_owned(),
-                    provider_version: "0.0.270".to_owned(),
-                    configuration: configuration.clone(),
-                    ingest_only: true,
-                    resolution: ResolutionQuality::Exact,
-                },
-            }
-        })
-        .collect()
+                format!("No Rust documentation is attached to {}", target.name)
+            },
+            detail: documentation.cloned(),
+            provenance: EvidenceProvenance {
+                provider: "ra_ap_syntax".to_owned(),
+                provider_version: "0.0.270".to_owned(),
+                configuration: configuration.clone(),
+                ingest_only: true,
+                resolution: ResolutionQuality::Exact,
+            },
+        });
+        let Some(location) = &target.location else {
+            continue;
+        };
+        if !sources.contains_key(&location.path) {
+            sources.insert(location.path.clone(), source.read(&location.path)?);
+        }
+        let bytes = sources
+            .get(&location.path)
+            .expect("source was inserted for the target location");
+        let start = usize::try_from(location.bytes.start).map_err(|error| {
+            argus_core::ArgusError::invariant("source span start exceeds platform limits")
+                .with_source(error)
+        })?;
+        let end = usize::try_from(location.bytes.end).map_err(|error| {
+            argus_core::ArgusError::invariant("source span end exceeds platform limits")
+                .with_source(error)
+        })?;
+        let span = bytes.get(start..end).ok_or_else(|| {
+            argus_core::ArgusError::invariant("syntax target source span is out of bounds")
+        })?;
+        let detail = std::str::from_utf8(span).map_err(|error| {
+            argus_core::ArgusError::invariant("syntax target source span is not UTF-8")
+                .with_source(error)
+        })?;
+        records.push(EvidenceRecord {
+            id: EvidenceId::derive([
+                b"rust-syntax-source".as_slice(),
+                target.id.as_str().as_bytes(),
+                span,
+            ]),
+            kind: EvidenceKind::Source,
+            origin: EvidenceOrigin::Direct,
+            target: Some(target.id.clone()),
+            location: Some(location.clone()),
+            summary: format!("Rust source for {}", target.name),
+            detail: Some(detail.to_owned()),
+            provenance: EvidenceProvenance {
+                provider: "ra_ap_syntax".to_owned(),
+                provider_version: "0.0.270".to_owned(),
+                configuration: configuration.clone(),
+                ingest_only: true,
+                resolution: ResolutionQuality::Exact,
+            },
+        });
+    }
+    Ok(records)
 }
 
 impl LanguageAdapter for RustWorkspaceAdapter {
