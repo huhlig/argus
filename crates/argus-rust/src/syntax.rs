@@ -18,7 +18,7 @@ use argus_core::{
 };
 use argus_language::SourceAccess;
 use ra_ap_syntax::{
-    AstNode, AstToken, Edition, SourceFile,
+    AstNode, Edition, SourceFile,
     ast::{self, HasAttrs, HasDocComments, HasModuleItem, HasName, HasVisibility},
 };
 use std::{
@@ -485,9 +485,10 @@ fn callable_identity(item: &ast::Fn, ordinary_kind: &str) -> (TargetKind, String
 fn documentation_text(item: &(impl HasDocComments + HasAttrs)) -> Option<String> {
     let mut lines = item
         .doc_comments()
-        .map(|comment| {
-            let text = comment.text();
-            text.strip_prefix(' ').unwrap_or(text).to_owned()
+        .filter_map(|comment| {
+            comment
+                .doc_comment()
+                .map(|(text, _offset)| text.strip_prefix(' ').unwrap_or(text).to_owned())
         })
         .collect::<Vec<_>>();
 

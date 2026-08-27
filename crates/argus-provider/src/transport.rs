@@ -411,6 +411,33 @@ fn map_error(error: LlmError) -> ProviderError {
                 "adapter `{adapter}` cannot honor required response format `{requested}`"
             ))
         }
+        LlmError::Transport {
+            stage,
+            retryable,
+            cause,
+        } => ProviderError::Unavailable(format!(
+            "transport error during {stage:?} (retryable={retryable}): {cause}"
+        )),
+        LlmError::Http {
+            status,
+            retry_after: _,
+            request_id: _,
+            body_metadata: _,
+        } => ProviderError::Unavailable(format!("provider returned HTTP {status}")),
+        LlmError::Decode {
+            status,
+            cause,
+            likely_truncated,
+            ..
+        } => ProviderError::InvalidOutput(format!(
+            "failed to decode HTTP {status} response (truncated={likely_truncated}): {cause}"
+        )),
+        LlmError::IncompleteStream {
+            received_bytes,
+            finish_event_seen,
+        } => ProviderError::InvalidOutput(format!(
+            "stream ended prematurely ({received_bytes} bytes received, finish event seen: {finish_event_seen})"
+        )),
         LlmError::Provider(message) => ProviderError::Unavailable(message),
         LlmError::Timeout => ProviderError::Unavailable("provider request timed out".to_owned()),
     }
@@ -493,6 +520,7 @@ mod tests {
             finish_reason: FinishReason::Stop,
             refusal: None,
             model: model.to_owned(),
+            reported_model: None,
         }
     }
 
