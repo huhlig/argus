@@ -1,23 +1,32 @@
-# Documentation policy evaluation
+# Correctness policy evaluation
 
-Phase 9 quality evaluation is separate from an ordinary repository audit. The seeded corpus is
-provided by `argus_test_support::seeded_documentation_fixture` and comprehensively tests all 14
-documentation rubrics (presence, purpose, behavior, inputs, outputs, errors, panics, safety,
-side effects, invariants, examples, accuracy, currency, and value) plus known-clean controls.
-Corpus and evaluation records are independently schema-versioned; changing ground truth requires
-a new corpus version.
-The serialized corpus is checked in at `docs/evaluation/documentation-corpus-v1.json` and is tested
+Phase 10 quality evaluation is separate from an ordinary repository audit. The seeded corpus is
+provided by `argus_test_support::seeded_correctness_fixture` and comprehensively tests all 9
+correctness rubrics:
+1. `FailurePaths`
+2. `Invariants`
+3. `StateTransitions`
+4. `ErrorHandling`
+5. `ResourceLifecycle`
+6. `Concurrency`
+7. `Persistence`
+8. `UnsafeAssumptions`
+9. `BoundaryConditions`
+
+plus 3 clean controls. Corpus and evaluation records are independently schema-versioned; changing
+ground truth requires a new corpus version.
+The serialized corpus is checked in at `docs/evaluation/correctness-corpus-v1.json` and is tested
 against the fixture builder to prevent drift.
 Its executable Cargo workspace is checked in at
-`docs/evaluation/documentation-corpus-v1-workspace`. The corpus uses logical target IDs, which are
+`docs/evaluation/correctness-corpus-v1-workspace`. The corpus uses logical target IDs, which are
 independent of snapshot, analysis configuration, VCS state, and source byte offsets.
 
 Human decisions use the generic `HumanAdjudication` record and existing `AdjudicationState` rather
-than a documentation-specific verdict. Records are append-only per run and finding. Revision writes
+than a correctness-specific verdict. Records are append-only per run and finding. Revision writes
 use compare-and-swap semantics so stale reviewers cannot overwrite a newer decision. An accepted
 finding may name the corpus issue it matches; rejected and deferred findings may not.
 
-`evaluate_documentation` reports:
+`evaluate_correctness` reports:
 
 - precision as accepted / (accepted + rejected); deferred and unadjudicated findings remain visible
   but are not silently classified;
@@ -31,7 +40,7 @@ empty repeated runs is perfectly stable, while one run alone has no stability me
 the exact numerator, denominator, and integer basis-point result; Markdown renders the same values.
 
 These measurements do not declare the policy usable. A reviewer must adjudicate the seeded runs and
-record an initial policy-specific threshold before Phase 9 acceptance can be claimed. Threshold
+record an initial policy-specific threshold before Phase 10 acceptance can be claimed. Threshold
 selection can be enforced automatically in CI via `--thresholds <path>`.
 
 ## Commands
@@ -47,7 +56,7 @@ argus report <run-id> --format json
 argus report <run-id> --format jsonl
 
 # Filter by dimension or severity
-argus report <run-id> --dimension errors
+argus report <run-id> --dimension concurrency
 argus report <run-id> --severity high
 ```
 
@@ -58,7 +67,7 @@ argus adjudicate <run-id> <finding-id> accepted \
   --expected-revision none \
   --reviewer <identity> \
   --rationale <text> \
-  --expected-issue missing-errors
+  --expected-issue seeded-deadlock-on-order-inversion
 ```
 
 Subsequent decisions supply the current revision number instead of `none`. Accepted findings may
@@ -70,8 +79,8 @@ in durable working state until an explicit supplemental export path is implement
 Evaluate one run, or pass additional run IDs to measure stability, optionally enforcing quality thresholds:
 
 ```text
-argus evaluate documentation \
-  --corpus docs/evaluation/documentation-corpus-v1.json \
+argus evaluate correctness \
+  --corpus docs/evaluation/correctness-corpus-v1.json \
   [--thresholds .argus/config/thresholds.json] \
   [--format markdown|json] \
   <run-id> [<run-id> ...]
@@ -80,9 +89,9 @@ argus evaluate documentation \
 Create each repeated evaluation run from the executable corpus workspace:
 
 ```text
-cd docs/evaluation/documentation-corpus-v1-workspace
+cd docs/evaluation/correctness-corpus-v1-workspace
 argus prime --adapter rust
-argus audit --pipeline documentation
-argus work documentation --profile <profile-name-or-path> --limit 14
+argus audit --pipeline correctness
+argus work correctness --profile <profile-name-or-path> --limit 12
 argus finalize <run-id>
 ```

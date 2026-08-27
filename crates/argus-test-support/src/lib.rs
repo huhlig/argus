@@ -14,8 +14,16 @@
 
 //! Shared fixture builders. Production crates must never depend on this crate.
 
+mod architecture;
+mod correctness;
 mod documentation;
 
+pub use architecture::{
+    SeededArchitectureFixture, SeededArchitectureSource, seeded_architecture_fixture,
+};
+pub use correctness::{
+    SeededCorrectnessFixture, SeededCorrectnessSource, seeded_correctness_fixture,
+};
 pub use documentation::{
     SeededDocumentationFixture, SeededDocumentationSource, seeded_documentation_fixture,
 };

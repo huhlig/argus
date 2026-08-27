@@ -14,12 +14,38 @@
 
 //! Deterministic reports derived from portable Argus run bundles.
 
+mod architecture;
+mod architecture_evaluation;
+mod correctness;
+mod correctness_evaluation;
 mod evaluation;
 
+pub use architecture::{
+    ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ARCHITECTURE_REPORT_SCHEMA_VERSION,
+    ArchitectureFindingCluster, ArchitectureFindingOccurrence, ArchitectureReport,
+    ArchitectureReportAssessment, ArchitectureReportSummary, architecture_report_from_queue,
+    write_architecture_bundle_reports,
+};
+pub use architecture_evaluation::{
+    ARCHITECTURE_CORPUS_SCHEMA_VERSION, ARCHITECTURE_EVALUATION_SCHEMA_VERSION,
+    ArchitectureEvaluation, ArchitectureEvaluationCorpus, ArchitectureEvaluationThresholds,
+    ExpectedArchitectureIssue, evaluate_architecture,
+};
+pub use correctness::{
+    CORRECTNESS_ASSESSMENT_ARTIFACT_KIND, CORRECTNESS_REPORT_SCHEMA_VERSION,
+    CorrectnessFindingCluster, CorrectnessFindingOccurrence, CorrectnessReport,
+    CorrectnessReportAssessment, CorrectnessReportSummary, correctness_report_from_queue,
+    write_correctness_bundle_reports,
+};
+pub use correctness_evaluation::{
+    CORRECTNESS_CORPUS_SCHEMA_VERSION, CORRECTNESS_EVALUATION_SCHEMA_VERSION,
+    CorrectnessEvaluation, CorrectnessEvaluationCorpus, CorrectnessEvaluationThresholds,
+    ExpectedCorrectnessIssue, evaluate_correctness,
+};
 pub use evaluation::{
     DOCUMENTATION_CORPUS_SCHEMA_VERSION, DOCUMENTATION_EVALUATION_SCHEMA_VERSION,
-    DocumentationEvaluation, DocumentationEvaluationCorpus, EvaluationRate,
-    ExpectedDocumentationIssue, evaluate_documentation,
+    DocumentationEvaluation, DocumentationEvaluationCorpus, DocumentationEvaluationThresholds,
+    EvaluationRate, ExpectedDocumentationIssue, evaluate_documentation,
 };
 
 use argus_core::{Confidence, FindingId, RunId, Severity, TargetId, WorkItemId};

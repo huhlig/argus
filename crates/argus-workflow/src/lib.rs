@@ -15,8 +15,18 @@
 //! Versioned Langchart workflows owned by Argus.
 
 mod actor_registry;
+mod architecture_outcome_actor;
+mod architecture_plan;
+mod architecture_review;
+mod architecture_runtime;
+mod architecture_worker;
 mod candidate_actor;
 mod checkpoint;
+mod correctness_outcome_actor;
+mod correctness_plan;
+mod correctness_review;
+mod correctness_runtime;
+mod correctness_worker;
 mod documentation_broker;
 mod documentation_outcome_actor;
 mod documentation_plan;
@@ -34,8 +44,45 @@ use langchart_model::{validation::CompiledWorkflow, workflow::WorkflowDocument};
 use std::{error::Error, fmt};
 
 pub use actor_registry::{ActorFactory, ActorRegistry, ActorRegistryError};
+pub use architecture_outcome_actor::{
+    ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ArchitectureOutcomeActor,
+    DurableArchitectureOutcomeActor,
+};
+pub use architecture_plan::{
+    ARCHITECTURE_EVIDENCE_PACKAGE_ARTIFACT_KIND, ARCHITECTURE_REVIEW_CONTEXT_ARTIFACT_KIND,
+    ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION, ArchitectureEvidenceCatalog,
+    ArchitectureReviewAdmission, ArchitectureReviewBatch, ArchitectureReviewMaterialization,
+    ArchitectureReviewPlan, ArchitectureReviewPlanner, ArchitectureReviewUnit,
+};
+pub use architecture_review::{
+    ArchitectureAssessmentContract, ArchitectureReviewTransportValidator,
+    architecture_assessment_draft_schema,
+};
+pub use architecture_runtime::{ArchitectureRuntimeIdentity, architecture_actor_registry};
+pub use architecture_worker::{
+    ArchitectureContextResolver, ArchitectureWorker, ArchitectureWorkerConfig,
+    ArchitectureWorkerResult,
+};
 pub use candidate_actor::{CandidateRecorderActor, FindingWorkSchedulerActor};
 pub use checkpoint::{CHECKPOINT_DATABASE_FILE, CheckpointOpenError, open_checkpoint_store};
+pub use correctness_outcome_actor::{
+    CORRECTNESS_ASSESSMENT_ARTIFACT_KIND, CorrectnessOutcomeActor,
+    DurableCorrectnessOutcomeActor,
+};
+pub use correctness_plan::{
+    CORRECTNESS_EVIDENCE_PACKAGE_ARTIFACT_KIND, CORRECTNESS_REVIEW_CONTEXT_ARTIFACT_KIND,
+    CORRECTNESS_REVIEW_PLAN_SCHEMA_VERSION, CorrectnessEvidenceCatalog,
+    CorrectnessReviewAdmission, CorrectnessReviewBatch, CorrectnessReviewMaterialization,
+    CorrectnessReviewPlan, CorrectnessReviewPlanner, CorrectnessReviewUnit,
+};
+pub use correctness_review::{
+    CorrectnessAssessmentContract, CorrectnessReviewTransportValidator,
+    correctness_assessment_draft_schema,
+};
+pub use correctness_runtime::{CorrectnessRuntimeIdentity, correctness_actor_registry};
+pub use correctness_worker::{
+    CorrectnessWorker, CorrectnessWorkerConfig, CorrectnessWorkerResult,
+};
 pub use documentation_broker::documentation_worker_runtime;
 pub use documentation_outcome_actor::{
     DOCUMENTATION_ASSESSMENT_ARTIFACT_KIND, DocumentationOutcomeActor,

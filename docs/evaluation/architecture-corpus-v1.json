@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "name": "argus-seeded-architecture",
+  "version": "1.0.0",
+  "policy_version": "architecture-code-derived@1",
+  "expected_issues": [
+    {
+      "id": "cyclic-dependency",
+      "target": "fff3122ad1844bde36278f0502612171e2dcaae103c0563b016d27357a57b95a",
+      "dimensions": [
+        "cycles",
+        "dependency_structure"
+      ]
+    },
+    {
+      "id": "layering-violation",
+      "target": "4754f039b948dc20debbf4396dd1da3db07498a712145db420c1d1c796c3336b",
+      "dimensions": [
+        "boundary_analysis",
+        "dependency_structure"
+      ]
+    },
+    {
+      "id": "leaky-abstraction",
+      "target": "12cd1dcace48c39444e2450c9ac141f733ce806f807721702dab785c5a38d762",
+      "dimensions": [
+        "public_surface"
+      ]
+    },
+    {
+      "id": "low-cohesion",
+      "target": "a0bc6057560ccf7a3166b7d0069974f077f286fd00731a7fe985580bed16cc20",
+      "dimensions": [
+        "ownership_and_cohesion"
+      ]
+    },
+    {
+      "id": "bypassed-boundary",
+      "target": "ff5180fb1bd42135ed0870431b851d2a2b7e786b522799d1ffc1dc9db78eef7a",
+      "dimensions": [
+        "boundary_analysis"
+      ]
+    },
+    {
+      "id": "pattern-dissonance",
+      "target": "800706dde402f14186c2a6cc341d8707c95571b4bf6db00e8114df1f5c14c02a",
+      "dimensions": [
+        "pattern_consistency"
+      ]
+    }
+  ],
+  "known_clean_targets": [
+    "a7fe801f37e2eef48a338386bedf4e604fd102a4136f4d440f2b2e18b6edb8e8",
+    "a62cd0d84c42ab4710a6b6c0a57aa0e19ddbd4d1f25aa656b834d18f11087b35"
+  ]
+}

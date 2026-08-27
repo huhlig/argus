@@ -462,6 +462,7 @@ mod tests {
 
     #[async_trait]
     impl LlmAdapter for FixtureAdapter {
+        #[allow(clippy::result_large_err)]
         async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
             self.seen.lock().unwrap().push(request);
             self.responses

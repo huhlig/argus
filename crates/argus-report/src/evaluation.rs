@@ -88,6 +88,93 @@ impl DocumentationEvaluation {
             self.unadjudicated_findings,
         )
     }
+
+    pub fn check_thresholds(
+        &self,
+        thresholds: &DocumentationEvaluationThresholds,
+    ) -> Result<(), Vec<String>> {
+        let mut violations = Vec::new();
+        if let Some(min_precision) = thresholds.min_precision_basis_points {
+            match self.precision {
+                Some(precision) if precision.basis_points < min_precision => {
+                    violations.push(format!(
+                        "precision {:.2}% is below threshold {:.2}%",
+                        f64::from(precision.basis_points) / 100.0,
+                        f64::from(min_precision) / 100.0
+                    ));
+                }
+                None => {
+                    violations.push("precision was unmeasured (no accepted or rejected findings)".to_owned());
+                }
+                _ => {}
+            }
+        }
+        if let Some(min_recall) = thresholds.min_recall_basis_points {
+            if self.recall.basis_points < min_recall {
+                violations.push(format!(
+                    "recall {:.2}% is below threshold {:.2}%",
+                    f64::from(self.recall.basis_points) / 100.0,
+                    f64::from(min_recall) / 100.0
+                ));
+            }
+        }
+        if let Some(max_duplicate) = thresholds.max_duplicate_rate_basis_points {
+            if let Some(duplicate) = self.duplicate_rate {
+                if duplicate.basis_points > max_duplicate {
+                    violations.push(format!(
+                        "duplicate rate {:.2}% exceeds maximum threshold {:.2}%",
+                        f64::from(duplicate.basis_points) / 100.0,
+                        f64::from(max_duplicate) / 100.0
+                    ));
+                }
+            }
+        }
+        if let Some(max_utv) = thresholds.max_unable_to_verify_rate_basis_points {
+            if let Some(utv) = self.unable_to_verify_rate {
+                if utv.basis_points > max_utv {
+                    violations.push(format!(
+                        "unable-to-verify rate {:.2}% exceeds maximum threshold {:.2}%",
+                        f64::from(utv.basis_points) / 100.0,
+                        f64::from(max_utv) / 100.0
+                    ));
+                }
+            }
+        }
+        if let Some(min_stability) = thresholds.min_repeated_run_stability_basis_points {
+            match self.repeated_run_stability {
+                Some(stability) if stability.basis_points < min_stability => {
+                    violations.push(format!(
+                        "repeated-run stability {:.2}% is below threshold {:.2}%",
+                        f64::from(stability.basis_points) / 100.0,
+                        f64::from(min_stability) / 100.0
+                    ));
+                }
+                None if self.runs > 1 => {
+                    violations.push("repeated-run stability was unmeasured across runs".to_owned());
+                }
+                _ => {}
+            }
+        }
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(violations)
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DocumentationEvaluationThresholds {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_precision_basis_points: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_recall_basis_points: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duplicate_rate_basis_points: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_unable_to_verify_rate_basis_points: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_repeated_run_stability_basis_points: Option<u16>,
 }
 
 impl DocumentationEvaluationCorpus {

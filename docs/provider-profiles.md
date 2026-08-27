@@ -3,12 +3,35 @@
 Argus executes admitted documentation work with:
 
 ```text
-argus work documentation --profile .argus/config/provider.json --limit 10
+argus work documentation --profile ollama --limit 10
 ```
 
 The limit defaults to one work item. Profile files contain provider identity,
 privacy and budget policy, and environment-variable names. They never contain
-credential values.
+credential values or secrets.
+
+## System vs. Project Configuration
+
+Argus maintains a strict separation between shared repository policies and machine-level provider configurations:
+
+- **Project Configuration (`<repo>/.argus/config/argus.json`)**:
+  Committed to Git. Defines schema version, policy baselines, and optional `default_profile` name.
+- **Project Profiles (`<repo>/.argus/config/profiles/<name>.json`)**:
+  Optional project-shared provider definitions.
+- **System / User Profiles (`~/.config/argus/profiles/<name>.json` or `%APPDATA%\argus\profiles\<name>.json`)**:
+  Per-machine model and transport settings. Not committed to project repositories.
+
+### Profile Discovery Search Order
+
+When `--profile <name>` is specified (or when falling back to `default_profile` / `default`), Argus searches in order:
+1. **Direct File Path**: Relative to workspace or absolute (e.g. `./my-profile.json`).
+2. **Project Catalog**: `<repo>/.argus/config/profiles/<name>.json` and `<repo>/.argus/profiles/<name>.json`.
+3. **Environment Override**: `$ARGUS_CONFIG_DIR/profiles/<name>.json`.
+4. **User / System Catalog**:
+   - Windows: `%APPDATA%\argus\profiles\<name>.json` and `%USERPROFILE%\.config\argus\profiles\<name>.json`
+   - Linux/macOS: `$XDG_CONFIG_HOME/argus/profiles/<name>.json` and `~/.config/argus/profiles/<name>.json`
+
+If the profile cannot be found, Argus fails closed and lists all searched locations.
 
 ## Ollama example
 

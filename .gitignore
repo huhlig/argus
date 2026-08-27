@@ -13,3 +13,7 @@ Cargo.lock
 /.claude
 /.codex
 /.idea
+
+# Local Argus Workspace State
+/.argus/
+review.md

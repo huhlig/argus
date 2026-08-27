@@ -482,7 +482,7 @@ fn callable_identity(item: &ast::Fn, ordinary_kind: &str) -> (TargetKind, String
     }
 }
 
-fn documentation_text(item: &(impl HasDocComments + HasAttrs)) -> Option<String> {
+fn documentation_text(item: &impl HasDocComments) -> Option<String> {
     let mut lines = item
         .doc_comments()
         .filter_map(|comment| {

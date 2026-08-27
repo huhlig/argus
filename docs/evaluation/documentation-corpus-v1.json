@@ -5,17 +5,108 @@
   "policy_version": "documentation-public-api@1",
   "expected_issues": [
     {
+      "id": "missing-presence",
+      "target": "4125cc18c77f5f717816626a32843db092c7a3e714dd06d2d895195f4e7f9bdb",
+      "dimensions": [
+        "presence"
+      ]
+    },
+    {
+      "id": "unclear-purpose",
+      "target": "a12cb05fa5ee22ee9eb86a50f5e6a47e439a124233be4c3b872cbc541af646c6",
+      "dimensions": [
+        "purpose"
+      ]
+    },
+    {
+      "id": "missing-behavior",
+      "target": "7518453597419b8d4da8374f2a06435a4eb82aac0a9d92cd56db2c23493229b2",
+      "dimensions": [
+        "behavior"
+      ]
+    },
+    {
+      "id": "missing-inputs",
+      "target": "5bd1350455adf76fd6ee43b6a4ac5c3e9c9decc14b490859a8d76c2c18ab94f5",
+      "dimensions": [
+        "inputs"
+      ]
+    },
+    {
+      "id": "missing-outputs",
+      "target": "3d9a464aee8f19c66c4cf151eef7d09605d13735acccf5cfd1b10b5dfdd0dedf",
+      "dimensions": [
+        "outputs"
+      ]
+    },
+    {
       "id": "missing-errors",
       "target": "e476680b895482a43100a3e11140760dea455579e5b045cd307c5d654ca6cd1d",
-      "dimensions": ["errors"]
+      "dimensions": [
+        "errors"
+      ]
+    },
+    {
+      "id": "missing-panics",
+      "target": "54a496b487a791028bf4b84a448dd71667e573588837a0b32fbd2b5f9c9b7b6d",
+      "dimensions": [
+        "panics"
+      ]
+    },
+    {
+      "id": "missing-safety",
+      "target": "afa5cc582feca0b55af0e4c14d4dcbeb96cf0e33edb603a6b158f955fc4a029e",
+      "dimensions": [
+        "safety"
+      ]
+    },
+    {
+      "id": "undocumented-side-effects",
+      "target": "c7fdea1a614107cf04ba59ca84006374a9a90f5acbbbdfeff507269aea44418c",
+      "dimensions": [
+        "side_effects"
+      ]
+    },
+    {
+      "id": "undocumented-invariants",
+      "target": "2cc286da80e56ab67e08a42209d9a8f6f617bc1e0401c718f3f2b47ca78f8d87",
+      "dimensions": [
+        "invariants"
+      ]
+    },
+    {
+      "id": "misleading-examples",
+      "target": "7b6c4229a738b637bf4626b62f8ff81adf6d583c4a5353866fa2a43833f929af",
+      "dimensions": [
+        "examples"
+      ]
     },
     {
       "id": "inaccurate-behavior",
       "target": "43d86348a65e313d8fd7c0997a26aea87be0a2cd6cc4e84837424eaf46ed3378",
-      "dimensions": ["behavior", "accuracy"]
+      "dimensions": [
+        "accuracy",
+        "behavior"
+      ]
+    },
+    {
+      "id": "obsolete-currency",
+      "target": "4ac4666ff3330d82ad381d643f111027ac0c70689631177f08d1f81de9958c5f",
+      "dimensions": [
+        "currency"
+      ]
+    },
+    {
+      "id": "vacuous-tautology",
+      "target": "d0308398061d9cea4a8ce0f11f764af8ef4d82926c6954f9e026d5992203229f",
+      "dimensions": [
+        "value"
+      ]
     }
   ],
   "known_clean_targets": [
-    "0a8c09ca483aed4fa59e521e3ad68c2e27e7ea6f12b1a9da024275ed18e38b10"
+    "0a8c09ca483aed4fa59e521e3ad68c2e27e7ea6f12b1a9da024275ed18e38b10",
+    "d8a6d064ca65d3f9353375e7dbeb1f2b2127e7cd25d4d5933ad6e125fffaec68",
+    "0f8c83634e310e21643ff1c7cda6bd09ea852267dbc28065ff37e0e3d36e7aec"
   ]
 }

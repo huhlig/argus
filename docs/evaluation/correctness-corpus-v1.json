@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "name": "argus-seeded-correctness",
+  "version": "1.0.0",
+  "policy_version": "correctness-conservative@1",
+  "expected_issues": [
+    {
+      "id": "unhandled-failure-path",
+      "target": "894c3a5062fed41bbdadd8007740138c7571f389ebd0ad667996e03b022611f8",
+      "dimensions": [
+        "failure_paths"
+      ]
+    },
+    {
+      "id": "broken-invariant",
+      "target": "2c52e1244e3fcdc2a43fa0b904b58a0b196d7096f2aeae22e8d470627575891d",
+      "dimensions": [
+        "invariants"
+      ]
+    },
+    {
+      "id": "invalid-state-transition",
+      "target": "ab26187e0d3919f8c9e33e04c0b6bdc02501ac86b6617f634760ac641f346be6",
+      "dimensions": [
+        "state_transitions"
+      ]
+    },
+    {
+      "id": "swallowed-error",
+      "target": "b2e979489d9d83a396c0a7901b7a0271093c156ac15d4d9297cd8605b69e5a02",
+      "dimensions": [
+        "error_handling"
+      ]
+    },
+    {
+      "id": "resource-leak",
+      "target": "12a556578205e8a5123c57915e9565e5bffd92fccccb93f0e1fea31dac6dc46a",
+      "dimensions": [
+        "resource_lifecycle"
+      ]
+    },
+    {
+      "id": "race-condition",
+      "target": "4f7e6dd5a917d600a863e67d031b7be3a15a6924578f16fac3e2f8c47778a251",
+      "dimensions": [
+        "concurrency"
+      ]
+    },
+    {
+      "id": "torn-persistence",
+      "target": "1893adc4561c4fdeb9b9c1841644ffdd30f6c1ee843d81955e728db8d02e5cf2",
+      "dimensions": [
+        "persistence"
+      ]
+    },
+    {
+      "id": "unsound-pointer-assumption",
+      "target": "43549261758dbad608d983364f8ceef5dd27a72c9ef0d26f543a9a15ca17fb61",
+      "dimensions": [
+        "unsafe_assumptions"
+      ]
+    },
+    {
+      "id": "integer-overflow-boundary",
+      "target": "42d65282150ffd823e5ef3856c84bcb7d190f875013a8855f247cf531933ca6e",
+      "dimensions": [
+        "boundary_conditions"
+      ]
+    }
+  ],
+  "known_clean_targets": [
+    "343b45268831f402cae417878fcb47a6f680622b885d40f3cbfadb5a43cc7715",
+    "5cb78cfe41a5b3d86688ffafcb454c8137f6372a2bd60e3d7048b27c372816a2",
+    "ba8c46a5b23ad26738bd46ae9f11955e65ec7c4d1053955dcb635e8b261e8f2f"
+  ]
+}

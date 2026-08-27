@@ -14,8 +14,31 @@
 
 //! Policy-specific applicability, rubric, and assessment contracts.
 
+mod architecture;
+mod correctness;
 mod documentation;
 
+pub use architecture::{
+    ALL_ARCHITECTURE_DIMENSIONS, ARCHITECTURE_ASSESSMENT_SCHEMA_VERSION,
+    ArchitectureApplicabilityDecision, ArchitectureApplicabilityPolicy,
+    ArchitectureApplicabilityRule, ArchitectureAssessment, ArchitectureAssessmentBinding,
+    ArchitectureAssessmentDraft, ArchitectureCandidate, ArchitectureCandidateDraft,
+    ArchitectureDimension, ArchitectureDimensionDraft, ArchitectureDimensionResult,
+    ArchitectureDimensionStatus, ArchitectureEvidenceCitation, ArchitectureFindingKind,
+    ArchitectureResult, ArchitectureResultDraft, ArchitectureResultStatus, ArchitectureScope,
+    ArchitectureTargetClass, ArchitectureTargetProfile, ArchitectureVisibility,
+    ConstituentHealthSummary,
+};
+pub use correctness::{
+    ALL_CORRECTNESS_DIMENSIONS, CORRECTNESS_ASSESSMENT_SCHEMA_VERSION,
+    CorrectnessApplicabilityDecision, CorrectnessApplicabilityPolicy,
+    CorrectnessApplicabilityRule, CorrectnessAssessment, CorrectnessAssessmentBinding,
+    CorrectnessAssessmentDraft, CorrectnessCandidate, CorrectnessCandidateDraft,
+    CorrectnessDefectKind, CorrectnessDimension, CorrectnessDimensionDraft,
+    CorrectnessDimensionResult, CorrectnessDimensionStatus, CorrectnessEvidenceCitation,
+    CorrectnessResult, CorrectnessResultDraft, CorrectnessTargetClass, CorrectnessTargetProfile,
+    CorrectnessVisibility,
+};
 pub use documentation::{
     ALL_DOCUMENTATION_DIMENSIONS, DOCUMENTATION_ASSESSMENT_SCHEMA_VERSION,
     DocumentationApplicabilityDecision, DocumentationApplicabilityPolicy,

@@ -171,7 +171,7 @@ impl DocumentationWorker {
         leased: &LeasedWork,
         leased_at_millis: u64,
     ) -> Result<(), ArgusError> {
-        let heartbeat_millis = (self.config.lease_duration_millis / 3).max(1);
+        let heartbeat_millis = (self.config.lease_duration_millis / 3).clamp(25, 10_000);
         let started = Instant::now();
         let queue = self.queue.clone();
         let work_id = leased.id.clone();
@@ -849,7 +849,7 @@ mod tests {
                 },
                 adapter: "rust".to_owned(),
                 policy: "documentation-public-api@1".to_owned(),
-                lease_duration_millis: 300,
+                lease_duration_millis: 1_000,
                 maximum_attempts: 2,
             },
         )
