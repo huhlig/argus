@@ -18,7 +18,7 @@ use argus_core::{
 };
 use argus_language::SourceAccess;
 use ra_ap_syntax::{
-    AstNode, Edition, SourceFile,
+    AstNode, AstToken, Edition, SourceFile,
     ast::{self, HasAttrs, HasDocComments, HasModuleItem, HasName, HasVisibility},
 };
 use std::{
@@ -225,9 +225,28 @@ impl RustSyntaxProvider {
                 capabilities: item_capabilities(&item),
                 diagnostic: None,
             });
-            if let Some(docs) = documentation_text(&item) {
+            if let Some(docs) = match &item {
+                ast::Item::Module(inner) => documentation_text(inner),
+                ast::Item::Const(inner) => documentation_text(inner),
+                ast::Item::Enum(inner) => documentation_text(inner),
+                ast::Item::ExternBlock(inner) => documentation_text(inner),
+                ast::Item::ExternCrate(inner) => documentation_text(inner),
+                ast::Item::Fn(inner) => documentation_text(inner),
+                ast::Item::Impl(inner) => documentation_text(inner),
+                ast::Item::MacroCall(inner) => documentation_text(inner),
+                ast::Item::MacroDef(inner) => documentation_text(inner),
+                ast::Item::MacroRules(inner) => documentation_text(inner),
+                ast::Item::Static(inner) => documentation_text(inner),
+                ast::Item::Struct(inner) => documentation_text(inner),
+                ast::Item::Trait(inner) => documentation_text(inner),
+                ast::Item::TypeAlias(inner) => documentation_text(inner),
+                ast::Item::Union(inner) => documentation_text(inner),
+                ast::Item::Use(inner) => documentation_text(inner),
+                ast::Item::AsmExpr(_) => None,
+            } {
                 documentation.insert(id.clone(), docs);
             }
+
             let predicates = configuration_predicates(&item);
             if !predicates.is_empty() {
                 conditions.insert(id.clone(), predicates);
@@ -336,13 +355,20 @@ fn path_attribute(attr: &ast::Attr) -> Option<String> {
     if attr.simple_name().as_deref() != Some("path") {
         return None;
     }
-    attr.expr().map(|expr| {
-        expr.syntax()
-            .text()
-            .to_string()
-            .trim_matches('"')
-            .to_owned()
-    })
+
+    attr.meta()
+        .and_then(|meta| match meta {
+            // Match the KeyValueMeta variant where the `.expr()` method actually lives
+            ast::Meta::KeyValueMeta(kv) => kv.expr(),
+            _ => None,
+        })
+        .map(|expr| {
+            expr.syntax()
+                .text()
+                .to_string()
+                .trim_matches('"')
+                .to_owned()
+        })
 }
 
 fn resolve_module_path(
@@ -405,10 +431,10 @@ fn item_identity(item: &ast::Item) -> (TargetKind, String) {
         ast::Item::Static(item) => portable(PortableTargetKind::Constant, item.name()),
         ast::Item::Module(item) => portable(PortableTargetKind::Module, item.name()),
         ast::Item::TypeAlias(item) => rust_kind("type_alias", item.name()),
-        ast::Item::TraitAlias(item) => rust_kind("trait_alias", item.name()),
         ast::Item::MacroDef(item) => rust_kind("macro_definition", item.name()),
         ast::Item::MacroRules(item) => rust_kind("macro_rules", item.name()),
         ast::Item::Impl(item) => anonymous("impl", item.syntax()),
+        ast::Item::AsmExpr(item) => anonymous("asm_expr", item.syntax()),
         ast::Item::ExternBlock(item) => anonymous("extern_block", item.syntax()),
         ast::Item::ExternCrate(item) => anonymous("extern_crate", item.syntax()),
         ast::Item::MacroCall(item) => anonymous("macro_call", item.syntax()),
@@ -456,24 +482,29 @@ fn callable_identity(item: &ast::Fn, ordinary_kind: &str) -> (TargetKind, String
     }
 }
 
-fn documentation_text(item: &impl HasDocComments) -> Option<String> {
+fn documentation_text(item: &(impl HasDocComments + HasAttrs)) -> Option<String> {
     let mut lines = item
         .doc_comments()
-        .filter_map(|comment| {
-            comment
-                .doc_comment()
-                .map(|text| text.strip_prefix(' ').unwrap_or(text).to_owned())
+        .map(|comment| {
+            let text = comment.text();
+            text.strip_prefix(' ').unwrap_or(text).to_owned()
         })
         .collect::<Vec<_>>();
+
     lines.extend(item.attrs().filter_map(|attr| {
         if attr.simple_name().as_deref() == Some("doc") {
-            attr.expr()
+            attr.meta()
+                .and_then(|meta| match meta {
+                    ast::Meta::KeyValueMeta(kv) => kv.expr(),
+                    _ => None,
+                })
                 .map(|expr| expr.syntax().text().to_string())
                 .map(|text| text.trim_matches('"').to_owned())
         } else {
             None
         }
     }));
+
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
