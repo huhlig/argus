@@ -306,11 +306,34 @@ impl ArchitectureReviewBatch {
     ) -> Result<u64, argus_core::ArgusError> {
         let mut work = Vec::with_capacity(self.materializations.len());
         for materialized in &self.materializations {
+            let package_bytes =
+                serde_json::to_vec(&materialized.package.package).map_err(|error| {
+                    argus_core::ArgusError::invariant(
+                        "cannot serialize architecture evidence package",
+                    )
+                    .with_source(error)
+                })?;
+            let package = queue
+                .store_artifact(ARCHITECTURE_EVIDENCE_PACKAGE_ARTIFACT_KIND, &package_bytes)?;
+            if package.content_hash != materialized.package.hash {
+                return Err(argus_core::ArgusError::invariant(
+                    "stored architecture evidence package identity mismatch",
+                ));
+            }
+            let context = queue.store_artifact(
+                ARCHITECTURE_REVIEW_CONTEXT_ARTIFACT_KIND,
+                &materialized.context.canonical_json,
+            )?;
+            if context.content_hash != materialized.context.hash {
+                return Err(argus_core::ArgusError::invariant(
+                    "stored architecture review context identity mismatch",
+                ));
+            }
             let admission = ArchitectureReviewAdmission {
                 schema_version: ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION,
                 unit: materialized.unit.clone(),
-                evidence_package_ref: materialized.package.hash.as_str().to_owned(),
-                review_context_ref: materialized.context.hash.as_str().to_owned(),
+                evidence_package_ref: package.reference,
+                review_context_ref: context.reference,
             };
             let payload = serde_json::to_vec(&admission).map_err(|error| {
                 argus_core::ArgusError::invariant(

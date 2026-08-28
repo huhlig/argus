@@ -178,6 +178,15 @@ impl CorrectnessWorker {
 
     async fn execute(&self, leased: &LeasedWork) -> Result<(), ArgusError> {
         let (admission, materialized, langchart_run_id) = self.restore_work(leased)?;
+        tracing::info!(
+            policy = "correctness",
+            work_id = %leased.id,
+            target_id = %admission.unit.target.target,
+            target_scope = ?admission.unit.target.class,
+            "Processing correctness review for {:?} target `{}`",
+            admission.unit.target.class,
+            admission.unit.target.target
+        );
         let diagnostic_run_id = langchart_run_id.as_ref().to_owned();
         let prepared = self.prepare_runtime(leased, &materialized, &langchart_run_id)?;
         let checkpoint = prepared

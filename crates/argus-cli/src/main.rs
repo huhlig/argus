@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use argus_language::{InventorySink, LanguageAdapter as _, SourceAccess};
+use clap::{Parser, Subcommand};
 use std::{
     collections::BTreeSet,
     fmt::Write as _,
@@ -554,100 +555,160 @@ fn current_directory() -> std::path::PathBuf {
     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
+#[derive(Parser, Debug)]
+#[command(
+    name = "argus",
+    version = env!("CARGO_PKG_VERSION"),
+    about = "Argus repository source intelligence",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
+pub struct Cli {
+    #[arg(short = 'c', long = "config", global = true, value_name = "path")]
+    pub config: Option<String>,
+
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CliCommand {
+    Init,
+    Snapshot {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    Prime {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    Audit {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    Work {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    Targets {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    Status,
+    Coverage {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    Resume {
+        run_id: Option<String>,
+    },
+    Cancel {
+        run_id: Option<String>,
+    },
+    Finalize {
+        run_id: Option<String>,
+    },
+    Report {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    Adjudicate {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    Evaluate {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+}
+
 fn run(
     args: impl Iterator<Item = String>,
     root: &std::path::Path,
 ) -> Result<String, argus_core::ArgusError> {
-    let args: Vec<String> = args.collect();
-    if args.is_empty() || (args.len() == 1 && is_help_flag(Some(args[0].as_str()))) {
+    let args_vec: Vec<String> = args.collect();
+    if args_vec.is_empty() || (args_vec.len() == 1 && is_help_flag(Some(args_vec[0].as_str()))) {
         return Ok(HELP.to_owned());
     }
 
-    if args.len() == 1 && (args[0] == "-V" || args[0] == "--version") {
+    if args_vec.len() == 1 && (args_vec[0] == "-V" || args_vec[0] == "--version") {
         return Ok(format!("argus {}", env!("CARGO_PKG_VERSION")));
     }
 
-    if args[0] == "help" {
-        return match args.get(1).map(String::as_str) {
+    if args_vec[0] == "help" {
+        return match args_vec.get(1).map(String::as_str) {
             None | Some("-h" | "--help") => Ok(HELP.to_owned()),
             Some(command) => command_help(command),
         };
     }
 
-    let mut explicit_config = None;
-    let mut cmd_idx = 0;
-    while cmd_idx < args.len() {
-        if args[cmd_idx] == "-c" || args[cmd_idx] == "--config" {
-            if cmd_idx + 1 >= args.len() {
-                return Err(argus_core::ArgusError::invalid_input(
-                    "missing value for --config flag",
-                ));
-            }
-            explicit_config = Some(args[cmd_idx + 1].clone());
-            cmd_idx += 2;
-        } else if args[cmd_idx] == "-h" || args[cmd_idx] == "--help" {
-            return Ok(HELP.to_owned());
-        } else if args[cmd_idx] == "-V" || args[cmd_idx] == "--version" {
-            return Ok(format!("argus {}", env!("CARGO_PKG_VERSION")));
-        } else {
-            break;
-        }
-    }
+    let mut full_args = vec!["argus".to_owned()];
+    full_args.extend(args_vec.clone());
 
-    if cmd_idx >= args.len() {
+    if args_vec.iter().any(|a| is_help_flag(Some(a.as_str())))
+        && (args_vec.len() == 1
+            || (args_vec.len() == 2 && is_help_flag(Some(args_vec[1].as_str()))))
+    {
+        if let Some(cmd) = args_vec.first() {
+            if let Ok(topic) = command_help(cmd) {
+                return Ok(topic);
+            }
+        }
         return Ok(HELP.to_owned());
     }
 
-    let command = &args[cmd_idx];
-    let mut remaining_args = args[cmd_idx + 1..].to_vec();
-    if let Some(config) = explicit_config {
-        remaining_args.push("--config".to_owned());
-        remaining_args.push(config);
-    }
+    let cli = Cli::try_parse_from(&full_args).map_err(|err| {
+        argus_core::ArgusError::invalid_input(err.render().to_string().trim().to_owned())
+    })?;
 
-    match command.as_str() {
-        "init" => {
-            if remaining_args
-                .iter()
-                .any(|a| is_help_flag(Some(a.as_str())))
-            {
-                Ok(HELP_INIT.to_owned())
-            } else {
-                initialize(root)
+    let Some(command) = cli.command else {
+        return Ok(HELP.to_owned());
+    };
+
+    let append_config = |mut remaining: Vec<String>| -> Vec<String> {
+        if let Some(ref config) = cli.config {
+            if !remaining.iter().any(|a| a == "-c" || a == "--config") {
+                remaining.push("--config".to_owned());
+                remaining.push(config.clone());
             }
         }
-        "snapshot" => snapshot_command(root, remaining_args.into_iter()),
-        "prime" => prime_command(root, remaining_args.into_iter()),
-        "audit" => audit_command(root, remaining_args.into_iter()),
-        "work" => work_command(root, remaining_args.into_iter()),
-        "targets" => targets_command(root, remaining_args.into_iter()),
-        "status" => {
-            if remaining_args
-                .iter()
-                .any(|a| is_help_flag(Some(a.as_str())))
-            {
-                Ok(HELP_STATUS.to_owned())
-            } else {
-                status_command(root)
-            }
+        remaining
+    };
+
+    match command {
+        CliCommand::Init => initialize(root),
+        CliCommand::Snapshot { args } => snapshot_command(root, append_config(args).into_iter()),
+        CliCommand::Prime { args } => prime_command(root, append_config(args).into_iter()),
+        CliCommand::Audit { args } => audit_command(root, append_config(args).into_iter()),
+        CliCommand::Work { args } => work_command(root, append_config(args).into_iter()),
+        CliCommand::Targets { args } => targets_command(root, append_config(args).into_iter()),
+        CliCommand::Status => status_command(root),
+        CliCommand::Coverage { args } => coverage_command(root, append_config(args).into_iter()),
+        CliCommand::Resume { run_id } => resume_command(root, run_id),
+        CliCommand::Cancel { run_id } => cancel_command(root, run_id),
+        CliCommand::Finalize { run_id } => finalize_command(root, run_id),
+        CliCommand::Report { args } => report_command(root, append_config(args).into_iter()),
+        CliCommand::Adjudicate { args } => {
+            adjudicate_command(root, append_config(args).into_iter())
         }
-        "coverage" => coverage_command(root, remaining_args.into_iter()),
-        "resume" => resume_command(root, remaining_args.into_iter().next()),
-        "cancel" => cancel_command(root, remaining_args.into_iter().next()),
-        "finalize" => finalize_command(root, remaining_args.into_iter().next()),
-        "report" => report_command(root, remaining_args.into_iter()),
-        "adjudicate" => adjudicate_command(root, remaining_args.into_iter()),
-        "evaluate" => evaluate_command(root, remaining_args.into_iter()),
-        _ => Err(argus_core::ArgusError::invalid_input(format!(
-            "unknown command `{command}`; run `argus --help` for available commands"
-        ))),
+        CliCommand::Evaluate { args } => evaluate_command(root, append_config(args).into_iter()),
     }
 }
 
 fn working_queue(
     root: &std::path::Path,
 ) -> Result<argus_storage::DurableQueue, argus_core::ArgusError> {
-    argus_storage::DurableQueue::open(&root.join(".argus/state/working.redb"))
+    argus_storage::DurableQueue::open(&root.join(".argus/state/working.redb")).map_err(|error| {
+        let message = error.to_string();
+        if message.contains("Database already open") || message.contains("Cannot acquire lock") {
+            argus_core::ArgusError::invalid_input(
+                "cannot open state database: database file lock is held by another running process (such as a concurrent 'argus work' process)",
+            )
+            .with_source(error)
+        } else {
+            error
+        }
+    })
 }
 
 struct SnapshotSource(argus_snapshot::SourceReader);
@@ -1349,15 +1410,17 @@ fn audit_command(
         ))
     };
 
+    let next_step =
+        "\nNext step: Run 'argus work' to process admitted review items with an LLM profile.";
     match pipeline.as_str() {
-        "documentation" => plan_documentation(),
-        "correctness" => plan_correctness(),
-        "architecture" => plan_architecture(),
+        "documentation" => plan_documentation().map(|msg| format!("{msg}{next_step}")),
+        "correctness" => plan_correctness().map(|msg| format!("{msg}{next_step}")),
+        "architecture" => plan_architecture().map(|msg| format!("{msg}{next_step}")),
         "full" => {
             let doc_msg = plan_documentation()?;
             let corr_msg = plan_correctness()?;
             let arch_msg = plan_architecture()?;
-            Ok(format!("{doc_msg}\n{corr_msg}\n{arch_msg}"))
+            Ok(format!("{doc_msg}\n{corr_msg}\n{arch_msg}{next_step}"))
         }
         _ => unreachable!(),
     }
@@ -1450,6 +1513,7 @@ async fn run_worker_step<F, Fut, R>(
     limit: usize,
     provider_id: &str,
     model_id: &str,
+    remaining_in_queue: Option<usize>,
     step_fn: F,
 ) -> Result<(R, std::time::Duration), argus_core::ArgusError>
 where
@@ -1473,13 +1537,16 @@ where
     );
     let _guard = span.enter();
 
+    let queue_note =
+        remaining_in_queue.map_or_else(String::new, |count| format!(" ({count} pending in queue)"));
+
     tracing::info!(
         policy = %category,
         step = index + 1,
         limit = limit,
         provider = %provider_id,
         model = %model_id,
-        "[{category}] Leased item {}/{} for processing",
+        "[{category}] Leased item {}/{}{queue_note} for processing",
         index + 1,
         limit
     );
@@ -1488,9 +1555,10 @@ where
     let ticker_category = category.clone();
     let ticker_provider = provider_id.clone();
     let ticker_model = model_id.clone();
+    let ticker_queue_note = queue_note.clone();
 
     let ticker_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         interval.tick().await;
         loop {
             tokio::select! {
@@ -1503,9 +1571,10 @@ where
                         elapsed_secs = elapsed,
                         provider = %ticker_provider,
                         model = %ticker_model,
-                        "[{ticker_category}] Processing item {}/{}... ({}s elapsed, provider: {}, model: {})",
+                        "[{ticker_category}] Processing item {}/{}{}... ({}s elapsed, provider: {}, model: {})",
                         index + 1,
                         limit,
+                        ticker_queue_note,
                         elapsed,
                         ticker_provider,
                         ticker_model
@@ -1527,6 +1596,22 @@ where
     result.map(|res| (res, duration))
 }
 
+fn queue_pending_count(
+    queue: &argus_storage::DurableQueue,
+    run_id: &argus_core::RunId,
+    policy: &str,
+) -> Option<usize> {
+    let records = queue.run_records(run_id).ok()?;
+    let completed_work_ids: std::collections::BTreeSet<_> =
+        records.outcomes.iter().map(|o| &o.work_id).collect();
+    let pending = records
+        .work
+        .iter()
+        .filter(|w| w.coverage.policy.starts_with(policy) && !completed_work_ids.contains(&w.id))
+        .count();
+    Some(pending)
+}
+
 async fn execute_all_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
@@ -1536,6 +1621,22 @@ async fn execute_all_work(
     let corr_res = execute_correctness_work(root, profile.clone(), limit).await?;
     let arch_res = execute_architecture_work(root, profile, limit).await?;
     Ok(format!("{doc_res}\n{corr_res}\n{arch_res}"))
+}
+
+fn check_unadmitted_run_warning(
+    queue: &argus_storage::DurableQueue,
+    run_id: &argus_core::RunId,
+    policy_name: &str,
+) -> Result<(), argus_core::ArgusError> {
+    let records = queue.run_records(run_id)?;
+    if records.work.is_empty() {
+        tracing::warn!(
+            run_id = %run_id,
+            policy = policy_name,
+            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|correctness|architecture|full>'?"
+        );
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1554,6 +1655,7 @@ async fn execute_documentation_work(
             "documentation work requires an active current run",
         ));
     }
+    check_unadmitted_run_warning(&queue, &run_id, "documentation")?;
     let built = profile.build_from_environment().map_err(|error| {
         argus_core::ArgusError::invalid_input("cannot build provider runtime").with_source(error)
     })?;
@@ -1585,7 +1687,7 @@ async fn execute_documentation_work(
     let provider_identity = profile.capabilities.identity.clone();
     let max_output_tokens = profile.capabilities.max_output_tokens;
     let worker = argus_workflow::DocumentationWorker::new(
-        queue,
+        queue.clone(),
         workflow_data,
         argus_workflow::documentation_worker_runtime(executor, built.adapter),
         argus_workflow::DocumentationWorkerConfig {
@@ -1616,12 +1718,14 @@ async fn execute_documentation_work(
     let model_id = provider_identity.model;
 
     for i in 0..limit {
+        let remaining = queue_pending_count(&queue, &run_id, "documentation");
         let (result, duration) = run_worker_step(
             "documentation",
             i,
             limit,
             &provider_id,
             &model_id,
+            remaining,
             || async { worker.run_next(now_millis()?).await },
         )
         .await?;
@@ -1693,6 +1797,7 @@ async fn execute_correctness_work(
             "correctness work requires an active current run",
         ));
     }
+    check_unadmitted_run_warning(&queue, &run_id, "correctness")?;
     let built = profile.build_from_environment().map_err(|error| {
         argus_core::ArgusError::invalid_input("cannot build provider runtime").with_source(error)
     })?;
@@ -1724,7 +1829,7 @@ async fn execute_correctness_work(
     let provider_identity = profile.capabilities.identity.clone();
     let max_output_tokens = profile.capabilities.max_output_tokens;
     let worker = argus_workflow::CorrectnessWorker::new(
-        queue,
+        queue.clone(),
         workflow_data,
         argus_workflow::documentation_worker_runtime(executor, built.adapter),
         argus_workflow::CorrectnessWorkerConfig {
@@ -1755,11 +1860,17 @@ async fn execute_correctness_work(
     let model_id = provider_identity.model;
 
     for i in 0..limit {
-        let (result, duration) =
-            run_worker_step("correctness", i, limit, &provider_id, &model_id, || async {
-                worker.run_next(now_millis()?).await
-            })
-            .await?;
+        let remaining = queue_pending_count(&queue, &run_id, "correctness");
+        let (result, duration) = run_worker_step(
+            "correctness",
+            i,
+            limit,
+            &provider_id,
+            &model_id,
+            remaining,
+            || async { worker.run_next(now_millis()?).await },
+        )
+        .await?;
 
         match result {
             argus_workflow::CorrectnessWorkerResult::Idle => break,
@@ -1827,6 +1938,7 @@ async fn execute_architecture_work(
             "architecture work requires an active current run",
         ));
     }
+    check_unadmitted_run_warning(&queue, &run_id, "architecture")?;
     let built = profile.build_from_environment().map_err(|error| {
         argus_core::ArgusError::invalid_input("cannot build provider runtime").with_source(error)
     })?;
@@ -1858,7 +1970,7 @@ async fn execute_architecture_work(
     let provider_identity = profile.capabilities.identity.clone();
     let max_output_tokens = profile.capabilities.max_output_tokens;
     let worker = argus_workflow::ArchitectureWorker::new(
-        queue,
+        queue.clone(),
         workflow_data,
         argus_workflow::documentation_worker_runtime(executor, built.adapter),
         argus_workflow::ArchitectureWorkerConfig {
@@ -1889,12 +2001,14 @@ async fn execute_architecture_work(
     let model_id = provider_identity.model;
 
     for i in 0..limit {
+        let remaining = queue_pending_count(&queue, &run_id, "architecture");
         let (result, duration) = run_worker_step(
             "architecture",
             i,
             limit,
             &provider_id,
             &model_id,
+            remaining,
             || async { worker.run_next(now_millis()?).await },
         )
         .await?;
@@ -2010,7 +2124,7 @@ fn prime_command(
         format!(" with {inventory_count} Rust targets")
     });
     Ok(format!(
-        "Primed run {} for snapshot {}{suffix}",
+        "Primed run {} for snapshot {}{suffix}\nNext step: Run 'argus audit --pipeline full' to plan and admit review work into the queue.",
         run.id, run.snapshot
     ))
 }
@@ -2112,13 +2226,13 @@ fn finalize_command(
         .iter()
         .any(|w| w.coverage.policy.starts_with("correctness"));
 
-    if is_architecture {
+    let msg = if is_architecture {
         let report = argus_report::write_architecture_bundle_reports(
             &destination,
             id.clone(),
             "architecture-code-derived@1",
         )?;
-        Ok(format!(
+        format!(
             "Finalized run {id} ({} work, {} outcomes, {} artifacts, {} adjudications, {} events; {} architecture assessments)",
             manifest.work_records,
             manifest.outcome_records,
@@ -2126,14 +2240,14 @@ fn finalize_command(
             manifest.adjudication_records,
             manifest.event_records,
             report.assessments.len(),
-        ))
+        )
     } else if is_correctness {
         let report = argus_report::write_correctness_bundle_reports(
             &destination,
             id.clone(),
             "correctness-conservative@1",
         )?;
-        Ok(format!(
+        format!(
             "Finalized run {id} ({} work, {} outcomes, {} artifacts, {} adjudications, {} events; {} correctness assessments)",
             manifest.work_records,
             manifest.outcome_records,
@@ -2141,14 +2255,14 @@ fn finalize_command(
             manifest.adjudication_records,
             manifest.event_records,
             report.assessments.len(),
-        ))
+        )
     } else {
         let report = argus_report::write_documentation_bundle_reports(
             &destination,
             id.clone(),
             "documentation-public-api@1",
         )?;
-        Ok(format!(
+        format!(
             "Finalized run {id} ({} work, {} outcomes, {} artifacts, {} adjudications, {} events; {} documentation assessments)",
             manifest.work_records,
             manifest.outcome_records,
@@ -2156,8 +2270,11 @@ fn finalize_command(
             manifest.adjudication_records,
             manifest.event_records,
             report.assessments.len(),
-        ))
-    }
+        )
+    };
+    Ok(format!(
+        "{msg}\nNext step: Run 'argus report {id}' to view or export review findings."
+    ))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3005,7 +3122,10 @@ fn initialize(root: &std::path::Path) -> Result<String, argus_core::ArgusError> 
         }
     }
 
-    Ok(format!("Initialized Argus in {}", argus.display()))
+    Ok(format!(
+        "Initialized Argus in {}\nNext step: Run 'argus prime' to capture snapshot and inventory workspace targets.",
+        argus.display()
+    ))
 }
 
 fn snapshot_command(

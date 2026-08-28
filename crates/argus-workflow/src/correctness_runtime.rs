@@ -171,6 +171,14 @@ impl AgentActor for PrepareCorrectnessEvidenceActor {
         _envelope: CapabilityEnvelope,
         _broker: Arc<CapabilityBroker>,
     ) -> Result<AgentOutputEvent, AgentError> {
+        tracing::debug!(
+            actor = "PrepareCorrectnessEvidenceActor",
+            run_id = %invocation.run_id,
+            state_id = %invocation.state_id,
+            target = %self.materialized.unit.target.target,
+            target_class = ?self.materialized.unit.target.class,
+            "Entering workflow state: PrepareCorrectnessEvidenceActor"
+        );
         let store = self.workflow_data.clone();
         let run_id = invocation.run_id.as_ref().to_owned();
         let record = tokio::task::spawn_blocking(move || store.load(&run_id))
@@ -187,6 +195,10 @@ impl AgentActor for PrepareCorrectnessEvidenceActor {
                 "prepared correctness evidence identity mismatch".to_owned(),
             ));
         }
+        tracing::debug!(
+            actor = "PrepareCorrectnessEvidenceActor",
+            "Exiting workflow state: PrepareCorrectnessEvidenceActor -> evidence.prepared"
+        );
         Ok(AgentOutputEvent {
             event_type: "evidence.prepared".to_owned(),
             payload: json!({

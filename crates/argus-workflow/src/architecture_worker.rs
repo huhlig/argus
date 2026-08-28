@@ -178,6 +178,16 @@ impl ArchitectureWorker {
 
     async fn execute(&self, leased: &LeasedWork) -> Result<(), ArgusError> {
         let (admission, materialized, langchart_run_id) = self.restore_work(leased)?;
+        tracing::info!(
+            policy = "architecture",
+            work_id = %leased.id,
+            target_id = %admission.unit.target.target,
+            target_scope = ?admission.unit.scope,
+            "Processing architecture review for {:?} target `{}` (Scope: {:?})",
+            admission.unit.target.class,
+            admission.unit.target.target,
+            admission.unit.scope
+        );
         let diagnostic_run_id = langchart_run_id.as_ref().to_owned();
         let prepared = self.prepare_runtime(leased, &materialized, &langchart_run_id)?;
         let checkpoint = prepared

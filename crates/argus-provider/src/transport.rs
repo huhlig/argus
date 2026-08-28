@@ -272,6 +272,7 @@ fn validate_secret(name: &str, value: &str) -> Result<(), ProviderError> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[async_trait]
 impl ModelProvider for LangchartModelProvider {
     fn capabilities(&self) -> &ProviderCapabilities {
@@ -314,6 +315,13 @@ impl ModelProvider for LangchartModelProvider {
                 request.structured_output_schema
             ),
         };
+        tracing::debug!(
+            provider = %self.capabilities.identity.provider,
+            model = %self.capabilities.identity.model,
+            system_prompt = %system_content,
+            prompt = %request.prompt,
+            "Sending prompt to LLM provider"
+        );
         let response = self
             .adapter
             .complete(LlmRequest {
@@ -336,10 +344,21 @@ impl ModelProvider for LangchartModelProvider {
             })
             .await
             .map_err(map_error)?;
-        if response.model != self.capabilities.identity.model_version {
+        tracing::debug!(
+            provider = %self.capabilities.identity.provider,
+            model = %self.capabilities.identity.model,
+            response_model = %response.model,
+            content = response.content.as_deref().unwrap_or(""),
+            finish_reason = ?response.finish_reason,
+            "Received response from LLM provider"
+        );
+        if response.model != self.capabilities.identity.model
+            && response.model != self.capabilities.identity.model_version
+            && self.capabilities.identity.model_version != "latest"
+        {
             return Err(ProviderError::SubstitutionDenied(format!(
-                "transport returned model `{}` instead of pinned `{}`",
-                response.model, self.capabilities.identity.model_version
+                "transport returned model `{}` instead of expected `{}`",
+                response.model, self.capabilities.identity.model
             )));
         }
         match response.finish_reason {
@@ -397,6 +416,7 @@ fn parse_json_response(content: &str) -> Result<serde_json::Value, serde_json::E
     serde_json::from_str(json)
 }
 
+#[allow(clippy::match_wildcard_for_single_variants)]
 fn map_error(error: LlmError) -> ProviderError {
     match error {
         LlmError::ContextLengthExceeded => {
@@ -417,7 +437,7 @@ fn map_error(error: LlmError) -> ProviderError {
             ))
         }
         LlmError::Provider(message) => ProviderError::Unavailable(message),
-        other @ LlmError::Timeout => ProviderError::Unavailable(other.to_string()),
+        other => ProviderError::Unavailable(other.to_string()),
     }
 }
 
@@ -642,6 +662,19 @@ mod tests {
             substituted.complete(request()).await,
             Err(ProviderError::SubstitutionDenied(_))
         ));
+
+        let mut caps = capabilities();
+        caps.identity.model = "Qwen3.6-35B-A3B-GGUF".to_owned();
+        caps.identity.model_version = "latest".to_owned();
+        let latest_provider = LangchartModelProvider::new(
+            caps,
+            adapter(
+                ["Qwen3.6-35B-A3B-GGUF"],
+                [Ok(response("{}", "Qwen3.6-35B-A3B-GGUF"))],
+            ),
+        )
+        .unwrap();
+        assert!(latest_provider.complete(request()).await.is_ok());
 
         let invalid = LangchartModelProvider::new(
             capabilities(),

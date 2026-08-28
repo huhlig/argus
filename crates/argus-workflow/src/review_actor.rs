@@ -223,6 +223,12 @@ impl AgentActor for PrimaryReviewActor {
         broker: Arc<CapabilityBroker>,
     ) -> Result<AgentOutputEvent, AgentError> {
         let langchart_run_id = invocation.run_id.as_ref().to_owned();
+        tracing::debug!(
+            actor = "PrimaryReviewActor",
+            run_id = %invocation.run_id,
+            state_id = %invocation.state_id,
+            "Entering workflow state: PrimaryReviewActor (evaluating policy against LLM)"
+        );
         let store = self.workflow_data.clone();
         let record = tokio::task::spawn_blocking(move || store.load(&langchart_run_id))
             .await
@@ -230,6 +236,13 @@ impl AgentActor for PrimaryReviewActor {
             .map_err(|error| AgentError::Internal(error.to_string()))?
             .ok_or_else(|| AgentError::Internal("workflow data record is missing".to_owned()))?;
         if let Some(decision) = current_decision(&record) {
+            tracing::debug!(
+                actor = "PrimaryReviewActor",
+                run_id = %invocation.run_id,
+                state_id = %invocation.state_id,
+                event_type = %decision.event_type,
+                "Exiting workflow state: PrimaryReviewActor with existing decision"
+            );
             return decision_event(decision, &invocation.output_event_types);
         }
         let evidence_bytes = invocation
@@ -399,6 +412,11 @@ impl PrimaryReviewActor {
         let decision = current_decision(&effective).ok_or_else(|| {
             AgentError::Internal("durable primary decision is missing after commit".to_owned())
         })?;
+        tracing::debug!(
+            actor = "PrimaryReviewActor",
+            decision_event = %decision.event_type,
+            "Exiting workflow state: PrimaryReviewActor with newly committed decision"
+        );
         decision_event(decision, declared_events)
     }
 
