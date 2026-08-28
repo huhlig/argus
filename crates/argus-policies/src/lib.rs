@@ -31,13 +31,12 @@ pub use architecture::{
 };
 pub use correctness::{
     ALL_CORRECTNESS_DIMENSIONS, CORRECTNESS_ASSESSMENT_SCHEMA_VERSION,
-    CorrectnessApplicabilityDecision, CorrectnessApplicabilityPolicy,
-    CorrectnessApplicabilityRule, CorrectnessAssessment, CorrectnessAssessmentBinding,
-    CorrectnessAssessmentDraft, CorrectnessCandidate, CorrectnessCandidateDraft,
-    CorrectnessDefectKind, CorrectnessDimension, CorrectnessDimensionDraft,
-    CorrectnessDimensionResult, CorrectnessDimensionStatus, CorrectnessEvidenceCitation,
-    CorrectnessResult, CorrectnessResultDraft, CorrectnessTargetClass, CorrectnessTargetProfile,
-    CorrectnessVisibility,
+    CorrectnessApplicabilityDecision, CorrectnessApplicabilityPolicy, CorrectnessApplicabilityRule,
+    CorrectnessAssessment, CorrectnessAssessmentBinding, CorrectnessAssessmentDraft,
+    CorrectnessCandidate, CorrectnessCandidateDraft, CorrectnessDefectKind, CorrectnessDimension,
+    CorrectnessDimensionDraft, CorrectnessDimensionResult, CorrectnessDimensionStatus,
+    CorrectnessEvidenceCitation, CorrectnessResult, CorrectnessResultDraft, CorrectnessTargetClass,
+    CorrectnessTargetProfile, CorrectnessVisibility,
 };
 pub use documentation::{
     ALL_DOCUMENTATION_DIMENSIONS, DOCUMENTATION_ASSESSMENT_SCHEMA_VERSION,

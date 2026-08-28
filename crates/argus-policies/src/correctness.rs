@@ -140,7 +140,8 @@ impl CorrectnessApplicabilityPolicy {
                     class,
                     visibility,
                     state: ApplicabilityState::NotApplicable,
-                    rationale: "structural container rather than executable code declaration".to_owned(),
+                    rationale: "structural container rather than executable code declaration"
+                        .to_owned(),
                 });
             }
         }
@@ -166,10 +167,7 @@ impl CorrectnessApplicabilityPolicy {
     }
 
     #[must_use]
-    pub fn evaluate(
-        &self,
-        target: &CorrectnessTargetProfile,
-    ) -> CorrectnessApplicabilityDecision {
+    pub fn evaluate(&self, target: &CorrectnessTargetProfile) -> CorrectnessApplicabilityDecision {
         if target.inventory != InventoryState::Represented {
             return CorrectnessApplicabilityDecision {
                 state: ApplicabilityState::Pending,
@@ -265,12 +263,8 @@ pub struct CorrectnessCandidate {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CorrectnessResult {
     Passed,
-    CandidateFindings {
-        findings: Vec<CorrectnessCandidate>,
-    },
-    UnableToVerify {
-        reason: String,
-    },
+    CandidateFindings { findings: Vec<CorrectnessCandidate> },
+    UnableToVerify { reason: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -562,10 +556,9 @@ impl CorrectnessAssessmentBinding {
         evidence
             .iter()
             .map(|id| {
-                self.evidence
-                    .get(id)
-                    .cloned()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input("unknown evidence citation"))
+                self.evidence.get(id).cloned().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("unknown evidence citation")
+                })
             })
             .collect()
     }

@@ -295,8 +295,7 @@ pub fn write_architecture_bundle_reports(
     let outcomes: Vec<OutcomeRecord> = read_jsonl(&outcomes_path)?;
     let artifacts: Vec<StoredArtifact> = read_jsonl(&artifacts_path)?;
 
-    let report =
-        ArchitectureReport::build(run_id, policy_version, &work, &outcomes, &artifacts)?;
+    let report = ArchitectureReport::build(run_id, policy_version, &work, &outcomes, &artifacts)?;
 
     let md_path = destination.join("architecture-report.md");
     write_reconciled(&md_path, report.to_markdown().as_bytes())?;

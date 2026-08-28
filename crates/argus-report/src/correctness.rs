@@ -143,14 +143,15 @@ impl CorrectnessReport {
                 QueueState::Failed => summary.failed += 1,
                 QueueState::Cancelled => summary.cancelled += 1,
                 QueueState::Succeeded => {
-                    let outcome_rec = outcomes
-                        .iter()
-                        .find(|o| o.work_id == item.id)
-                        .ok_or_else(|| {
-                            argus_core::ArgusError::invariant(
-                                "succeeded work item missing outcome record",
-                            )
-                        })?;
+                    let outcome_rec =
+                        outcomes
+                            .iter()
+                            .find(|o| o.work_id == item.id)
+                            .ok_or_else(|| {
+                                argus_core::ArgusError::invariant(
+                                    "succeeded work item missing outcome record",
+                                )
+                            })?;
                     let effective_outcome: EffectiveOutcome =
                         serde_json::from_slice(&outcome_rec.payload).map_err(|error| {
                             argus_core::ArgusError::invariant(
@@ -266,7 +267,10 @@ impl CorrectnessReport {
         );
 
         if self.finding_clusters.is_empty() {
-            let _ = writeln!(out, "## Candidate findings\n\nNo candidate findings recorded.\n");
+            let _ = writeln!(
+                out,
+                "## Candidate findings\n\nNo candidate findings recorded.\n"
+            );
         } else {
             let _ = writeln!(
                 out,
@@ -301,11 +305,7 @@ impl CorrectnessReport {
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
-                let _ = writeln!(
-                    out,
-                    "- **Occurrences**: {}",
-                    cluster.occurrences.len()
-                );
+                let _ = writeln!(out, "- **Occurrences**: {}", cluster.occurrences.len());
                 let _ = writeln!(
                     out,
                     "\n**Failure Path**:\n```text\n{}\n```\n",
@@ -368,10 +368,7 @@ pub fn write_correctness_bundle_reports(
     let outcomes: Vec<OutcomeRecord> = read_jsonl(&bundle.join("outcomes.jsonl"))?;
     let artifacts: Vec<StoredArtifact> = read_jsonl(&bundle.join("artifacts.jsonl"))?;
     let report = CorrectnessReport::build(run_id, policy_version, &work, &outcomes, &artifacts)?;
-    write_reconciled(
-        &bundle.join("correctness-report.json"),
-        &report.to_json()?,
-    )?;
+    write_reconciled(&bundle.join("correctness-report.json"), &report.to_json()?)?;
     write_reconciled(
         &bundle.join("correctness-report.jsonl"),
         &report.to_jsonl()?,

@@ -71,7 +71,11 @@ impl ArgusError {
 
 impl fmt::Display for ArgusError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.message)
+        if let Some(ref source) = self.source {
+            write!(formatter, "{}: {source}", self.message)
+        } else {
+            write!(formatter, "{}", self.message)
+        }
     }
 }
 

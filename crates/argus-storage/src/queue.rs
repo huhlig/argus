@@ -673,10 +673,15 @@ impl DurableQueue {
                 .map(|value| value.value().to_vec());
             match existing {
                 Some(existing) if existing == bytes => false,
-                Some(_) => {
-                    return Err(argus_core::ArgusError::invariant(
-                        "work ID payload conflict",
-                    ));
+                Some(existing) => {
+                    let decoded: QueueWork = decode(&existing)?;
+                    if decoded.payload == work.payload && decoded.coverage == work.coverage {
+                        false
+                    } else {
+                        return Err(argus_core::ArgusError::invariant(
+                            "work ID payload conflict",
+                        ));
+                    }
                 }
                 None => {
                     table
@@ -746,10 +751,15 @@ impl DurableQueue {
                     .map(|value| value.value().to_vec());
                 match existing {
                     Some(existing) if existing == bytes => {}
-                    Some(_) => {
-                        return Err(argus_core::ArgusError::invariant(
-                            "work ID payload conflict",
-                        ));
+                    Some(existing) => {
+                        let decoded: QueueWork = decode(&existing)?;
+                        if decoded.payload == item.payload && decoded.coverage == item.coverage {
+                            // Idempotent re-admission: payload & coverage match
+                        } else {
+                            return Err(argus_core::ArgusError::invariant(
+                                "work ID payload conflict",
+                            ));
+                        }
                     }
                     None => {
                         table

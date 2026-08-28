@@ -38,6 +38,9 @@ argus-workflow = { path = "../argus-workflow" }
 serde_json.workspace = true
 serde.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+metrics.workspace = true
 
 [dev-dependencies]
 argus-test-support = { path = "../argus-test-support" }

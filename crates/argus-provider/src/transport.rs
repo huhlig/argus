@@ -235,8 +235,8 @@ fn validate_endpoint(value: &str, deployment: DeploymentMode) -> Result<Url, Pro
         ));
     }
     match deployment {
-        DeploymentMode::Local if !is_loopback(&endpoint) => Err(ProviderError::InvalidProfile(
-            "local provider endpoint must use localhost or a loopback address".to_owned(),
+        DeploymentMode::Local if !is_loopback_or_private(&endpoint) => Err(ProviderError::InvalidProfile(
+            "local provider endpoint must use localhost, loopback, or a private network address".to_owned(),
         )),
         DeploymentMode::Online if endpoint.scheme() != "https" => Err(
             ProviderError::InvalidProfile("online provider endpoint must use HTTPS".to_owned()),
@@ -248,10 +248,15 @@ fn validate_endpoint(value: &str, deployment: DeploymentMode) -> Result<Url, Pro
     }
 }
 
-fn is_loopback(endpoint: &Url) -> bool {
+fn is_loopback_or_private(endpoint: &Url) -> bool {
     match endpoint.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Domain(host)) => {
+            let lower = host.to_ascii_lowercase();
+            lower == "localhost"
+                || lower.strip_suffix(".local").is_some()
+                || lower.strip_suffix(".internal").is_some()
+        }
+        Some(Host::Ipv4(address)) => address.is_loopback() || address.is_private(),
         Some(Host::Ipv6(address)) => address.is_loopback(),
         None => false,
     }
@@ -411,35 +416,8 @@ fn map_error(error: LlmError) -> ProviderError {
                 "adapter `{adapter}` cannot honor required response format `{requested}`"
             ))
         }
-        LlmError::Transport {
-            stage,
-            retryable,
-            cause,
-        } => ProviderError::Unavailable(format!(
-            "transport error during {stage:?} (retryable={retryable}): {cause}"
-        )),
-        LlmError::Http {
-            status,
-            retry_after: _,
-            request_id: _,
-            body_metadata: _,
-        } => ProviderError::Unavailable(format!("provider returned HTTP {status}")),
-        LlmError::Decode {
-            status,
-            cause,
-            likely_truncated,
-            ..
-        } => ProviderError::InvalidOutput(format!(
-            "failed to decode HTTP {status} response (truncated={likely_truncated}): {cause}"
-        )),
-        LlmError::IncompleteStream {
-            received_bytes,
-            finish_event_seen,
-        } => ProviderError::InvalidOutput(format!(
-            "stream ended prematurely ({received_bytes} bytes received, finish event seen: {finish_event_seen})"
-        )),
         LlmError::Provider(message) => ProviderError::Unavailable(message),
-        LlmError::Timeout => ProviderError::Unavailable("provider request timed out".to_owned()),
+        other @ LlmError::Timeout => ProviderError::Unavailable(other.to_string()),
     }
 }
 
@@ -521,7 +499,6 @@ mod tests {
             finish_reason: FinishReason::Stop,
             refusal: None,
             model: model.to_owned(),
-            reported_model: None,
         }
     }
 

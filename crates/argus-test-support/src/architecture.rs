@@ -312,7 +312,8 @@ mod tests {
             );
         }
 
-        let repo_corpus_bytes = include_bytes!("../../../docs/evaluation/architecture-corpus-v1.json");
+        let repo_corpus_bytes =
+            include_bytes!("../../../docs/evaluation/architecture-corpus-v1.json");
         let repo_corpus: ArchitectureEvaluationCorpus =
             serde_json::from_slice(repo_corpus_bytes).unwrap();
         assert_eq!(

@@ -30,6 +30,8 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 url.workspace = true
+tracing.workspace = true
+metrics.workspace = true
 
 [dev-dependencies]
 

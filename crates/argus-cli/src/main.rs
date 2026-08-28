@@ -62,6 +62,7 @@ Description:
     - `.argus/.gitignore`: Excludes working state, reviews, and private local overrides
     - `.argus/state/`: Ephemeral redb database, inventory streams, and source blobs
     - `.argus/reviews/`: Finalized review bundles and published reports
+  Also ensures the global system/user profiles catalog directory (~/.config/argus/profiles or %APPDATA%\\argus\\profiles) is created.
 
 Preconditions:
   Can be run in any project directory. Subsequent commands will initialize automatically
@@ -130,7 +131,7 @@ Examples:
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work <documentation|correctness|architecture> [--profile <name-or-path>] [--limit <positive-integer>] [--config <path>]
+Usage: argus work [documentation|correctness|architecture|all] [--profile <name-or-path>] [--limit <positive-integer>] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -138,7 +139,7 @@ Description:
   and records durable outcomes (pass, candidate finding, unable-to-verify, failure).
 
 Arguments & Options:
-  documentation | correctness | architecture  Review policy to execute
+  documentation | correctness | architecture | all  Review policy to execute (default: all)
   --profile <name-or-path>                    Named provider profile or path to profile JSON file
   --limit <number>                            Maximum number of work items to process (default: 1)
   -c, --config <path>                         Path to project configuration (default: .argus/config/argus.json)
@@ -161,6 +162,7 @@ Profile Discovery & Configuration:
   See docs/provider-profiles.md for full schema details.
 
 Examples:
+  argus work --profile ollama --limit 10
   argus work documentation --profile ollama --limit 10
   argus work correctness --profile claude-3-7-sonnet --limit 5
   argus work documentation --profile .argus/config/profiles/local.json";
@@ -214,7 +216,7 @@ Examples:
 
 const HELP_RESUME: &str = "Recover expired work item leases for an active audit run
 
-Usage: argus resume <run-id>
+Usage: argus resume [run-id]
 
 Description:
   Scans the durable queue for leased work items whose heartbeat/lease timestamp has
@@ -222,28 +224,30 @@ Description:
   for re-execution without losing completed outcomes.
 
 Arguments:
-  <run-id>   Run identifier to recover
+  [run-id]   Run identifier to recover (default: current run)
 
 Examples:
+  argus resume
   argus resume 5c82a1...";
 
 const HELP_CANCEL: &str = "Cancel an active audit run
 
-Usage: argus cancel <run-id>
+Usage: argus cancel [run-id]
 
 Description:
   Transitions the run to Cancelled state and marks all pending and leased work
   items as cancelled. Completed outcomes are preserved.
 
 Arguments:
-  <run-id>   Run identifier to cancel
+  [run-id]   Run identifier to cancel (default: current run)
 
 Examples:
+  argus cancel
   argus cancel 5c82a1...";
 
 const HELP_FINALIZE: &str = "Publish an immutable terminal run bundle and generate audit reports
 
-Usage: argus finalize <run-id>
+Usage: argus finalize [run-id]
 
 Description:
   Transitions the active run to Finalized state, writes a self-contained bundle
@@ -251,14 +255,15 @@ Description:
   The finalized bundle is immutable and portable.
 
 Arguments:
-  <run-id>   Run identifier to finalize
+  [run-id]   Run identifier to finalize (default: current run)
 
 Examples:
+  argus finalize
   argus finalize 5c82a1...";
 
 const HELP_REPORT: &str = "Render the audit report for a run (documentation or correctness)
 
-Usage: argus report <run-id> [--format <markdown|json|jsonl>] [--dimension <dimension>] [--severity <severity>]
+Usage: argus report [run-id] [--format <markdown|json|jsonl>] [--dimension <dimension>] [--severity <severity>]
 
 Description:
   Generates a developer report from the durable queue or finalized bundle,
@@ -266,7 +271,7 @@ Description:
   severity levels, and supporting evidence citations.
 
 Arguments:
-  <run-id>   Run identifier to report
+  [run-id]   Run identifier to report (default: current run)
 
 Options:
   --format <format>        Output format: markdown (default), json, jsonl
@@ -376,8 +381,10 @@ fn load_project_config(
     root: &std::path::Path,
     explicit_path: Option<&std::path::Path>,
 ) -> Result<ProjectConfig, argus_core::ArgusError> {
-    let config_path = explicit_path
-        .map_or_else(|| root.join(".argus/config/argus.json"), std::path::PathBuf::from);
+    let config_path = explicit_path.map_or_else(
+        || root.join(".argus/config/argus.json"),
+        std::path::PathBuf::from,
+    );
     if !config_path.is_file() {
         return Ok(ProjectConfig::default());
     }
@@ -509,20 +516,34 @@ fn resolve_provider_profile_with_env(
         }
     }
 
-    let mut message = format!("provider runtime profile `{name_or_path}` not found.\nSearched candidate locations:");
+    let mut message = format!(
+        "provider runtime profile `{name_or_path}` not found.\nSearched candidate locations:"
+    );
     for candidate in &candidates {
         write!(message, "\n  - {}", candidate.display()).expect("writing to a String cannot fail");
     }
     Err(argus_core::ArgusError::invalid_input(message))
 }
 
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
 fn main() -> ExitCode {
+    init_tracing();
     match run(std::env::args().skip(1), &current_directory()) {
         Ok(output) => {
             println!("{output}");
             ExitCode::SUCCESS
         }
         Err(error) => {
+            tracing::error!(error = %error, "Command execution failed");
             eprintln!("error: {error}");
             ExitCode::from(2)
         }
@@ -586,7 +607,10 @@ fn run(
 
     match command.as_str() {
         "init" => {
-            if remaining_args.iter().any(|a| is_help_flag(Some(a.as_str()))) {
+            if remaining_args
+                .iter()
+                .any(|a| is_help_flag(Some(a.as_str())))
+            {
                 Ok(HELP_INIT.to_owned())
             } else {
                 initialize(root)
@@ -598,7 +622,10 @@ fn run(
         "work" => work_command(root, remaining_args.into_iter()),
         "targets" => targets_command(root, remaining_args.into_iter()),
         "status" => {
-            if remaining_args.iter().any(|a| is_help_flag(Some(a.as_str()))) {
+            if remaining_args
+                .iter()
+                .any(|a| is_help_flag(Some(a.as_str())))
+            {
                 Ok(HELP_STATUS.to_owned())
             } else {
                 status_command(root)
@@ -1143,8 +1170,7 @@ fn audit_command(
         ));
     }
 
-    let evidence_store =
-        argus_evidence::EvidenceStore::open(root.join(".argus/state/evidence"))?;
+    let evidence_store = argus_evidence::EvidenceStore::open(root.join(".argus/state/evidence"))?;
 
     let plan_documentation = || -> Result<String, argus_core::ArgusError> {
         let policy = argus_policies::DocumentationApplicabilityPolicy::public_api()?;
@@ -1167,7 +1193,9 @@ fn audit_command(
         let not_applicable = plan
             .units
             .iter()
-            .filter(|unit| unit.applicability.state == argus_core::ApplicabilityState::NotApplicable)
+            .filter(|unit| {
+                unit.applicability.state == argus_core::ApplicabilityState::NotApplicable
+            })
             .count();
         let pending = plan.units.len() - applicable - not_applicable;
         let catalog = argus_workflow::DocumentationEvidenceCatalog::ingest(
@@ -1224,7 +1252,9 @@ fn audit_command(
         let not_applicable = plan
             .units
             .iter()
-            .filter(|unit| unit.applicability.state == argus_core::ApplicabilityState::NotApplicable)
+            .filter(|unit| {
+                unit.applicability.state == argus_core::ApplicabilityState::NotApplicable
+            })
             .count();
         let pending = plan.units.len() - applicable - not_applicable;
         let catalog = argus_workflow::CorrectnessEvidenceCatalog::ingest(
@@ -1281,7 +1311,9 @@ fn audit_command(
         let not_applicable = plan
             .units
             .iter()
-            .filter(|unit| unit.applicability.state == argus_core::ApplicabilityState::NotApplicable)
+            .filter(|unit| {
+                unit.applicability.state == argus_core::ApplicabilityState::NotApplicable
+            })
             .count();
         let pending = plan.units.len() - applicable - not_applicable;
         let catalog = argus_workflow::ArchitectureEvidenceCatalog::ingest(
@@ -1339,13 +1371,19 @@ fn work_command(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
     }
-    let usage = "usage: argus work <documentation|correctness|architecture> [--profile <name-or-path>] [--limit <positive-integer>] [--config <path>]";
-    let mut iter = args.into_iter();
-    let policy_arg = iter.next();
+    let usage = "usage: argus work [documentation|correctness|architecture|all] [--profile <name-or-path>] [--limit <positive-integer>] [--config <path>]";
+    let mut iter = args.into_iter().peekable();
+    let policy_arg = if iter.peek().is_some_and(|a| !a.starts_with('-')) {
+        iter.next().map(|arg| arg.to_lowercase())
+    } else {
+        None
+    };
+
     let policy_name = match policy_arg.as_deref() {
         Some("documentation") => "documentation",
         Some("correctness") => "correctness",
         Some("architecture") => "architecture",
+        Some("all") | None => "all",
         _ => return Err(argus_core::ArgusError::invalid_input(usage)),
     };
     let mut profile_name = None;
@@ -1355,26 +1393,30 @@ fn work_command(
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--profile" => {
-                profile_name = Some(iter.next().ok_or_else(|| {
-                    argus_core::ArgusError::invalid_input(usage)
-                })?);
+                profile_name = Some(
+                    iter.next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?,
+                );
             }
             "--limit" => {
-                let value = iter.next().ok_or_else(|| {
-                    argus_core::ArgusError::invalid_input(usage)
-                })?;
+                let value = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
                 limit = value.parse::<usize>().map_err(|error| {
                     argus_core::ArgusError::invalid_input("work limit must be a positive integer")
                         .with_source(error)
                 })?;
                 if limit == 0 {
-                    return Err(argus_core::ArgusError::invalid_input("work limit must be positive"));
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "work limit must be positive",
+                    ));
                 }
             }
             "-c" | "--config" => {
-                config_path = Some(iter.next().ok_or_else(|| {
-                    argus_core::ArgusError::invalid_input(usage)
-                })?);
+                config_path = Some(
+                    iter.next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?,
+                );
             }
             _ => return Err(argus_core::ArgusError::invalid_input(usage)),
         }
@@ -1397,10 +1439,106 @@ fn work_command(
         "documentation" => runtime.block_on(execute_documentation_work(root, profile, limit)),
         "correctness" => runtime.block_on(execute_correctness_work(root, profile, limit)),
         "architecture" => runtime.block_on(execute_architecture_work(root, profile, limit)),
+        "all" => runtime.block_on(execute_all_work(root, profile, limit)),
         _ => unreachable!(),
     }
 }
 
+async fn run_worker_step<F, Fut, R>(
+    category: &str,
+    index: usize,
+    limit: usize,
+    provider_id: &str,
+    model_id: &str,
+    step_fn: F,
+) -> Result<(R, std::time::Duration), argus_core::ArgusError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<R, argus_core::ArgusError>>,
+{
+    let start = std::time::Instant::now();
+    let category = category.to_owned();
+    let provider_id = provider_id.to_owned();
+    let model_id = model_id.to_owned();
+
+    metrics::counter!("argus.worker.attempts", "policy" => category.clone()).increment(1);
+
+    let span = tracing::info_span!(
+        "worker_step",
+        policy = %category,
+        step = index + 1,
+        limit = limit,
+        provider = %provider_id,
+        model = %model_id
+    );
+    let _guard = span.enter();
+
+    tracing::info!(
+        policy = %category,
+        step = index + 1,
+        limit = limit,
+        provider = %provider_id,
+        model = %model_id,
+        "[{category}] Leased item {}/{} for processing",
+        index + 1,
+        limit
+    );
+
+    let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let ticker_category = category.clone();
+    let ticker_provider = provider_id.clone();
+    let ticker_model = model_id.clone();
+
+    let ticker_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let elapsed = start.elapsed().as_secs();
+                    tracing::info!(
+                        policy = %ticker_category,
+                        step = index + 1,
+                        limit = limit,
+                        elapsed_secs = elapsed,
+                        provider = %ticker_provider,
+                        model = %ticker_model,
+                        "[{ticker_category}] Processing item {}/{}... ({}s elapsed, provider: {}, model: {})",
+                        index + 1,
+                        limit,
+                        elapsed,
+                        ticker_provider,
+                        ticker_model
+                    );
+                }
+                _ = &mut stop_rx => {
+                    break;
+                }
+            }
+        }
+    });
+
+    let result = step_fn().await;
+    let _ = stop_tx.send(());
+    let _ = ticker_handle.await;
+    let duration = start.elapsed();
+    metrics::histogram!("argus.worker.step_duration_seconds", "policy" => category.clone())
+        .record(duration.as_secs_f64());
+    result.map(|res| (res, duration))
+}
+
+async fn execute_all_work(
+    root: &std::path::Path,
+    profile: argus_provider::ProviderRuntimeProfile,
+    limit: usize,
+) -> Result<String, argus_core::ArgusError> {
+    let doc_res = execute_documentation_work(root, profile.clone(), limit).await?;
+    let corr_res = execute_correctness_work(root, profile.clone(), limit).await?;
+    let arch_res = execute_architecture_work(root, profile, limit).await?;
+    Ok(format!("{doc_res}\n{corr_res}\n{arch_res}"))
+}
+
+#[allow(clippy::too_many_lines)]
 async fn execute_documentation_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
@@ -1444,7 +1582,7 @@ async fn execute_documentation_work(
             argus_core::ArgusError::invariant("cannot open workflow data").with_source(error)
         })?,
     );
-    let provider_identity = profile.capabilities.identity;
+    let provider_identity = profile.capabilities.identity.clone();
     let max_output_tokens = profile.capabilities.max_output_tokens;
     let worker = argus_workflow::DocumentationWorker::new(
         queue,
@@ -1461,7 +1599,7 @@ async fn execute_documentation_work(
                     actor_version: "1.0.0".to_owned(),
                     workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),
                     workflow_version: argus_workflow::TARGET_REVIEW_WORKFLOW_VERSION.to_owned(),
-                    provider: provider_identity,
+                    provider: provider_identity.clone(),
                 },
                 max_output_tokens,
             },
@@ -1474,12 +1612,64 @@ async fn execute_documentation_work(
     let mut succeeded = 0_usize;
     let mut retries = 0_usize;
     let mut failed = 0_usize;
-    for _ in 0..limit {
-        match worker.run_next(now_millis()?).await? {
+    let provider_id = provider_identity.provider;
+    let model_id = provider_identity.model;
+
+    for i in 0..limit {
+        let (result, duration) = run_worker_step(
+            "documentation",
+            i,
+            limit,
+            &provider_id,
+            &model_id,
+            || async { worker.run_next(now_millis()?).await },
+        )
+        .await?;
+
+        match result {
             argus_workflow::DocumentationWorkerResult::Idle => break,
-            argus_workflow::DocumentationWorkerResult::Succeeded { .. } => succeeded += 1,
-            argus_workflow::DocumentationWorkerResult::RetryScheduled { .. } => retries += 1,
-            argus_workflow::DocumentationWorkerResult::Failed { .. } => failed += 1,
+            argus_workflow::DocumentationWorkerResult::Succeeded { work_id } => {
+                succeeded += 1;
+                metrics::counter!("argus.worker.succeeded", "policy" => "documentation")
+                    .increment(1);
+                tracing::info!(
+                    policy = "documentation",
+                    work_id = %work_id,
+                    duration_secs = duration.as_secs_f64(),
+                    "[documentation] Item {}/{} ({work_id}) Succeeded in {:.1}s",
+                    i + 1,
+                    limit,
+                    duration.as_secs_f64()
+                );
+            }
+            argus_workflow::DocumentationWorkerResult::RetryScheduled { work_id, error } => {
+                retries += 1;
+                metrics::counter!("argus.worker.retries", "policy" => "documentation").increment(1);
+                tracing::warn!(
+                    policy = "documentation",
+                    work_id = %work_id,
+                    error = %error,
+                    duration_secs = duration.as_secs_f64(),
+                    "[documentation] Item {}/{} ({work_id}) RetryScheduled in {:.1}s: {error}",
+                    i + 1,
+                    limit,
+                    duration.as_secs_f64()
+                );
+            }
+            argus_workflow::DocumentationWorkerResult::Failed { work_id, error } => {
+                failed += 1;
+                metrics::counter!("argus.worker.failed", "policy" => "documentation").increment(1);
+                tracing::error!(
+                    policy = "documentation",
+                    work_id = %work_id,
+                    error = %error,
+                    duration_secs = duration.as_secs_f64(),
+                    "[documentation] Item {}/{} ({work_id}) Failed in {:.1}s: {error}",
+                    i + 1,
+                    limit,
+                    duration.as_secs_f64()
+                );
+            }
         }
     }
     Ok(format!(
@@ -1487,6 +1677,7 @@ async fn execute_documentation_work(
     ))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn execute_correctness_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
@@ -1530,7 +1721,7 @@ async fn execute_correctness_work(
             argus_core::ArgusError::invariant("cannot open workflow data").with_source(error)
         })?,
     );
-    let provider_identity = profile.capabilities.identity;
+    let provider_identity = profile.capabilities.identity.clone();
     let max_output_tokens = profile.capabilities.max_output_tokens;
     let worker = argus_workflow::CorrectnessWorker::new(
         queue,
@@ -1547,7 +1738,7 @@ async fn execute_correctness_work(
                     actor_version: "1.0.0".to_owned(),
                     workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),
                     workflow_version: argus_workflow::TARGET_REVIEW_WORKFLOW_VERSION.to_owned(),
-                    provider: provider_identity,
+                    provider: provider_identity.clone(),
                 },
                 max_output_tokens,
             },
@@ -1560,12 +1751,59 @@ async fn execute_correctness_work(
     let mut succeeded = 0_usize;
     let mut retries = 0_usize;
     let mut failed = 0_usize;
-    for _ in 0..limit {
-        match worker.run_next(now_millis()?).await? {
+    let provider_id = provider_identity.provider;
+    let model_id = provider_identity.model;
+
+    for i in 0..limit {
+        let (result, duration) =
+            run_worker_step("correctness", i, limit, &provider_id, &model_id, || async {
+                worker.run_next(now_millis()?).await
+            })
+            .await?;
+
+        match result {
             argus_workflow::CorrectnessWorkerResult::Idle => break,
-            argus_workflow::CorrectnessWorkerResult::Succeeded { .. } => succeeded += 1,
-            argus_workflow::CorrectnessWorkerResult::RetryScheduled { .. } => retries += 1,
-            argus_workflow::CorrectnessWorkerResult::Failed { .. } => failed += 1,
+            argus_workflow::CorrectnessWorkerResult::Succeeded { work_id } => {
+                succeeded += 1;
+                metrics::counter!("argus.worker.succeeded", "policy" => "correctness").increment(1);
+                tracing::info!(
+                    policy = "correctness",
+                    work_id = %work_id,
+                    duration_secs = duration.as_secs_f64(),
+                    "[correctness] Item {}/{} ({work_id}) Succeeded in {:.1}s",
+                    i + 1,
+                    limit,
+                    duration.as_secs_f64()
+                );
+            }
+            argus_workflow::CorrectnessWorkerResult::RetryScheduled { work_id, error } => {
+                retries += 1;
+                metrics::counter!("argus.worker.retries", "policy" => "correctness").increment(1);
+                tracing::warn!(
+                    policy = "correctness",
+                    work_id = %work_id,
+                    error = %error,
+                    duration_secs = duration.as_secs_f64(),
+                    "[correctness] Item {}/{} ({work_id}) RetryScheduled in {:.1}s: {error}",
+                    i + 1,
+                    limit,
+                    duration.as_secs_f64()
+                );
+            }
+            argus_workflow::CorrectnessWorkerResult::Failed { work_id, error } => {
+                failed += 1;
+                metrics::counter!("argus.worker.failed", "policy" => "correctness").increment(1);
+                tracing::error!(
+                    policy = "correctness",
+                    work_id = %work_id,
+                    error = %error,
+                    duration_secs = duration.as_secs_f64(),
+                    "[correctness] Item {}/{} ({work_id}) Failed in {:.1}s: {error}",
+                    i + 1,
+                    limit,
+                    duration.as_secs_f64()
+                );
+            }
         }
     }
     Ok(format!(
@@ -1573,6 +1811,7 @@ async fn execute_correctness_work(
     ))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn execute_architecture_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
@@ -1616,7 +1855,7 @@ async fn execute_architecture_work(
             argus_core::ArgusError::invariant("cannot open workflow data").with_source(error)
         })?,
     );
-    let provider_identity = profile.capabilities.identity;
+    let provider_identity = profile.capabilities.identity.clone();
     let max_output_tokens = profile.capabilities.max_output_tokens;
     let worker = argus_workflow::ArchitectureWorker::new(
         queue,
@@ -1633,7 +1872,7 @@ async fn execute_architecture_work(
                     actor_version: "1.0.0".to_owned(),
                     workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),
                     workflow_version: argus_workflow::TARGET_REVIEW_WORKFLOW_VERSION.to_owned(),
-                    provider: provider_identity,
+                    provider: provider_identity.clone(),
                 },
                 max_output_tokens,
             },
@@ -1646,12 +1885,64 @@ async fn execute_architecture_work(
     let mut succeeded = 0_usize;
     let mut retries = 0_usize;
     let mut failed = 0_usize;
-    for _ in 0..limit {
-        match worker.run_next(now_millis()?).await? {
+    let provider_id = provider_identity.provider;
+    let model_id = provider_identity.model;
+
+    for i in 0..limit {
+        let (result, duration) = run_worker_step(
+            "architecture",
+            i,
+            limit,
+            &provider_id,
+            &model_id,
+            || async { worker.run_next(now_millis()?).await },
+        )
+        .await?;
+
+        match result {
             argus_workflow::ArchitectureWorkerResult::Idle => break,
-            argus_workflow::ArchitectureWorkerResult::Succeeded { .. } => succeeded += 1,
-            argus_workflow::ArchitectureWorkerResult::RetryScheduled { .. } => retries += 1,
-            argus_workflow::ArchitectureWorkerResult::Failed { .. } => failed += 1,
+            argus_workflow::ArchitectureWorkerResult::Succeeded { work_id } => {
+                succeeded += 1;
+                metrics::counter!("argus.worker.succeeded", "policy" => "architecture")
+                    .increment(1);
+                tracing::info!(
+                    policy = "architecture",
+                    work_id = %work_id,
+                    duration_secs = duration.as_secs_f64(),
+                    "[architecture] Item {}/{} ({work_id}) Succeeded in {:.1}s",
+                    i + 1,
+                    limit,
+                    duration.as_secs_f64()
+                );
+            }
+            argus_workflow::ArchitectureWorkerResult::RetryScheduled { work_id, error } => {
+                retries += 1;
+                metrics::counter!("argus.worker.retries", "policy" => "architecture").increment(1);
+                tracing::warn!(
+                    policy = "architecture",
+                    work_id = %work_id,
+                    error = %error,
+                    duration_secs = duration.as_secs_f64(),
+                    "[architecture] Item {}/{} ({work_id}) RetryScheduled in {:.1}s: {error}",
+                    i + 1,
+                    limit,
+                    duration.as_secs_f64()
+                );
+            }
+            argus_workflow::ArchitectureWorkerResult::Failed { work_id, error } => {
+                failed += 1;
+                metrics::counter!("argus.worker.failed", "policy" => "architecture").increment(1);
+                tracing::error!(
+                    policy = "architecture",
+                    work_id = %work_id,
+                    error = %error,
+                    duration_secs = duration.as_secs_f64(),
+                    "[architecture] Item {}/{} ({work_id}) Failed in {:.1}s: {error}",
+                    i + 1,
+                    limit,
+                    duration.as_secs_f64()
+                );
+            }
         }
     }
     Ok(format!(
@@ -1778,7 +2069,7 @@ fn resume_command(
     if is_help_flag(value.as_deref()) {
         return Ok(HELP_RESUME.to_owned());
     }
-    let id = parse_run_id(value)?;
+    let id = parse_run_id(root, value)?;
     let recovered = working_queue(root)?.resume_run(&id, now_millis()?)?;
     Ok(format!(
         "Resumed run {id}; recovered {recovered} expired leases"
@@ -1792,7 +2083,7 @@ fn cancel_command(
     if is_help_flag(value.as_deref()) {
         return Ok(HELP_CANCEL.to_owned());
     }
-    let id = parse_run_id(value)?;
+    let id = parse_run_id(root, value)?;
     let cancelled = working_queue(root)?.cancel_run(&id, now_millis()?)?;
     Ok(format!(
         "Cancelled run {id}; cancelled {cancelled} work items"
@@ -1806,16 +2097,11 @@ fn finalize_command(
     if is_help_flag(value.as_deref()) {
         return Ok(HELP_FINALIZE.to_owned());
     }
-    let id = parse_run_id(value)?;
+    let id = parse_run_id(root, value)?;
     let queue = working_queue(root)?;
     let records = queue.run_records(&id)?;
     let destination = root.join(".argus/reviews").join(id.as_str());
-    let manifest = argus_storage::finalize_run_bundle(
-        &queue,
-        &id,
-        &destination,
-        now_millis()?,
-    )?;
+    let manifest = argus_storage::finalize_run_bundle(&queue, &id, &destination, now_millis()?)?;
 
     let is_architecture = records
         .work
@@ -1879,23 +2165,29 @@ fn report_command(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    let usage = "usage: argus report <run-id> [--format <markdown|json|jsonl>] [--dimension <dimension>] [--severity <severity>]";
+    let usage = "usage: argus report [run-id] [--format <markdown|json|jsonl>] [--dimension <dimension>] [--severity <severity>]";
     let first = args.next();
     if is_help_flag(first.as_deref()) {
         return Ok(HELP_REPORT.to_owned());
     }
-    let id_str = first.ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
-    let id = id_str.parse::<argus_core::RunId>()?;
+    let (id, flag_peek) = match first {
+        Some(ref arg) if !arg.starts_with('-') => (arg.parse::<argus_core::RunId>()?, None),
+        Some(arg) => (current_run(root)?, Some(arg)),
+        None => (current_run(root)?, None),
+    };
 
     let mut format = "markdown";
     let mut dimension_str: Option<String> = None;
     let mut severity_filter: Option<argus_core::Severity> = None;
 
-    while let Some(flag) = args.next() {
+    let flag_iter = flag_peek.into_iter().chain(args);
+    let mut iter = flag_iter.peekable();
+
+    while let Some(flag) = iter.next() {
         if is_help_flag(Some(&flag)) {
             return Ok(HELP_REPORT.to_owned());
         }
-        let value = args
+        let value = iter
             .next()
             .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
         match flag.as_str() {
@@ -1913,14 +2205,12 @@ fn report_command(
                 dimension_str = Some(value);
             }
             "--severity" => {
-                let sev: argus_core::Severity = serde_json::from_value(
-                    serde_json::Value::String(value.clone()),
-                )
+                let sev: argus_core::Severity = serde_json::from_value(serde_json::Value::String(
+                    value.clone(),
+                ))
                 .map_err(|error| {
-                    argus_core::ArgusError::invalid_input(format!(
-                        "unknown severity `{value}`"
-                    ))
-                    .with_source(error)
+                    argus_core::ArgusError::invalid_input(format!("unknown severity `{value}`"))
+                        .with_source(error)
                 })?;
                 severity_filter = Some(sev);
             }
@@ -1992,11 +2282,8 @@ fn report_command(
             _ => Ok(report.to_markdown()),
         }
     } else if is_correctness {
-        let mut report = argus_report::correctness_report_from_queue(
-            &queue,
-            id,
-            "correctness-conservative@1",
-        )?;
+        let mut report =
+            argus_report::correctness_report_from_queue(&queue, id, "correctness-conservative@1")?;
 
         if let Some(dim_name) = dimension_str {
             let dim: argus_policies::CorrectnessDimension = serde_json::from_value(
@@ -2314,7 +2601,8 @@ fn evaluate_command(
 
     if pipeline == "documentation" {
         let corpus: argus_report::DocumentationEvaluationCorpus = serde_json::from_slice(
-            &std::fs::read(path).map_err(io_error("cannot read documentation evaluation corpus"))?,
+            &std::fs::read(path)
+                .map_err(io_error("cannot read documentation evaluation corpus"))?,
         )
         .map_err(|error| {
             argus_core::ArgusError::invalid_input("documentation evaluation corpus is invalid")
@@ -2340,13 +2628,15 @@ fn evaluate_command(
             } else {
                 root.join(t_path)
             };
-            let thresholds: argus_report::DocumentationEvaluationThresholds = serde_json::from_slice(
-                &std::fs::read(t_path).map_err(io_error("cannot read evaluation thresholds"))?,
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
-                    .with_source(error)
-            })?;
+            let thresholds: argus_report::DocumentationEvaluationThresholds =
+                serde_json::from_slice(
+                    &std::fs::read(t_path)
+                        .map_err(io_error("cannot read evaluation thresholds"))?,
+                )
+                .map_err(|error| {
+                    argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
+                        .with_source(error)
+                })?;
             if let Err(violations) = evaluation.check_thresholds(&thresholds) {
                 return Err(argus_core::ArgusError::invalid_input(format!(
                     "Documentation evaluation quality thresholds unmet:\n  - {}",
@@ -2446,13 +2736,15 @@ fn evaluate_command(
             } else {
                 root.join(t_path)
             };
-            let thresholds: argus_report::ArchitectureEvaluationThresholds = serde_json::from_slice(
-                &std::fs::read(t_path).map_err(io_error("cannot read evaluation thresholds"))?,
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
-                    .with_source(error)
-            })?;
+            let thresholds: argus_report::ArchitectureEvaluationThresholds =
+                serde_json::from_slice(
+                    &std::fs::read(t_path)
+                        .map_err(io_error("cannot read evaluation thresholds"))?,
+                )
+                .map_err(|error| {
+                    argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
+                        .with_source(error)
+                })?;
             if let Err(violations) = evaluation.check_thresholds(&thresholds) {
                 return Err(argus_core::ArgusError::invalid_input(format!(
                     "Architecture evaluation quality thresholds unmet:\n  - {}",
@@ -2474,10 +2766,14 @@ fn evaluate_command(
     }
 }
 
-fn parse_run_id(value: Option<String>) -> Result<argus_core::RunId, argus_core::ArgusError> {
-    value
-        .ok_or_else(|| argus_core::ArgusError::invalid_input("run ID is required"))?
-        .parse()
+fn parse_run_id(
+    root: &std::path::Path,
+    value: Option<String>,
+) -> Result<argus_core::RunId, argus_core::ArgusError> {
+    match value {
+        Some(val) if !val.trim().is_empty() => val.parse(),
+        _ => current_run(root),
+    }
 }
 
 fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
@@ -2610,6 +2906,70 @@ config/*.local.json
 config/profiles/*.local.json
 ";
 
+fn system_config_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("ARGUS_CONFIG_DIR").map(std::path::PathBuf::from) {
+        return Some(dir);
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return Some(std::path::PathBuf::from(appdata).join("argus"));
+    }
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        return Some(std::path::PathBuf::from(userprofile).join(".config/argus"));
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return Some(std::path::PathBuf::from(xdg).join("argus"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(std::path::PathBuf::from(home).join(".config/argus"));
+    }
+    None
+}
+
+const DEFAULT_PROFILE_JSON: &str = r#"{
+  "schema_version": 1,
+  "capabilities": {
+    "identity": {
+      "provider": "ollama",
+      "provider_version": "langchart@1",
+      "model": "llama3.2",
+      "model_version": "latest"
+    },
+    "deployment": "local",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 8192,
+    "structured_output": "best_effort",
+    "tool_calling": false,
+    "concurrency_capacity": 1,
+    "supported_classifications": [
+      "internal"
+    ],
+    "reports_token_usage": true,
+    "reports_estimated_cost": false
+  },
+  "policy": {
+    "repository_classification": "internal",
+    "authorize_online_transmission": false,
+    "substitution": "pinned",
+    "limits": {
+      "max_requests": 100,
+      "max_input_tokens": 1000000,
+      "max_output_tokens": 163840,
+      "max_evidence_bytes": 10000000,
+      "max_evidence_expansions": 0,
+      "max_concurrency": 1,
+      "max_estimated_cost_microusd": null
+    }
+  },
+  "repair": {
+    "max_repair_attempts": 1
+  },
+  "transport": {
+    "kind": "ollama",
+    "base_url": null
+  }
+}
+"#;
+
 fn initialize(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
     let argus = root.join(".argus");
     std::fs::create_dir_all(argus.join("config/profiles"))
@@ -2618,14 +2978,33 @@ fn initialize(root: &std::path::Path) -> Result<String, argus_core::ArgusError> 
     std::fs::create_dir_all(argus.join("reviews")).map_err(io_error("cannot create reviews"))?;
     let config = argus.join("config/argus.json");
     if !config.exists() {
-        std::fs::write(&config, b"{\n  \"schema_version\": 1\n}\n")
-            .map_err(io_error("cannot write config"))?;
+        std::fs::write(
+            &config,
+            b"{\n  \"schema_version\": 1,\n  \"default_profile\": \"default\"\n}\n",
+        )
+        .map_err(io_error("cannot write config"))?;
+    }
+    let default_profile = argus.join("config/profiles/default.json");
+    if !default_profile.exists() {
+        std::fs::write(&default_profile, DEFAULT_PROFILE_JSON.as_bytes())
+            .map_err(io_error("cannot write default profile"))?;
     }
     let gitignore = argus.join(".gitignore");
     if !gitignore.exists() {
         std::fs::write(&gitignore, ARGUS_GITIGNORE.as_bytes())
             .map_err(io_error("cannot write .argus/.gitignore"))?;
     }
+
+    if let Some(sys_dir) = system_config_dir() {
+        let sys_profiles = sys_dir.join("profiles");
+        if std::fs::create_dir_all(&sys_profiles).is_ok() {
+            let sys_default = sys_profiles.join("default.json");
+            if !sys_default.exists() {
+                let _ = std::fs::write(&sys_default, DEFAULT_PROFILE_JSON.as_bytes());
+            }
+        }
+    }
+
     Ok(format!("Initialized Argus in {}", argus.display()))
 }
 
@@ -2642,7 +3021,9 @@ fn snapshot_command(
     match iter.next().as_deref() {
         Some("create") => {
             if iter.next().is_some() {
-                return Err(argus_core::ArgusError::invalid_input("usage: argus snapshot create"));
+                return Err(argus_core::ArgusError::invalid_input(
+                    "usage: argus snapshot create",
+                ));
             }
             initialize(root)?;
             let manifest = argus_snapshot::capture_snapshot(
@@ -2794,36 +3175,59 @@ mod tests {
     #[test]
     fn nested_subcommand_help_flags() {
         let root = std::path::Path::new(".");
-        assert!(run(
-            ["work".to_owned(), "documentation".to_owned(), "--help".to_owned()].into_iter(),
-            root
-        )
-        .unwrap()
-        .contains("Usage: argus work"));
+        assert!(
+            run(
+                [
+                    "work".to_owned(),
+                    "documentation".to_owned(),
+                    "--help".to_owned()
+                ]
+                .into_iter(),
+                root
+            )
+            .unwrap()
+            .contains("Usage: argus work")
+        );
 
-        assert!(run(
-            ["snapshot".to_owned(), "create".to_owned(), "--help".to_owned()].into_iter(),
-            root
-        )
-        .unwrap()
-        .contains("Usage:\n  argus snapshot create"));
+        assert!(
+            run(
+                [
+                    "snapshot".to_owned(),
+                    "create".to_owned(),
+                    "--help".to_owned()
+                ]
+                .into_iter(),
+                root
+            )
+            .unwrap()
+            .contains("Usage:\n  argus snapshot create")
+        );
 
-        assert!(run(
-            ["targets".to_owned(), "show".to_owned(), "--help".to_owned()].into_iter(),
-            root
-        )
-        .unwrap()
-        .contains("Usage:\n  argus targets list"));
+        assert!(
+            run(
+                ["targets".to_owned(), "show".to_owned(), "--help".to_owned()].into_iter(),
+                root
+            )
+            .unwrap()
+            .contains("Usage:\n  argus targets list")
+        );
 
-        assert!(run(
-            ["coverage".to_owned(), "--dimension".to_owned(), "--help".to_owned()].into_iter(),
-            root
-        )
-        .is_err()); // --dimension with unknown second arg is invalid input
+        assert!(
+            run(
+                [
+                    "coverage".to_owned(),
+                    "--dimension".to_owned(),
+                    "--help".to_owned()
+                ]
+                .into_iter(),
+                root
+            )
+            .is_err()
+        ); // --dimension with unknown second arg is invalid input
 
         let unknown_topic = run(
             ["help".to_owned(), "nonexistent".to_owned()].into_iter(),
-            root
+            root,
         )
         .unwrap_err();
         assert_eq!(unknown_topic.code(), argus_core::ErrorCode::InvalidInput);
@@ -3267,6 +3671,7 @@ mod tests {
         let argus = temporary.path().join(".argus");
         assert!(argus.join("config/argus.json").is_file());
         assert!(argus.join("config/profiles").is_dir());
+        assert!(argus.join("config/profiles/default.json").is_file());
         assert!(argus.join("state").is_dir());
         assert!(argus.join("reviews").is_dir());
 
@@ -3333,7 +3738,11 @@ mod tests {
         // 2. Project catalog: .argus/config/profiles/project_model.json
         let project_profile_dir = temporary.path().join(".argus/config/profiles");
         std::fs::create_dir_all(&project_profile_dir).unwrap();
-        std::fs::write(project_profile_dir.join("project_model.json"), &profile_bytes).unwrap();
+        std::fs::write(
+            project_profile_dir.join("project_model.json"),
+            &profile_bytes,
+        )
+        .unwrap();
         let (resolved, _) = resolve_provider_profile(temporary.path(), "project_model").unwrap();
         assert_eq!(resolved, project_profile_dir.join("project_model.json"));
 
@@ -3341,12 +3750,9 @@ mod tests {
         let sys_profiles = sys_dir.join("profiles");
         std::fs::create_dir_all(&sys_profiles).unwrap();
         std::fs::write(sys_profiles.join("system_model.json"), &profile_bytes).unwrap();
-        let (resolved, _) = resolve_provider_profile_with_env(
-            temporary.path(),
-            "system_model",
-            Some(sys_dir),
-        )
-        .unwrap();
+        let (resolved, _) =
+            resolve_provider_profile_with_env(temporary.path(), "system_model", Some(sys_dir))
+                .unwrap();
         assert_eq!(resolved, sys_profiles.join("system_model.json"));
 
         // 4. Missing profile error shows candidate search locations
@@ -3405,7 +3811,9 @@ mod tests {
             transport: argus_provider::ProviderTransportProfile::Ollama { base_url: None },
         };
         std::fs::write(
-            temporary.path().join(".argus/config/profiles/configured.json"),
+            temporary
+                .path()
+                .join(".argus/config/profiles/configured.json"),
             serde_json::to_vec_pretty(&profile).unwrap(),
         )
         .unwrap();
@@ -3590,7 +3998,11 @@ mod tests {
         .unwrap_err();
         assert_eq!(failure.code(), argus_core::ErrorCode::InvalidInput);
         assert!(failure.to_string().contains("quality thresholds unmet"));
-        assert!(failure.to_string().contains("recall 0.00% is below threshold 80.00%"));
+        assert!(
+            failure
+                .to_string()
+                .contains("recall 0.00% is below threshold 80.00%")
+        );
     }
 
     #[test]
@@ -3608,7 +4020,12 @@ mod tests {
         )
         .unwrap();
         let primed = run(
-            ["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(),
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "rust".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -3682,7 +4099,12 @@ mod tests {
         )
         .unwrap();
         let primed = run(
-            ["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(),
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "rust".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -3756,7 +4178,12 @@ mod tests {
         )
         .unwrap();
         let _primed = run(
-            ["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(),
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "rust".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();

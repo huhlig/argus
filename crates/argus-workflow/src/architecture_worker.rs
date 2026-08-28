@@ -102,9 +102,7 @@ impl ArchitectureWorker {
             return Ok(ArchitectureWorkerResult::Idle);
         };
         match self.execute_with_heartbeats(&leased, now_millis).await {
-            Ok(()) => Ok(ArchitectureWorkerResult::Succeeded {
-                work_id: leased.id,
-            }),
+            Ok(()) => Ok(ArchitectureWorkerResult::Succeeded { work_id: leased.id }),
             Err(error) => {
                 let message = error.to_string();
                 if self
@@ -112,9 +110,7 @@ impl ArchitectureWorker {
                     .get(&leased.id)?
                     .is_some_and(|work| work.state == QueueState::Succeeded)
                 {
-                    return Ok(ArchitectureWorkerResult::Succeeded {
-                        work_id: leased.id,
-                    });
+                    return Ok(ArchitectureWorkerResult::Succeeded { work_id: leased.id });
                 }
                 let state = self.queue.fail_attempt(
                     &leased.id,
@@ -434,10 +430,7 @@ fn langchart_run_id(audit_run: &AuditRunId, work_id: &WorkItemId, retry_generati
         hasher.update(b"\0retry\0");
         hasher.update(&retry_generation.to_be_bytes());
     }
-    RunId::new(format!(
-        "argus-architecture-{}",
-        hasher.finalize().to_hex()
-    ))
+    RunId::new(format!("argus-architecture-{}", hasher.finalize().to_hex()))
 }
 
 pub struct ArchitectureContextResolver {

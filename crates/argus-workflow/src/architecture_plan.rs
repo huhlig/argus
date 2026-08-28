@@ -138,10 +138,8 @@ impl ArchitectureReviewMaterialization {
         )?;
         let frame: ReviewContextFrame =
             serde_json::from_slice(&stored_context.payload).map_err(|error| {
-                argus_core::ArgusError::invalid_input(
-                    "invalid stored architecture review context",
-                )
-                .with_source(error)
+                argus_core::ArgusError::invalid_input("invalid stored architecture review context")
+                    .with_source(error)
             })?;
         let context = ContextArtifact {
             hash: stored_context.content_hash,
@@ -562,7 +560,13 @@ mod tests {
         assert_eq!(plan.units.len(), 2);
         assert_eq!(plan.units[0].scope, ArchitectureScope::Module);
         assert_eq!(plan.units[0].policy_version, "architecture-code-derived@1");
-        assert_eq!(plan.units[0].applicability.state, ApplicabilityState::Applicable);
-        assert_eq!(plan.units[1].applicability.state, ApplicabilityState::NotApplicable);
+        assert_eq!(
+            plan.units[0].applicability.state,
+            ApplicabilityState::Applicable
+        );
+        assert_eq!(
+            plan.units[1].applicability.state,
+            ApplicabilityState::NotApplicable
+        );
     }
 }

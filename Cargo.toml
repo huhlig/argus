@@ -53,6 +53,9 @@ langchart-llm-watsonx = { git = "https://github.com/huhlig/langchart.git" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2"
 thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
+metrics = "0.24"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

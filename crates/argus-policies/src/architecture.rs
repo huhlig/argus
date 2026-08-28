@@ -185,8 +185,9 @@ impl ArchitectureApplicabilityPolicy {
         }
         ArchitectureApplicabilityDecision {
             state: ApplicabilityState::NotApplicable,
-            rationale: "No matching architecture applicability rule found; default to not applicable"
-                .to_owned(),
+            rationale:
+                "No matching architecture applicability rule found; default to not applicable"
+                    .to_owned(),
         }
     }
 }
@@ -507,10 +508,7 @@ mod tests {
             assessment.result.candidates[0].defect_kind,
             ArchitectureFindingKind::StructuralDefect
         );
-        assert_eq!(
-            assessment.result.constituent_health.total_constituents,
-            10
-        );
+        assert_eq!(assessment.result.constituent_health.total_constituents, 10);
         let _hash = assessment.content_hash();
     }
 }

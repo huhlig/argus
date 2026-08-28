@@ -259,8 +259,7 @@ impl CorrectnessWorker {
     > {
         let admission: CorrectnessReviewAdmission = serde_json::from_slice(&leased.payload)
             .map_err(|error| {
-                ArgusError::invalid_input("invalid correctness review admission")
-                    .with_source(error)
+                ArgusError::invalid_input("invalid correctness review admission").with_source(error)
             })?;
         if admission.unit.work_item != leased.id {
             return Err(ArgusError::invariant(
@@ -364,8 +363,7 @@ impl CorrectnessWorker {
         })?;
         let checkpoint_store = Arc::new(
             open_checkpoint_store(&self.config.state_directory).map_err(|error| {
-                ArgusError::invariant("cannot open correctness checkpoint store")
-                    .with_source(error)
+                ArgusError::invariant("cannot open correctness checkpoint store").with_source(error)
             })?,
         );
         Ok(PreparedCorrectnessRuntime {
@@ -430,10 +428,7 @@ fn langchart_run_id(audit_run: &AuditRunId, work_id: &WorkItemId, retry_generati
         hasher.update(b"\0retry\0");
         hasher.update(&retry_generation.to_be_bytes());
     }
-    RunId::new(format!(
-        "argus-correctness-{}",
-        hasher.finalize().to_hex()
-    ))
+    RunId::new(format!("argus-correctness-{}", hasher.finalize().to_hex()))
 }
 
 struct CorrectnessContextResolver {

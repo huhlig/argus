@@ -294,8 +294,7 @@ fn write_immutable(path: &Path, bytes: &[u8]) -> Result<(), RecoveryError> {
         .map_err(RecoveryError::Io)?;
     file.write_all(bytes).map_err(RecoveryError::Io)?;
     file.sync_all().map_err(RecoveryError::Io)?;
-    drop(file);
-    let publish = fs::hard_link(&temporary, path);
+    let publish = fs::hard_link(&temporary, path).or_else(|_| fs::rename(&temporary, path));
     let _ = fs::remove_file(&temporary);
     match publish {
         Ok(()) => Ok(()),
