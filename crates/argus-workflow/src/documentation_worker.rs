@@ -14,7 +14,7 @@
 
 use crate::{
     DocumentationReviewAdmission, DocumentationReviewMaterialization, DocumentationRuntimeIdentity,
-    RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryManifest, RecoveryStore,
+    RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryError, RecoveryManifest, RecoveryStore,
     WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, documentation_actor_registry,
     open_checkpoint_store,
 };
@@ -58,7 +58,7 @@ impl WorkflowFailureDiagnostics {
         lock(&self.failures).insert(run_id.to_owned(), message);
     }
 
-    fn get(&self, run_id: &str) -> Option<String> {
+    pub fn get(&self, run_id: &str) -> Option<String> {
         lock(&self.failures).get(run_id).cloned()
     }
 }
@@ -363,28 +363,41 @@ impl DocumentationWorker {
         let workflow = recovery.store_target_review().map_err(|error| {
             ArgusError::invariant("cannot store documentation workflow").with_source(error)
         })?;
-        let manifest = RecoveryManifest {
-            schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
-            workflow_data_schema_version: WORKFLOW_DATA_SCHEMA_VERSION,
-            langchart_run_id: langchart_run_id.as_ref().to_owned(),
-            audit_snapshot: self.config.identity.audit_snapshot.clone(),
-            audit_run: self.config.identity.audit_run.clone(),
-            work_id: leased.id.clone(),
-            actors: recovery.actor_identities(&workflow).map_err(|error| {
-                ArgusError::invariant("cannot resolve documentation actor identities")
-                    .with_source(error)
-            })?,
-            workflow,
-            provider: self.runtime.executor.expected_identity().clone(),
-            provider_policy: self.runtime.executor.policy().clone(),
-            policy_version: materialized.unit.policy_version.clone(),
-            prompt_version: self.config.identity.provenance.prompt_version.clone(),
-            evidence_revision: materialized.package.package.revision,
-            langchart_runtime_version: "0.1.0".to_owned(),
+        let manifest = match recovery.load_manifest(langchart_run_id.as_ref()) {
+            Ok(existing) => existing,
+            Err(RecoveryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                let manifest = RecoveryManifest {
+                    schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
+                    workflow_data_schema_version: WORKFLOW_DATA_SCHEMA_VERSION,
+                    langchart_run_id: langchart_run_id.as_ref().to_owned(),
+                    audit_snapshot: self.config.identity.audit_snapshot.clone(),
+                    audit_run: self.config.identity.audit_run.clone(),
+                    work_id: leased.id.clone(),
+                    actors: recovery.actor_identities(&workflow).map_err(|error| {
+                        ArgusError::invariant("cannot resolve documentation actor identities")
+                            .with_source(error)
+                    })?,
+                    workflow,
+                    provider: self.runtime.executor.expected_identity().clone(),
+                    provider_policy: self.runtime.executor.policy().clone(),
+                    policy_version: materialized.unit.policy_version.clone(),
+                    prompt_version: self.config.identity.provenance.prompt_version.clone(),
+                    evidence_revision: materialized.package.package.revision,
+                    langchart_runtime_version: "0.1.0".to_owned(),
+                };
+                recovery.write_manifest(&manifest).map_err(|error| {
+                    ArgusError::invariant("cannot store documentation recovery manifest")
+                        .with_source(error)
+                })?;
+                manifest
+            }
+            Err(error) => {
+                return Err(ArgusError::invariant(
+                    "cannot load documentation recovery manifest",
+                )
+                .with_source(error));
+            }
         };
-        recovery.write_manifest(&manifest).map_err(|error| {
-            ArgusError::invariant("cannot store documentation recovery manifest").with_source(error)
-        })?;
         let compiled = Arc::new(
             recovery
                 .load_compiled(&manifest.workflow)

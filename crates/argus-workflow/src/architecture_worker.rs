@@ -14,8 +14,8 @@
 
 use crate::{
     ArchitectureReviewAdmission, ArchitectureReviewMaterialization, ArchitectureRuntimeIdentity,
-    DocumentationWorkerRuntime, RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryManifest, RecoveryStore,
-    WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, architecture_actor_registry,
+    DocumentationWorkerRuntime, RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryError, RecoveryManifest,
+    RecoveryStore, WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, architecture_actor_registry,
     open_checkpoint_store,
 };
 use argus_core::{ArgusError, RunId as AuditRunId, WorkItemId};
@@ -249,8 +249,13 @@ impl ArchitectureWorker {
             ArgusError::invariant("architecture workflow execution failed").with_source(error)
         })?;
         if status != RunStatus::Completed {
+            let detail = self
+                .runtime
+                .failure_diagnostics
+                .get(&diagnostic_run_id)
+                .map_or_else(String::new, |message| format!(": {message}"));
             return Err(ArgusError::invariant(format!(
-                "architecture workflow ended with {status:?}"
+                "architecture workflow ended with {status:?}{detail}"
             )));
         }
         self.require_durable_result(leased, &diagnostic_run_id)
@@ -330,28 +335,41 @@ impl ArchitectureWorker {
         let workflow = recovery.store_target_review().map_err(|error| {
             ArgusError::invariant("cannot store architecture workflow").with_source(error)
         })?;
-        let manifest = RecoveryManifest {
-            schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
-            workflow_data_schema_version: WORKFLOW_DATA_SCHEMA_VERSION,
-            langchart_run_id: langchart_run_id.as_ref().to_owned(),
-            audit_snapshot: self.config.identity.audit_snapshot.clone(),
-            audit_run: self.config.identity.audit_run.clone(),
-            work_id: leased.id.clone(),
-            actors: recovery.actor_identities(&workflow).map_err(|error| {
-                ArgusError::invariant("cannot resolve architecture actor identities")
-                    .with_source(error)
-            })?,
-            workflow,
-            provider: self.runtime.executor.expected_identity().clone(),
-            provider_policy: self.runtime.executor.policy().clone(),
-            policy_version: materialized.unit.policy_version.clone(),
-            prompt_version: self.config.identity.provenance.prompt_version.clone(),
-            evidence_revision: materialized.package.package.revision,
-            langchart_runtime_version: "0.1.0".to_owned(),
+        let manifest = match recovery.load_manifest(langchart_run_id.as_ref()) {
+            Ok(existing) => existing,
+            Err(RecoveryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                let manifest = RecoveryManifest {
+                    schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
+                    workflow_data_schema_version: WORKFLOW_DATA_SCHEMA_VERSION,
+                    langchart_run_id: langchart_run_id.as_ref().to_owned(),
+                    audit_snapshot: self.config.identity.audit_snapshot.clone(),
+                    audit_run: self.config.identity.audit_run.clone(),
+                    work_id: leased.id.clone(),
+                    actors: recovery.actor_identities(&workflow).map_err(|error| {
+                        ArgusError::invariant("cannot resolve architecture actor identities")
+                            .with_source(error)
+                    })?,
+                    workflow,
+                    provider: self.runtime.executor.expected_identity().clone(),
+                    provider_policy: self.runtime.executor.policy().clone(),
+                    policy_version: materialized.unit.policy_version.clone(),
+                    prompt_version: self.config.identity.provenance.prompt_version.clone(),
+                    evidence_revision: materialized.package.package.revision,
+                    langchart_runtime_version: "0.1.0".to_owned(),
+                };
+                recovery.write_manifest(&manifest).map_err(|error| {
+                    ArgusError::invariant("cannot store architecture recovery manifest")
+                        .with_source(error)
+                })?;
+                manifest
+            }
+            Err(error) => {
+                return Err(ArgusError::invariant(
+                    "cannot load architecture recovery manifest",
+                )
+                .with_source(error));
+            }
         };
-        recovery.write_manifest(&manifest).map_err(|error| {
-            ArgusError::invariant("cannot store architecture recovery manifest").with_source(error)
-        })?;
         let compiled = Arc::new(
             recovery
                 .load_compiled(&manifest.workflow)
