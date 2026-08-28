@@ -336,10 +336,13 @@ impl CorrectnessWorker {
         let manifest = match recovery.load_manifest(langchart_run_id.as_ref()) {
             Ok(mut existing) => {
                 existing.workflow = workflow;
-                existing.actors = recovery.actor_identities(&existing.workflow).map_err(|error| {
-                    ArgusError::invariant("cannot resolve correctness actor identities")
-                        .with_source(error)
-                })?;
+                existing.actors =
+                    recovery
+                        .actor_identities(&existing.workflow)
+                        .map_err(|error| {
+                            ArgusError::invariant("cannot resolve correctness actor identities")
+                                .with_source(error)
+                        })?;
                 existing
             }
             Err(RecoveryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -369,10 +372,10 @@ impl CorrectnessWorker {
                 manifest
             }
             Err(error) => {
-                return Err(ArgusError::invariant(
-                    "cannot load correctness recovery manifest",
-                )
-                .with_source(error));
+                return Err(
+                    ArgusError::invariant("cannot load correctness recovery manifest")
+                        .with_source(error),
+                );
             }
         };
         let compiled = Arc::new(

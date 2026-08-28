@@ -8,9 +8,10 @@
 
 ## Core Responsibilities
 
-- **Profile Resolution**: Discovers and loads provider runtime profiles (`.json`) from project catalogs (`.argus/config/profiles/`), system paths (`~/.config/argus/profiles/`), environment variables, or explicit paths.
+- **Profile Resolution & Security**: Discovers and loads provider runtime profiles (`.json`) strictly from machine/user catalogs (`%APPDATA%\argus\profiles\`, `~/.config/argus/profiles\`, `$ARGUS_CONFIG_DIR/profiles\`) or explicit file paths, ensuring sensitive provider configurations and credentials stay out of version control.
+- **Environment Substitution**: Intercalates `${VAR_NAME}` and `${VAR_NAME:-default}` before deserializing profile JSON.
 - **Provider Transports**: Connects to LLM backends:
-  - **Lemonade**: Local/Network OpenAI-compatible HTTP server (`http://<host>:<port>/v1`).
+  - **Lemonade**: Local/Network OpenAI-compatible HTTP server (`http://<host>:<port>/v1`) with configurable `request_timeout_seconds`.
   - **Ollama**: Local Ollama server (`http://localhost:11434`).
   - **OpenAI**: OpenAI Chat Completions API (`OPENAI_API_KEY`).
   - **Anthropic**: Anthropic Messages API (`ANTHROPIC_API_KEY`).
@@ -23,7 +24,7 @@
 
 ## Provider Profile Schema (`.json`)
 
-Example profile: `.argus/config/profiles/lemonade-gemma.json`
+Example profile in user catalog (`%APPDATA%\argus\profiles\lemonade-gemma.json`):
 
 ```json
 {
@@ -31,7 +32,7 @@ Example profile: `.argus/config/profiles/lemonade-gemma.json`
   "capabilities": {
     "identity": {
       "provider": "lemonade",
-      "provider_version": "lemonade@10.0.0.51:13305",
+      "provider_version": "lemonade@${LEMONADE_HOST:-10.0.0.51}",
       "model": "Gemma-4-31B-it-GGUF",
       "model_version": "Gemma-4-31B-it-GGUF"
     },
@@ -64,9 +65,9 @@ Example profile: `.argus/config/profiles/lemonade-gemma.json`
   },
   "transport": {
     "kind": "lemonade",
-    "base_url": "http://10.0.0.51:13305/v1",
+    "base_url": "http://${LEMONADE_HOST:-10.0.0.51}:13305/v1",
     "api_key_env": null,
-    "request_timeout_seconds": 300
+    "request_timeout_seconds": 1800
   }
 }
 ```
@@ -83,18 +84,6 @@ argus-core = { path = "../argus-core" }
 argus-provider = { path = "../argus-provider" }
 ```
 
-### Profile Resolution Example
+### Profile Resolution
 
-```rust
-use std::path::Path;
-use argus_provider::resolve_provider_profile;
-
-fn main() -> Result<(), argus_core::ArgusError> {
-    let repo_root = Path::new(".");
-    let (profile_path, profile) = resolve_provider_profile(repo_root, "lemonade-gemma")?;
-    println!("Loaded profile from {:?}", profile_path);
-    println!("Provider: {}", profile.capabilities.identity.provider);
-    println!("Model: {}", profile.capabilities.identity.model);
-    Ok(())
-}
-```
+Named profiles are resolved via the CLI or orchestration layer by querying user catalog locations (`%APPDATA%\argus\profiles\`, `~/.config/argus/profiles\`) and applying environment variable substitution before runtime execution.

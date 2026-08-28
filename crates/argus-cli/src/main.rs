@@ -47,6 +47,9 @@ Review, Adjudication & Evaluation:
   evaluate     Measure precision, recall, and stability against a versioned corpus
   finalize     Publish an immutable terminal run bundle to .argus/reviews/
 
+Provider Profiles & Discovery:
+  profile      Discover models from provider endpoints and manage runtime profiles
+
 Options:
   -c, --config <path>  Path to project configuration (default: .argus/config/argus.json)
   -h, --help           Print help (use 'argus help <command>' or 'argus <command> --help' for details)
@@ -58,8 +61,7 @@ Usage: argus init
 
 Description:
   Initializes the Argus workspace directory layout under `.argus/`:
-    - `.argus/config/argus.json`: Core repository configuration (committed to Git)
-    - `.argus/config/profiles/`: Project-level provider profiles directory
+    - `.argus/config/argus.json`: Core repository configuration (default profile identity, committed to Git)
     - `.argus/.gitignore`: Excludes working state, reviews, and private local overrides
     - `.argus/state/`: Ephemeral redb database, inventory streams, and source blobs
     - `.argus/reviews/`: Finalized review bundles and published reports
@@ -141,19 +143,17 @@ Description:
 
 Arguments & Options:
   documentation | correctness | architecture | all  Review policy to execute (default: all)
-  --profile <name-or-path>                    Named provider profile or path to profile JSON file
+  --profile <name-or-path>                    Named provider profile (searched in user catalog) or direct path to profile JSON file
   --limit <number>                            Maximum number of work items to process (default: 1)
   -c, --config <path>                         Path to project configuration (default: .argus/config/argus.json)
 
 Profile Discovery & Configuration:
-  Profiles define model identity, limits, and transports without storing credentials.
-  When passed by name (e.g. `--profile ollama`), Argus searches in order:
-    1. Direct file path: ./<name>, ./<name>.json
-    2. Project catalog: .argus/config/profiles/<name>.json
-    3. User / System catalog:
-       - Windows: %APPDATA%\\argus\\profiles\\<name>.json
-       - Unix/macOS: ~/.config/argus/profiles/<name>.json
-       - Environment: $ARGUS_CONFIG_DIR/profiles/<name>.json
+  Profiles define model identity, limits, and transports with environment variable substitution (${VAR} or ${VAR:-default}).
+  For security, named profiles reside strictly in the User/System catalog (not in project repositories):
+    - Windows: %APPDATA%\\argus\\profiles\\<name>.json
+    - Unix/macOS: ~/.config/argus/profiles/<name>.json
+    - Environment: $ARGUS_CONFIG_DIR/profiles/<name>.json
+  Explicit file paths (e.g. `--profile ./my-profile.json`) can also be provided directly.
 
   Transports supported in profile JSON:
     - Ollama:    {\"kind\": \"ollama\", \"base_url\": null}
@@ -166,7 +166,7 @@ Examples:
   argus work --profile ollama --limit 10
   argus work documentation --profile ollama --limit 10
   argus work correctness --profile claude-3-7-sonnet --limit 5
-  argus work documentation --profile .argus/config/profiles/local.json";
+  argus work documentation --profile ./custom-profile.json";
 
 const HELP_TARGETS: &str = "List or inspect persisted semantic targets from the current inventory
 
@@ -336,6 +336,62 @@ Examples:
   argus evaluate correctness --corpus docs/evaluation/correctness-corpus-v1.json 5c82a1...
   argus evaluate architecture --corpus docs/evaluation/architecture-corpus-v1.json 5c82a1...";
 
+const HELP_PROFILE: &str = "Manage and discover provider runtime profiles
+
+Usage:
+  argus profile discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--prefix <prefix>] [--timeout <seconds>]
+  argus profile list [--dir <path>]
+
+Commands:
+  discover   Query a model provider endpoint, discover available models, and generate user catalog profiles
+  list       List all installed provider runtime profiles in the catalog
+
+Supported Provider Types:
+  lemonade   Lemonade OpenAI-compatible server (default endpoint: http://127.0.0.1:13305/v1)
+  ollama     Ollama server (default endpoint: http://127.0.0.1:11434)
+  openai     OpenAI API (default endpoint: https://api.openai.com/v1)
+  anthropic  Anthropic API (default endpoint: https://api.anthropic.com/v1)
+  lm_studio  LM Studio local server (default endpoint: http://127.0.0.1:1234/v1)
+
+Examples:
+  argus profile discover --type lemonade --endpoint http://10.0.0.51:13305/v1
+  argus profile discover --type openai --api-key-env OPENAI_API_KEY
+  argus profile discover --type anthropic --api-key-env ANTHROPIC_API_KEY
+  argus profile discover --type ollama --endpoint http://127.0.0.1:11434
+  argus profile list";
+
+const HELP_PROFILE_DISCOVER: &str = "Discover models from a provider and populate the profiles catalog
+
+Usage:
+  argus profile discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--prefix <prefix>] [--timeout <seconds>]
+
+Options:
+  --type, -t <type>          Provider kind: lemonade, ollama, openai, anthropic, lm_studio (required)
+  --endpoint, -e <url>       Provider API base endpoint URL (default depends on provider type)
+  --api-key, -k <key>        Direct API key for discovery request (optional)
+  --api-key-env <var>        Environment variable name containing the API key (e.g. OPENAI_API_KEY)
+  --output-dir, -o <path>    Destination directory for generated profiles (default: user catalog)
+  --prefix <prefix>          Custom prefix for profile file names (default: provider type name)
+  --timeout <seconds>        Request timeout in seconds (default: 1800 for lemonade, 30 for discovery)
+
+Examples:
+  argus profile discover --type lemonade --endpoint http://10.0.0.51:13305/v1
+  argus profile discover --type openai --api-key-env OPENAI_API_KEY
+  argus profile discover --type anthropic --api-key-env ANTHROPIC_API_KEY
+  argus profile discover --type ollama --endpoint http://127.0.0.1:11434";
+
+const HELP_PROFILE_LIST: &str = "List installed provider runtime profiles
+
+Usage:
+  argus profile list [--dir <path>]
+
+Options:
+  --dir, -d <path>   Optional specific directory to search for profile JSON files
+
+Examples:
+  argus profile list
+  argus profile list --dir ~/.config/argus/profiles";
+
 fn is_help_flag(value: Option<&str>) -> bool {
     matches!(value, Some("-h" | "--help" | "help"))
 }
@@ -356,6 +412,7 @@ fn command_help(command: &str) -> Result<String, argus_core::ArgusError> {
         "report" => Ok(HELP_REPORT.to_owned()),
         "adjudicate" => Ok(HELP_ADJUDICATE.to_owned()),
         "evaluate" => Ok(HELP_EVALUATE.to_owned()),
+        "profile" => Ok(HELP_PROFILE.to_owned()),
         _ => Err(argus_core::ArgusError::invalid_input(format!(
             "unknown help topic `{command}`; run `argus --help` for available commands"
         ))),
@@ -405,6 +462,110 @@ fn has_json_extension(path: &str) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
 }
 
+fn is_explicit_path(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    p.is_absolute()
+        || path.starts_with("./")
+        || path.starts_with(".\\")
+        || path.starts_with("../")
+        || path.starts_with("..\\")
+        || path.contains('/')
+        || path.contains('\\')
+        || has_json_extension(path)
+}
+
+pub fn substitute_env_vars(text: &str) -> Result<String, argus_core::ArgusError> {
+    substitute_env_vars_with(text, |name| std::env::var(name).ok())
+}
+
+pub fn substitute_env_vars_with<F>(text: &str, lookup: F) -> Result<String, argus_core::ArgusError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(&next) = chars.peek() {
+                if next == '$' {
+                    chars.next();
+                    result.push('$');
+                    continue;
+                }
+            }
+            result.push('\\');
+        } else if ch == '$' {
+            if chars.peek() == Some(&'{') {
+                chars.next(); // consume '{'
+                let mut expr = String::new();
+                let mut closed = false;
+                for inner in chars.by_ref() {
+                    if inner == '}' {
+                        closed = true;
+                        break;
+                    }
+                    expr.push(inner);
+                }
+                if !closed {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "unclosed `${` in provider profile environment substitution",
+                    ));
+                }
+                let (var_name, default_val) = match expr.split_once(":-") {
+                    Some((var, def)) => (var.trim(), Some(def)),
+                    None => (expr.trim(), None),
+                };
+                if var_name.is_empty() {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "empty variable name in `${}` substitution",
+                    ));
+                }
+                match lookup(var_name) {
+                    Some(val) => result.push_str(&val),
+                    None => {
+                        if let Some(def) = default_val {
+                            result.push_str(def);
+                        } else {
+                            return Err(argus_core::ArgusError::invalid_input(format!(
+                                "environment variable `{var_name}` referenced in provider profile is not set",
+                            )));
+                        }
+                    }
+                }
+            } else if let Some(&next) = chars.peek() {
+                if next.is_ascii_alphabetic() || next == '_' {
+                    let mut var_name = String::new();
+                    while let Some(&inner) = chars.peek() {
+                        if inner.is_ascii_alphanumeric() || inner == '_' {
+                            var_name.push(inner);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    match lookup(&var_name) {
+                        Some(val) => result.push_str(&val),
+                        None => {
+                            return Err(argus_core::ArgusError::invalid_input(format!(
+                                "environment variable `{var_name}` referenced in provider profile is not set",
+                            )));
+                        }
+                    }
+                } else {
+                    result.push('$');
+                }
+            } else {
+                result.push('$');
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    Ok(result)
+}
+
 fn profile_search_candidates_with_env(
     root: &std::path::Path,
     name_or_path: &str,
@@ -414,27 +575,25 @@ fn profile_search_candidates_with_env(
     let as_path = std::path::PathBuf::from(name_or_path);
     let has_json = has_json_extension(name_or_path);
 
-    // 1. Direct path relative to workspace or absolute
-    if as_path.is_absolute() {
-        candidates.push(as_path.clone());
-    } else {
-        candidates.push(root.join(&as_path));
-        if !has_json {
-            candidates.push(root.join(format!("{name_or_path}.json")));
+    // 1. Explicit file path passed directly via CLI
+    if is_explicit_path(name_or_path) {
+        if as_path.is_absolute() {
+            candidates.push(as_path.clone());
+        } else {
+            candidates.push(root.join(&as_path));
+            candidates.push(as_path.clone());
+            if !has_json {
+                candidates.push(root.join(format!("{name_or_path}.json")));
+                candidates.push(std::path::PathBuf::from(format!("{name_or_path}.json")));
+            }
         }
+        let mut seen = std::collections::HashSet::new();
+        candidates.retain(|p| seen.insert(p.clone()));
+        return candidates;
     }
 
-    // 2. Project-level profiles: .argus/config/profiles/ and .argus/profiles/
-    let project_config_profiles = root.join(".argus/config/profiles");
-    let project_profiles = root.join(".argus/profiles");
-    for dir in [&project_config_profiles, &project_profiles] {
-        if !has_json {
-            candidates.push(dir.join(format!("{name_or_path}.json")));
-        }
-        candidates.push(dir.join(name_or_path));
-    }
-
-    // 3. Environment override: $ARGUS_CONFIG_DIR/profiles/
+    // 2. Named profile catalog: ONLY searched in secure user/system directories
+    // Environment override: $ARGUS_CONFIG_DIR/profiles/
     if let Some(env_dir) = env_config_dir {
         let env_profiles = env_dir.join("profiles");
         if !has_json {
@@ -443,8 +602,7 @@ fn profile_search_candidates_with_env(
         candidates.push(env_profiles.join(name_or_path));
     }
 
-    // 4. System / User configuration directories
-    // Windows: APPDATA and USERPROFILE
+    // User configuration directories: APPDATA, USERPROFILE, XDG_CONFIG_HOME, HOME
     if let Ok(appdata) = std::env::var("APPDATA") {
         let appdata_profiles = std::path::PathBuf::from(appdata).join("argus/profiles");
         if !has_json {
@@ -459,8 +617,6 @@ fn profile_search_candidates_with_env(
         }
         candidates.push(user_profiles.join(name_or_path));
     }
-
-    // Unix / macOS: XDG_CONFIG_HOME and HOME
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         let xdg_profiles = std::path::PathBuf::from(xdg).join("argus/profiles");
         if !has_json {
@@ -482,6 +638,7 @@ fn profile_search_candidates_with_env(
     candidates
 }
 
+#[cfg(test)]
 fn resolve_provider_profile(
     root: &std::path::Path,
     name_or_path: &str,
@@ -505,13 +662,25 @@ fn resolve_provider_profile_with_env(
                 )
                 .with_source(error)
             })?;
-            let profile: argus_provider::ProviderRuntimeProfile = serde_json::from_slice(&bytes)
-                .map_err(|error| {
+            let raw_text = std::str::from_utf8(&bytes).map_err(|error| {
+                argus_core::ArgusError::invalid_input(format!(
+                    "provider profile `{}` is not valid UTF-8",
+                    path.display()
+                ))
+                .with_source(error)
+            })?;
+            let substituted = substitute_env_vars(raw_text).map_err(|error| {
+                argus_core::ArgusError::invalid_input(format!(
+                    "failed environment substitution in provider profile `{}`: {error}",
+                    path.display()
+                ))
+            })?;
+            let profile: argus_provider::ProviderRuntimeProfile =
+                serde_json::from_str(&substituted).map_err(|error| {
                     argus_core::ArgusError::invalid_input(format!(
-                        "provider profile `{}` is invalid JSON",
+                        "provider profile `{}` is invalid JSON: {error}",
                         path.display()
                     ))
-                    .with_source(error)
                 })?;
             return Ok((path.clone(), profile));
         }
@@ -620,6 +789,10 @@ pub enum CliCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    Profile {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 fn run(
@@ -692,6 +865,7 @@ fn run(
             adjudicate_command(root, append_config(args).into_iter())
         }
         CliCommand::Evaluate { args } => evaluate_command(root, append_config(args).into_iter()),
+        CliCommand::Profile { args } => profile_command(root, append_config(args).into_iter()),
     }
 }
 
@@ -1430,6 +1604,15 @@ fn work_command(
     root: &std::path::Path,
     args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
+    let env_config = std::env::var_os("ARGUS_CONFIG_DIR").map(std::path::PathBuf::from);
+    work_command_with_env(root, args, env_config.as_deref())
+}
+
+fn work_command_with_env(
+    root: &std::path::Path,
+    args: impl Iterator<Item = String>,
+    env_config_dir: Option<&std::path::Path>,
+) -> Result<String, argus_core::ArgusError> {
     let args: Vec<String> = args.collect();
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
@@ -1492,7 +1675,8 @@ fn work_command(
         .or(project_config.default_profile)
         .unwrap_or_else(|| "default".to_owned());
 
-    let (_resolved_path, profile) = resolve_provider_profile(root, &profile_target)?;
+    let (_resolved_path, profile) =
+        resolve_provider_profile_with_env(root, &profile_target, env_config_dir)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -3087,9 +3271,459 @@ const DEFAULT_PROFILE_JSON: &str = r#"{
 }
 "#;
 
+fn profile_command(
+    root: &std::path::Path,
+    args: impl Iterator<Item = String>,
+) -> Result<String, argus_core::ArgusError> {
+    let env_config = std::env::var_os("ARGUS_CONFIG_DIR").map(std::path::PathBuf::from);
+    profile_command_with_env(root, args, env_config.as_deref())
+}
+
+fn profile_command_with_env(
+    root: &std::path::Path,
+    args: impl Iterator<Item = String>,
+    env_config_dir: Option<&std::path::Path>,
+) -> Result<String, argus_core::ArgusError> {
+    let args: Vec<String> = args.collect();
+    if args.is_empty() {
+        return Ok(HELP_PROFILE.to_owned());
+    }
+
+    let subcmd = args[0].as_str();
+    if is_help_flag(Some(subcmd)) {
+        return Ok(HELP_PROFILE.to_owned());
+    }
+
+    match subcmd {
+        "discover" => profile_discover_command(root, &args[1..], env_config_dir),
+        "list" => profile_list_command(root, &args[1..], env_config_dir),
+        _ => Err(argus_core::ArgusError::invalid_input(format!(
+            "unknown profile subcommand `{subcmd}` (supported: discover, list)\nRun 'argus help profile' for details."
+        ))),
+    }
+}
+
+fn profile_discover_command(
+    _root: &std::path::Path,
+    args: &[String],
+    env_config_dir: Option<&std::path::Path>,
+) -> Result<String, argus_core::ArgusError> {
+    if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
+        return Ok(HELP_PROFILE_DISCOVER.to_owned());
+    }
+
+    let usage = "usage: argus profile discover --type <lemonade|ollama|openai|anthropic|lm_studio> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--prefix <prefix>] [--timeout <seconds>]";
+
+    let mut provider_type: Option<String> = None;
+    let mut endpoint: Option<String> = None;
+    let mut api_key: Option<String> = None;
+    let mut api_key_env: Option<String> = None;
+    let mut output_dir_arg: Option<String> = None;
+    let mut prefix_arg: Option<String> = None;
+    let mut timeout_seconds: Option<u64> = None;
+
+    let mut iter = args.iter().peekable();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--type" | "-t" => {
+                provider_type = Some(
+                    iter.next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                );
+            }
+            "--endpoint" | "-e" => {
+                endpoint = Some(
+                    iter.next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                );
+            }
+            "--api-key" | "-k" => {
+                api_key = Some(
+                    iter.next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                );
+            }
+            "--api-key-env" => {
+                api_key_env = Some(
+                    iter.next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                );
+            }
+            "--output-dir" | "-o" => {
+                output_dir_arg = Some(
+                    iter.next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                );
+            }
+            "--prefix" => {
+                prefix_arg = Some(
+                    iter.next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                );
+            }
+            "--timeout" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                let secs = val.parse::<u64>().map_err(|e| {
+                    argus_core::ArgusError::invalid_input(format!(
+                        "invalid timeout value `{val}`: {e}"
+                    ))
+                })?;
+                timeout_seconds = Some(secs);
+            }
+            _ => return Err(argus_core::ArgusError::invalid_input(usage)),
+        }
+    }
+
+    let type_str = provider_type.ok_or_else(|| {
+        argus_core::ArgusError::invalid_input(format!("missing required flag `--type`\n{usage}"))
+    })?;
+
+    let kind: argus_provider::DiscoveredProviderKind = type_str
+        .parse()
+        .map_err(|error| argus_core::ArgusError::invalid_input(format!("{error}")))?;
+
+    // Determine effective API key for the discovery network query
+    let query_api_key = if let Some(ref key) = api_key {
+        Some(key.clone())
+    } else if let Some(ref env_var) = api_key_env {
+        std::env::var(env_var)
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+    } else if let Some(default_env) = kind.default_api_key_env() {
+        std::env::var(default_env)
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+    } else {
+        None
+    };
+
+    // Determine the api_key_env name to store in generated profiles
+    let profile_api_key_env = api_key_env.or_else(|| {
+        if api_key.is_some() || query_api_key.is_some() {
+            kind.default_api_key_env().map(ToOwned::to_owned)
+        } else {
+            None
+        }
+    });
+
+    let effective_endpoint = endpoint
+        .as_deref()
+        .unwrap_or_else(|| kind.default_endpoint());
+
+    // Resolve output profiles directory
+    let output_dir = if let Some(dir) = output_dir_arg {
+        std::path::PathBuf::from(dir)
+    } else if let Some(env_dir) = env_config_dir {
+        env_dir.join("profiles")
+    } else if let Some(sys_dir) = system_config_dir() {
+        sys_dir.join("profiles")
+    } else {
+        std::path::PathBuf::from(".argus/profiles")
+    };
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(io_error("cannot start discovery runtime"))?;
+
+    let models = runtime
+        .block_on(argus_provider::discover_models(
+            kind,
+            Some(effective_endpoint),
+            query_api_key.as_deref(),
+        ))
+        .map_err(|error| {
+            argus_core::ArgusError::invalid_input(format!("model discovery failed: {error}"))
+        })?;
+
+    if models.is_empty() {
+        return Ok(format!(
+            "No models discovered from `{effective_endpoint}` ({})",
+            kind.as_str()
+        ));
+    }
+
+    std::fs::create_dir_all(&output_dir).map_err(|err| {
+        argus_core::ArgusError::invalid_input(format!(
+            "cannot create profile catalog directory `{}`: {err}",
+            output_dir.display()
+        ))
+    })?;
+
+    let mut created_profiles = Vec::new();
+    let mut updated_profiles = Vec::new();
+
+    for model_id in &models {
+        let slug = if let Some(ref prefix) = prefix_arg {
+            let sanitized_model: String = model_id
+                .to_ascii_lowercase()
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                        c
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            format!("{prefix}-{sanitized_model}")
+        } else {
+            argus_provider::slugify_profile_name(kind, model_id)
+        };
+
+        let profile = argus_provider::generate_runtime_profile(
+            kind,
+            effective_endpoint,
+            model_id,
+            profile_api_key_env.clone(),
+            timeout_seconds,
+        )
+        .map_err(|error| {
+            argus_core::ArgusError::invalid_input(format!(
+                "cannot generate profile for model `{model_id}`: {error}"
+            ))
+        })?;
+
+        let json_content = serde_json::to_string_pretty(&profile).map_err(|error| {
+            argus_core::ArgusError::invalid_input(format!(
+                "cannot serialize profile for model `{model_id}`: {error}"
+            ))
+        })?;
+
+        let file_path = output_dir.join(format!("{slug}.json"));
+        let was_existing = file_path.exists();
+
+        std::fs::write(&file_path, json_content.as_bytes()).map_err(|err| {
+            argus_core::ArgusError::invalid_input(format!(
+                "cannot write profile `{}`: {err}",
+                file_path.display()
+            ))
+        })?;
+
+        if was_existing {
+            updated_profiles.push((slug, file_path));
+        } else {
+            created_profiles.push((slug, file_path));
+        }
+    }
+
+    let mut output = String::new();
+    writeln!(
+        output,
+        "Discovered {} models from `{effective_endpoint}` ({}) into `{}`:\n",
+        models.len(),
+        kind.as_str(),
+        output_dir.display()
+    )
+    .unwrap();
+
+    if !created_profiles.is_empty() {
+        writeln!(output, "Created {} profiles:", created_profiles.len()).unwrap();
+        for (slug, path) in &created_profiles {
+            writeln!(output, "  + {slug:<35} -> {}", path.display()).unwrap();
+        }
+    }
+
+    if !updated_profiles.is_empty() {
+        if !created_profiles.is_empty() {
+            writeln!(output).unwrap();
+        }
+        writeln!(output, "Updated {} existing profiles:", updated_profiles.len()).unwrap();
+        for (slug, path) in &updated_profiles {
+            writeln!(output, "  ~ {slug:<35} -> {}", path.display()).unwrap();
+        }
+    }
+
+    if let Some((first_slug, _)) = created_profiles.first().or(updated_profiles.first()) {
+        writeln!(
+            output,
+            "\nNext step: Run 'argus work --profile {first_slug}' to execute reviews with this model."
+        )
+        .unwrap();
+    }
+
+    Ok(output)
+}
+
+fn profile_list_command(
+    root: &std::path::Path,
+    args: &[String],
+    env_config_dir: Option<&std::path::Path>,
+) -> Result<String, argus_core::ArgusError> {
+    if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
+        return Ok(HELP_PROFILE_LIST.to_owned());
+    }
+
+    let mut explicit_dir = None;
+    let mut iter = args.iter().peekable();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--dir" | "-d" => {
+                explicit_dir = Some(
+                    iter.next()
+                        .ok_or_else(|| {
+                            argus_core::ArgusError::invalid_input(
+                                "usage: argus profile list [--dir <path>]",
+                            )
+                        })?
+                        .clone(),
+                );
+            }
+            _ => {
+                return Err(argus_core::ArgusError::invalid_input(
+                    "usage: argus profile list [--dir <path>]",
+                ));
+            }
+        }
+    }
+
+    let mut search_dirs = Vec::new();
+    if let Some(dir) = explicit_dir {
+        search_dirs.push(std::path::PathBuf::from(dir));
+    } else {
+        if let Some(env_dir) = env_config_dir {
+            search_dirs.push(env_dir.join("profiles"));
+        }
+        if let Some(sys_dir) = system_config_dir() {
+            search_dirs.push(sys_dir.join("profiles"));
+        }
+        search_dirs.push(root.join(".argus/config/profiles"));
+        search_dirs.push(root.join(".argus/config"));
+    }
+
+    let mut seen_dirs = std::collections::HashSet::new();
+    search_dirs.retain(|d| seen_dirs.insert(d.clone()));
+
+    struct ProfileEntry {
+        name: String,
+        provider: String,
+        model: String,
+        deployment: String,
+        transport: String,
+    }
+
+    let mut profiles = Vec::new();
+    let mut seen_names = std::collections::HashSet::new();
+
+    for dir in &search_dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let mut dir_entries = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+            {
+                dir_entries.push(path);
+            }
+        }
+        dir_entries.sort();
+
+        for path in dir_entries {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_owned();
+            if stem == "argus" || stem.is_empty() || !seen_names.insert(stem.clone()) {
+                continue;
+            }
+
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let profile_res: Result<argus_provider::ProviderRuntimeProfile, _> =
+                serde_json::from_slice(&bytes);
+            if let Ok(profile) = profile_res {
+                let transport_desc = match &profile.transport {
+                    argus_provider::ProviderTransportProfile::Lemonade { base_url, .. } => {
+                        base_url.as_deref().unwrap_or("default")
+                    }
+                    argus_provider::ProviderTransportProfile::Ollama { base_url } => {
+                        base_url.as_deref().unwrap_or("default")
+                    }
+                    argus_provider::ProviderTransportProfile::Openai { .. } => "api.openai.com",
+                    argus_provider::ProviderTransportProfile::Anthropic { .. } => {
+                        "api.anthropic.com"
+                    }
+                    argus_provider::ProviderTransportProfile::LmStudio { base_url, .. } => {
+                        base_url.as_deref().unwrap_or("default")
+                    }
+                    argus_provider::ProviderTransportProfile::Watsonx { service_url, .. } => {
+                        service_url.as_str()
+                    }
+                };
+                let deployment_str = match profile.capabilities.deployment {
+                    argus_provider::DeploymentMode::Local => "local",
+                    argus_provider::DeploymentMode::SameNetwork => "same_network",
+                    argus_provider::DeploymentMode::Online => "online",
+                };
+
+                profiles.push(ProfileEntry {
+                    name: stem,
+                    provider: profile.capabilities.identity.provider,
+                    model: profile.capabilities.identity.model,
+                    deployment: deployment_str.to_owned(),
+                    transport: transport_desc.to_owned(),
+                });
+            }
+        }
+    }
+
+    if profiles.is_empty() {
+        return Ok(
+            "No provider runtime profiles found.\nRun 'argus profile discover --type <type>' to populate your profiles catalog."
+                .to_owned(),
+        );
+    }
+
+    let mut output = String::new();
+    writeln!(output, "Installed Provider Profiles ({}):", profiles.len()).unwrap();
+    writeln!(
+        output,
+        "  {:<35} {:<12} {:<30} {:<14} {:<25}",
+        "PROFILE NAME", "PROVIDER", "MODEL", "DEPLOYMENT", "ENDPOINT/TRANSPORT"
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "  {:-<35} {:-<12} {:-<30} {:-<14} {:-<25}",
+        "", "", "", "", ""
+    )
+    .unwrap();
+
+    for p in &profiles {
+        writeln!(
+            output,
+            "  {:<35} {:<12} {:<30} {:<14} {:<25}",
+            p.name, p.provider, p.model, p.deployment, p.transport
+        )
+        .unwrap();
+    }
+
+    Ok(output)
+}
+
 fn initialize(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
     let argus = root.join(".argus");
-    std::fs::create_dir_all(argus.join("config/profiles"))
+    std::fs::create_dir_all(argus.join("config"))
         .map_err(io_error("cannot create config directory"))?;
     std::fs::create_dir_all(argus.join("state")).map_err(io_error("cannot create state"))?;
     std::fs::create_dir_all(argus.join("reviews")).map_err(io_error("cannot create reviews"))?;
@@ -3100,11 +3734,6 @@ fn initialize(root: &std::path::Path) -> Result<String, argus_core::ArgusError> 
             b"{\n  \"schema_version\": 1,\n  \"default_profile\": \"default\"\n}\n",
         )
         .map_err(io_error("cannot write config"))?;
-    }
-    let default_profile = argus.join("config/profiles/default.json");
-    if !default_profile.exists() {
-        std::fs::write(&default_profile, DEFAULT_PROFILE_JSON.as_bytes())
-            .map_err(io_error("cannot write default profile"))?;
     }
     let gitignore = argus.join(".gitignore");
     if !gitignore.exists() {
@@ -3783,15 +4412,13 @@ mod tests {
     }
 
     #[test]
-    fn initialize_creates_config_profiles_and_gitignore_with_proper_exclusions() {
+    fn initialize_creates_config_and_gitignore_with_proper_exclusions() {
         let temporary = tempfile::tempdir().unwrap();
         let output = run(["init".to_owned()].into_iter(), temporary.path()).unwrap();
         assert!(output.contains("Initialized Argus in"));
 
         let argus = temporary.path().join(".argus");
         assert!(argus.join("config/argus.json").is_file());
-        assert!(argus.join("config/profiles").is_dir());
-        assert!(argus.join("config/profiles/default.json").is_file());
         assert!(argus.join("state").is_dir());
         assert!(argus.join("reviews").is_dir());
 
@@ -3802,90 +4429,153 @@ mod tests {
     }
 
     #[test]
-    fn profile_resolution_finds_project_and_system_and_direct_profiles() {
+    fn substitute_env_vars_handles_variables_defaults_and_errors() {
+        let mock_env = |name: &str| match name {
+            "ARGUS_TEST_PORT" => Some("12345".to_owned()),
+            "ARGUS_TEST_HOST" => Some("localhost".to_owned()),
+            _ => None,
+        };
+
+        let input = "http://${ARGUS_TEST_HOST}:${ARGUS_TEST_PORT}/v1";
+        assert_eq!(
+            substitute_env_vars_with(input, mock_env).unwrap(),
+            "http://localhost:12345/v1"
+        );
+
+        let input_def = "http://${ARGUS_UNSET_HOST:-127.0.0.1}:${ARGUS_TEST_PORT}/v1";
+        assert_eq!(
+            substitute_env_vars_with(input_def, mock_env).unwrap(),
+            "http://127.0.0.1:12345/v1"
+        );
+
+        let input_dollar = "http://$ARGUS_TEST_HOST/v1";
+        assert_eq!(
+            substitute_env_vars_with(input_dollar, mock_env).unwrap(),
+            "http://localhost/v1"
+        );
+
+        let input_missing = "http://${ARGUS_TOTALLY_MISSING}/v1";
+        assert!(substitute_env_vars_with(input_missing, mock_env).is_err());
+
+        let input_escaped = "literal \\${ESCAPE} and \\$VAR";
+        assert_eq!(
+            substitute_env_vars_with(input_escaped, mock_env).unwrap(),
+            "literal ${ESCAPE} and $VAR"
+        );
+    }
+
+    #[test]
+    fn profile_resolution_supports_user_catalog_direct_path_and_env_substitution() {
         let temporary = tempfile::tempdir().unwrap();
         let sys_temp = tempfile::tempdir().unwrap();
         let sys_dir = sys_temp.path();
 
-        let profile = argus_provider::ProviderRuntimeProfile {
-            schema_version: argus_provider::PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION,
-            capabilities: argus_provider::ProviderCapabilities {
-                identity: argus_provider::ProviderIdentity {
-                    provider: "ollama".to_owned(),
-                    provider_version: "langchart@1".to_owned(),
-                    model: "fixture-reviewer".to_owned(),
-                    model_version: "fixture-reviewer".to_owned(),
-                },
-                deployment: argus_provider::DeploymentMode::Local,
-                context_window_tokens: 16_384,
-                max_output_tokens: 2_048,
-                structured_output: argus_provider::StructuredOutputSupport::BestEffort,
-                tool_calling: false,
-                concurrency_capacity: 1,
-                supported_classifications: std::collections::BTreeSet::from([
-                    argus_provider::DataClassification::Internal,
-                ]),
-                reports_token_usage: true,
-                reports_estimated_cost: false,
-            },
-            policy: argus_provider::ProviderPolicy {
-                repository_classification: argus_provider::DataClassification::Internal,
-                authorize_online_transmission: false,
-                substitution: argus_provider::ModelSubstitution::Pinned,
-                limits: argus_provider::ReviewLimits {
-                    max_requests: 1,
-                    max_input_tokens: 10_000,
-                    max_output_tokens: 2_048,
-                    max_evidence_bytes: 1_000_000,
-                    max_evidence_expansions: 0,
-                    max_concurrency: 1,
-                    max_estimated_cost_microusd: None,
-                },
-            },
-            repair: argus_provider::RepairPolicy {
-                max_repair_attempts: 0,
-            },
-            transport: argus_provider::ProviderTransportProfile::Ollama { base_url: None },
-        };
-        let profile_bytes = serde_json::to_vec_pretty(&profile).unwrap();
+        let profile_raw = r#"{
+  "schema_version": 1,
+  "capabilities": {
+    "identity": {
+      "provider": "ollama",
+      "provider_version": "langchart@1",
+      "model": "fixture-reviewer",
+      "model_version": "fixture-reviewer"
+    },
+    "deployment": "local",
+    "context_window_tokens": 16384,
+    "max_output_tokens": 2048,
+    "structured_output": "best_effort",
+    "tool_calling": false,
+    "concurrency_capacity": 1,
+    "supported_classifications": ["internal"],
+    "reports_token_usage": true,
+    "reports_estimated_cost": false
+  },
+  "policy": {
+    "repository_classification": "internal",
+    "authorize_online_transmission": false,
+    "substitution": "pinned",
+    "limits": {
+      "max_requests": 1,
+      "max_input_tokens": 10000,
+      "max_output_tokens": 2048,
+      "max_evidence_bytes": 1000000,
+      "max_evidence_expansions": 0,
+      "max_concurrency": 1,
+      "max_estimated_cost_microusd": null
+    }
+  },
+  "repair": {
+    "max_repair_attempts": 0
+  },
+  "transport": {
+    "kind": "lemonade",
+    "base_url": "${ARGUS_TEST_BASE_URL:-http://127.0.0.1:8080/v1}",
+    "api_key_env": null
+  }
+}"#;
 
-        // 1. Direct path
+        // 1. Direct path with env substitution fallback
         let direct_path = temporary.path().join("my_direct.json");
-        std::fs::write(&direct_path, &profile_bytes).unwrap();
-        let (resolved, _) = resolve_provider_profile(temporary.path(), "my_direct.json").unwrap();
+        std::fs::write(&direct_path, profile_raw.as_bytes()).unwrap();
+        let (resolved, profile) =
+            resolve_provider_profile(temporary.path(), "my_direct.json").unwrap();
         assert_eq!(resolved, direct_path);
+        if let argus_provider::ProviderTransportProfile::Lemonade { base_url, .. } =
+            profile.transport
+        {
+            assert_eq!(base_url, Some("http://127.0.0.1:8080/v1".to_owned()));
+        } else {
+            panic!("expected Lemonade transport");
+        }
 
-        // 2. Project catalog: .argus/config/profiles/project_model.json
+        // 2. System/User catalog via ARGUS_CONFIG_DIR
+        let sys_profiles = sys_dir.join("profiles");
+        std::fs::create_dir_all(&sys_profiles).unwrap();
+        std::fs::write(
+            sys_profiles.join("system_model.json"),
+            profile_raw.as_bytes(),
+        )
+        .unwrap();
+        let (resolved, profile) =
+            resolve_provider_profile_with_env(temporary.path(), "system_model", Some(sys_dir))
+                .unwrap();
+        assert_eq!(resolved, sys_profiles.join("system_model.json"));
+        if let argus_provider::ProviderTransportProfile::Lemonade { base_url, .. } =
+            profile.transport
+        {
+            assert_eq!(base_url, Some("http://127.0.0.1:8080/v1".to_owned()));
+        } else {
+            panic!("expected Lemonade transport");
+        }
+
+        // 3. Project catalog is NOT searched for bare names (security requirement)
         let project_profile_dir = temporary.path().join(".argus/config/profiles");
         std::fs::create_dir_all(&project_profile_dir).unwrap();
         std::fs::write(
             project_profile_dir.join("project_model.json"),
-            &profile_bytes,
+            profile_raw.as_bytes(),
         )
         .unwrap();
-        let (resolved, _) = resolve_provider_profile(temporary.path(), "project_model").unwrap();
-        assert_eq!(resolved, project_profile_dir.join("project_model.json"));
+        let err =
+            resolve_provider_profile_with_env(temporary.path(), "project_model", Some(sys_dir))
+                .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("provider runtime profile `project_model` not found")
+        );
 
-        // 3. System catalog via ARGUS_CONFIG_DIR
-        let sys_profiles = sys_dir.join("profiles");
-        std::fs::create_dir_all(&sys_profiles).unwrap();
-        std::fs::write(sys_profiles.join("system_model.json"), &profile_bytes).unwrap();
-        let (resolved, _) =
-            resolve_provider_profile_with_env(temporary.path(), "system_model", Some(sys_dir))
-                .unwrap();
-        assert_eq!(resolved, sys_profiles.join("system_model.json"));
-
-        // 4. Missing profile error shows candidate search locations
+        // 4. Missing profile error shows candidate search locations in user/system catalog
         let err = resolve_provider_profile(temporary.path(), "non_existent").unwrap_err();
         let err_msg = err.to_string();
         assert!(err_msg.contains("provider runtime profile `non_existent` not found"));
         assert!(err_msg.contains("Searched candidate locations"));
-        assert!(err_msg.contains(".argus/config/profiles"));
     }
 
     #[test]
     fn work_command_reads_default_profile_from_project_config() {
         let temporary = tempfile::tempdir().unwrap();
+        let sys_temp = tempfile::tempdir().unwrap();
+        let sys_dir = sys_temp.path();
+
         std::fs::write(temporary.path().join("lib.rs"), b"pub fn fixture() {}\n").unwrap();
         run(["init".to_owned()].into_iter(), temporary.path()).unwrap();
         run(["prime".to_owned()].into_iter(), temporary.path()).unwrap();
@@ -3930,10 +4620,11 @@ mod tests {
             },
             transport: argus_provider::ProviderTransportProfile::Ollama { base_url: None },
         };
+
+        let sys_profiles = sys_dir.join("profiles");
+        std::fs::create_dir_all(&sys_profiles).unwrap();
         std::fs::write(
-            temporary
-                .path()
-                .join(".argus/config/profiles/configured.json"),
+            sys_profiles.join("configured.json"),
             serde_json::to_vec_pretty(&profile).unwrap(),
         )
         .unwrap();
@@ -3944,11 +4635,15 @@ mod tests {
         )
         .unwrap();
 
-        let output = run(
-            ["work", "documentation", "--limit", "1"]
-                .map(str::to_owned)
-                .into_iter(),
+        let output = work_command_with_env(
             temporary.path(),
+            [
+                "documentation".to_owned(),
+                "--limit".to_owned(),
+                "1".to_owned(),
+            ]
+            .into_iter(),
+            Some(sys_dir),
         )
         .unwrap();
 
@@ -4322,4 +5017,91 @@ mod tests {
         assert!(audit_out.contains("Correctness plan for run"));
         assert!(audit_out.contains("Architecture plan for run"));
     }
+
+    #[test]
+    fn profile_help_and_subcommand_dispatch() {
+        let temporary = tempfile::tempdir().unwrap();
+        let help_out = run(["profile".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(help_out.contains("Manage and discover provider runtime profiles"));
+        assert!(help_out.contains("argus profile discover"));
+        assert!(help_out.contains("argus profile list"));
+
+        let help_discover = run(
+            ["profile".to_owned(), "discover".to_owned(), "--help".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(help_discover.contains("Discover models from a provider"));
+
+        let help_list = run(
+            ["profile".to_owned(), "list".to_owned(), "--help".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(help_list.contains("List installed provider runtime profiles"));
+    }
+
+    #[test]
+    fn profile_list_scans_and_formats_profiles_correctly() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profiles_dir = temporary.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+
+        let sample_profile = argus_provider::generate_runtime_profile(
+            argus_provider::DiscoveredProviderKind::Lemonade,
+            "http://10.0.0.51:13305/v1",
+            "Qwen3.6-35B-A3B-GGUF",
+            None,
+            Some(1800),
+        )
+        .unwrap();
+
+        std::fs::write(
+            profiles_dir.join("lemonade-qwen.json"),
+            serde_json::to_string_pretty(&sample_profile).unwrap().as_bytes(),
+        )
+        .unwrap();
+
+        let list_out = run(
+            [
+                "profile".to_owned(),
+                "list".to_owned(),
+                "--dir".to_owned(),
+                profiles_dir.display().to_string(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(list_out.contains("Installed Provider Profiles (1):"));
+        assert!(list_out.contains("lemonade-qwen"));
+        assert!(list_out.contains("Qwen3.6-35B-A3B-GGUF"));
+        assert!(list_out.contains("same_network"));
+    }
+
+    #[test]
+    fn profile_discover_rejects_missing_or_invalid_type() {
+        let temporary = tempfile::tempdir().unwrap();
+        let err = run(
+            ["profile".to_owned(), "discover".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("missing required flag `--type`"));
+
+        let err2 = run(
+            [
+                "profile".to_owned(),
+                "discover".to_owned(),
+                "--type".to_owned(),
+                "invalid_provider_kind".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(err2.to_string().contains("unsupported provider type"));
+    }
 }
+

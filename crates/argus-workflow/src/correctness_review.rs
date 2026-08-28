@@ -218,8 +218,6 @@ impl PolicyAssessmentContract for CorrectnessAssessmentContract {
                 Ok(json!({
                     "title": finding.title,
                     "description": finding.description,
-                    "defect_kind": finding.defect_kind,
-                    "failure_path": finding.failure_path,
                     "severity": finding.severity,
                     "confidence_basis_points": finding.confidence.basis_points(),
                 }))
@@ -303,7 +301,7 @@ pub fn correctness_assessment_draft_schema() -> Value {
                                 "failure_path": { "type": "string" },
                                 "severity": {
                                     "type": "string",
-                                    "enum": ["critical", "high", "medium", "low", "info"]
+                                    "enum": ["note", "low", "medium", "high", "critical"]
                                 },
                                 "confidence_basis_points": {
                                     "type": "integer",
@@ -340,3 +338,133 @@ pub fn correctness_assessment_draft_schema() -> Value {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argus_core::{
+        ApplicabilityState, EvidenceId, EvidenceKind, InventoryState, PolicyId, Severity, TargetId,
+        TargetVisibility, WorkItemId,
+    };
+    use argus_policies::{
+        CorrectnessCandidateDraft, CorrectnessDefectKind, CorrectnessDimension,
+        CorrectnessDimensionDraft, CorrectnessDimensionStatus, CorrectnessTargetClass,
+        CorrectnessTargetProfile,
+    };
+    use argus_provider::OutputValidator;
+    use std::collections::BTreeSet;
+
+    fn fixture() -> (CorrectnessAssessmentBinding, CorrectnessAssessmentDraft) {
+        let evidence_id = EvidenceId::derive([b"evidence-1".as_slice()]);
+        let target_id = TargetId::derive([b"crate::module::func".as_slice()]);
+        let citation = CorrectnessEvidenceCitation {
+            evidence: evidence_id.clone(),
+            target: target_id.clone(),
+            location: None,
+        };
+        let target = CorrectnessTargetProfile {
+            target: target_id,
+            class: CorrectnessTargetClass::Callable,
+            visibility: TargetVisibility::Public,
+            inventory: InventoryState::Represented,
+        };
+        let binding = CorrectnessAssessmentBinding {
+            work_item: WorkItemId::derive([b"work-1".as_slice()]),
+            target,
+            policy: PolicyId::derive([b"correctness-code-derived@1".as_slice()]),
+            policy_version: "1.0.0".to_owned(),
+            applicability: ApplicabilityState::Applicable,
+            evidence_revision: 1,
+            evidence: BTreeMap::from([(evidence_id.clone(), citation)]),
+            evidence_kinds: BTreeMap::from([(evidence_id.clone(), EvidenceKind::Source)]),
+        };
+
+        let dimensions = ALL_CORRECTNESS_DIMENSIONS
+            .into_iter()
+            .map(|dim| {
+                if dim == CorrectnessDimension::FailurePaths {
+                    CorrectnessDimensionDraft {
+                        dimension: dim,
+                        status: CorrectnessDimensionStatus::Deficient,
+                        rationale: "Unchecked boundary condition triggers panic".to_owned(),
+                        evidence: vec![evidence_id.clone()],
+                    }
+                } else {
+                    CorrectnessDimensionDraft {
+                        dimension: dim,
+                        status: CorrectnessDimensionStatus::Satisfied,
+                        rationale: "Satisfied".to_owned(),
+                        evidence: vec![evidence_id.clone()],
+                    }
+                }
+            })
+            .collect();
+
+        let draft = CorrectnessAssessmentDraft {
+            dimensions,
+            result: CorrectnessResultDraft::CandidateFindings {
+                findings: vec![CorrectnessCandidateDraft {
+                    title: "Panic on empty slice".to_owned(),
+                    description: "Indexing empty slice causes unrecoverable panic".to_owned(),
+                    defect_kind: CorrectnessDefectKind::DemonstratedDefect,
+                    failure_path: "input.len() == 0 -> indexing panic".to_owned(),
+                    severity: Severity::High,
+                    confidence_basis_points: 9000,
+                    dimensions: BTreeSet::from([CorrectnessDimension::FailurePaths]),
+                    evidence: vec![evidence_id],
+                }],
+            },
+        };
+        (binding, draft)
+    }
+
+    #[test]
+    fn generic_candidates_are_derived_from_correctness_assessment() {
+        let (binding, draft) = fixture();
+        let contract = CorrectnessAssessmentContract::new(binding);
+        let validator = CorrectnessReviewTransportValidator;
+        let schema = crate::review_decision_schema_for(&contract.schema());
+        let assessment = serde_json::to_value(draft).unwrap();
+        let output = json!({
+            "event_type": "review.candidate_found",
+            "payload": {"assessment": assessment}
+        });
+        validator.validate(&schema, &output).unwrap();
+
+        let candidates = contract
+            .candidates(&output["payload"]["assessment"])
+            .unwrap();
+        assert_eq!(
+            candidates,
+            vec![json!({
+                "title": "Panic on empty slice",
+                "description": "Indexing empty slice causes unrecoverable panic",
+                "severity": "high",
+                "confidence_basis_points": 9000
+            })]
+        );
+
+        for candidate in &candidates {
+            crate::review_actor::validate_candidate_draft(candidate).unwrap();
+        }
+
+        let mut duplicated = output;
+        duplicated["payload"]["candidates"] = json!([]);
+        assert!(validator.validate(&schema, &duplicated).is_err());
+    }
+
+    #[test]
+    fn transport_schema_excludes_trusted_assessment_identity() {
+        let serialized = serde_json::to_string(&correctness_assessment_draft_schema()).unwrap();
+        for forbidden in [
+            "work_item",
+            "target",
+            "policy_version",
+            "evidence_revision",
+            "applicability",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+    }
+}
+

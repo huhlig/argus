@@ -202,8 +202,12 @@ impl PolicyAssessmentContract for ArchitectureAssessmentContract {
             .candidates
             .into_iter()
             .map(|candidate| {
-                serde_json::to_value(candidate)
-                    .map_err(|error| format!("cannot serialize architecture candidate: {error}"))
+                Ok(json!({
+                    "title": candidate.id,
+                    "description": candidate.explanation,
+                    "severity": candidate.severity,
+                    "confidence_basis_points": candidate.confidence.basis_points(),
+                }))
             })
             .collect()
     }
@@ -265,7 +269,7 @@ pub fn architecture_assessment_draft_schema() -> Value {
                                 "id": { "type": "string" },
                                 "severity": {
                                     "type": "string",
-                                    "enum": ["critical", "high", "medium", "low", "info"]
+                                    "enum": ["note", "low", "medium", "high", "critical"]
                                 },
                                 "defect_kind": {
                                     "type": "string",
@@ -331,3 +335,105 @@ pub fn architecture_assessment_draft_schema() -> Value {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argus_core::{Confidence, PolicyId, Severity, TargetId};
+    use argus_policies::{
+        ArchitectureCandidateDraft, ArchitectureDimension, ArchitectureFindingKind,
+    };
+    use argus_provider::OutputValidator;
+    use std::collections::BTreeSet;
+
+    fn fixture() -> (ArchitectureAssessmentBinding, ArchitectureAssessmentDraft) {
+        let binding = ArchitectureAssessmentBinding {
+            policy_id: PolicyId::derive([b"architecture-code-derived@1".as_slice()]),
+            work_item_id: WorkItemId::derive([b"work-1".as_slice()]),
+            target: TargetId::derive([b"crate::module".as_slice()]),
+            scope: ArchitectureScope::Module,
+        };
+        let draft = ArchitectureAssessmentDraft {
+            result: ArchitectureResultDraft {
+                status: ArchitectureResultStatus::Deficient,
+                dimensions: BTreeMap::from([(
+                    ArchitectureDimension::DependencyStructure,
+                    ArchitectureDimensionDraft {
+                        status: ArchitectureDimensionStatus::Deficient,
+                        observations: vec!["Layering violation: calls upstream UI".to_owned()],
+                        rationale: "Domain layer must not depend on UI presentation".to_owned(),
+                    },
+                )]),
+                summary: "Module violates clean layering architecture".to_owned(),
+                candidates: vec![ArchitectureCandidateDraft {
+                    id: "layering-violation-1".to_owned(),
+                    severity: Severity::High,
+                    defect_kind: ArchitectureFindingKind::StructuralDefect,
+                    dimensions: BTreeSet::from([ArchitectureDimension::DependencyStructure]),
+                    confidence: Confidence::from_basis_points(9500).unwrap(),
+                    explanation: "Direct dependency on presentation layer".to_owned(),
+                    citations: vec![],
+                    observed_facts: vec!["rust:calls edge from storage to ui".to_owned()],
+                    inferred_intent: Some("Intended to decouple backend from UI".to_owned()),
+                }],
+                constituent_health: ConstituentHealthSummary::default(),
+            },
+        };
+        (binding, draft)
+    }
+
+    #[test]
+    fn generic_candidates_are_derived_from_architecture_assessment() {
+        let (binding, draft) = fixture();
+        let contract = ArchitectureAssessmentContract::new(binding);
+        let validator = ArchitectureReviewTransportValidator;
+        let schema = crate::review_decision_schema_for(&contract.schema());
+        let assessment = serde_json::to_value(draft).unwrap();
+        let output = json!({
+            "event_type": "review.candidate_found",
+            "payload": {"assessment": assessment}
+        });
+        validator.validate(&schema, &output).unwrap();
+
+        let candidates = contract
+            .candidates(&output["payload"]["assessment"])
+            .unwrap();
+        assert_eq!(
+            candidates,
+            vec![json!({
+                "title": "layering-violation-1",
+                "description": "Direct dependency on presentation layer",
+                "severity": "high",
+                "confidence_basis_points": 9500
+            })]
+        );
+
+        for candidate in &candidates {
+            crate::review_actor::validate_candidate_draft(candidate).unwrap();
+        }
+
+        let mut duplicated = output;
+        duplicated["payload"]["candidates"] = json!([]);
+        assert!(validator.validate(&schema, &duplicated).is_err());
+    }
+
+    #[test]
+    fn transport_schema_excludes_trusted_assessment_identity() {
+        let serialized = serde_json::to_string(&architecture_assessment_draft_schema()).unwrap();
+        for forbidden in [
+            "\"work_item\"",
+            "\"work_item_id\"",
+            "\"policy_id\"",
+            "\"policy_version\"",
+            "\"evidence_revision\"",
+            "\"applicability\"",
+            "\"target\":",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "schema contains forbidden key: {forbidden}"
+            );
+        }
+    }
+}
+

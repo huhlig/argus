@@ -38,7 +38,7 @@ Argus can be run directly using `cargo run` during development or installed glob
    cd /path/to/your/project
    argus init
    ```
-   *Creates local workspace layout (`.argus/config/argus.json`, `.argus/config/profiles/default.json`, `.argus/.gitignore`) with a pre-configured default provider profile, and ensures global user system profile directories are present.*
+   *Creates local workspace layout (`.argus/config/argus.json`, `.argus/.gitignore`) with default profile identity configuration, and ensures global user system profile directories are present (`~/.config/argus/profiles/` or `%APPDATA%\argus\profiles\`).*
 
 3. **Prime repository and extract target inventory**:
    ```bash
@@ -55,11 +55,11 @@ Argus can be run directly using `cargo run` during development or installed glob
 
 5. **Execute review work using a provider profile**:
    ```bash
-   # Process all admitted policies using default or named provider profile:
+   # Process all admitted policies using default profile from project config:
    argus work --limit 10
    
-   # Or process specific policies with custom profiles:
-   argus work documentation --profile .argus/config/profiles/lemonade-gemma.json --limit 5
+   # Or process specific policies with named profile from user catalog or direct file:
+   argus work documentation --profile lemonade-qwen --limit 5
    ```
 
 6. **Inspect queue status & telemetry**:
@@ -106,7 +106,7 @@ cargo run -p argus-cli -- prime --adapter rust
 cargo run -p argus-cli -- audit --pipeline documentation
 
 # Execute review work items
-cargo run -p argus-cli -- work documentation --profile .argus/config/profiles/lemonade-gemma.json --limit 1
+cargo run -p argus-cli -- work documentation --profile lemonade-qwen --limit 1
 
 # Display queue telemetry status
 cargo run -p argus-cli -- status
@@ -151,8 +151,7 @@ Argus maintains workspace state under the `.argus/` directory:
 ```text
 .argus/
 ├── config/
-│   ├── argus.json            # Core repository configuration (committed)
-│   └── profiles/             # Project-level provider profiles (.json)
+│   └── argus.json            # Core repository configuration & default profile identity (committed)
 ├── state/                    # Ephemeral working state (git-ignored)
 │   ├── working.redb          # Durable redb working queue & telemetry database
 │   ├── current-run           # Active run ID pointer file

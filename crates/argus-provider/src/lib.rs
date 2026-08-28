@@ -15,6 +15,7 @@
 //! Governed model-provider contracts for Argus review workflows.
 
 mod assignment;
+mod discovery;
 mod executor;
 mod runtime_profile;
 mod transport;
@@ -250,6 +251,10 @@ impl fmt::Display for ProviderError {
 impl Error for ProviderError {}
 
 pub use assignment::{ModelAssignment, ModelAssignmentBook};
+pub use discovery::{
+    DiscoveredProviderKind, discover_models, generate_runtime_profile, infer_deployment_mode,
+    slugify_profile_name,
+};
 pub use executor::{
     OutputValidator, ProviderExecutor, ProviderTelemetry, ProviderTelemetrySink, RepairPolicy,
 };
