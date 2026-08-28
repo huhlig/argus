@@ -23,7 +23,7 @@
       "agent": { "id": "argus.review", "version": "1.0.0" },
       "prompt": "Assess only the target and bounded evidence in two explicit stages. First extract claims only from records whose kind is documentation; never infer a documentation claim from a signature, source code, or expected API convention. Then compare those extracted claims and material omissions against records whose kind is source. For each dimension, set documentation_coverage from documentation evidence alone, source_materiality from source evidence alone, and comparison from their relationship. Omitted documentation plus material source behavior is a material_omission and deficient; a stated claim that conflicts with material source behavior is contradictory and deficient. Behavior visible only in source is undocumented. Implementation consistency alone does not satisfy a documentation dimension. Apply this to inputs, outputs, mutation, side effects, errors, panics, safety constraints, invariants, and all other rubric dimensions. Use candidate findings when any dimension is deficient; pass only after the claim-by-claim comparison finds no deficiency. Return a declared review event.",
       "model": { "profile": "local_primary", "model": null, "temperature": 0.0, "max_tokens": 4096 },
-      "limits": { "max_turns": 3, "max_tool_calls": 0, "timeout": 300, "max_tokens_total": 50000 },
+      "limits": { "max_turns": 3, "max_tool_calls": 0, "timeout": 1800, "max_tokens_total": 50000 },
       "on": {
         "review.pass": [{ "target": "record_outcome", "priority": 0, "actions": [] }],
         "review.suggestion": [{ "target": "record_outcome", "priority": 0, "actions": [] }],
@@ -47,7 +47,7 @@
       "id": "expand_evidence", "name": "Expand Evidence", "type": "agentic",
       "agent": { "id": "argus.expand-evidence", "version": "1.0.0" },
       "prompt": "Resolve only the approved evidence request and record a new evidence revision.",
-      "limits": { "max_turns": 1, "max_tool_calls": 0, "timeout": 60, "max_tokens_total": 1 },
+      "limits": { "max_turns": 1, "max_tool_calls": 0, "timeout": 300, "max_tokens_total": 1 },
       "on": { "evidence.expanded": [{ "target": "primary_review", "priority": 0, "actions": [] }] }
     },
     {

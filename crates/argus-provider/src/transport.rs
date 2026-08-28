@@ -89,14 +89,13 @@ impl LangchartModelProvider {
             validate_secret("OpenAI-compatible API key", &api_key)?;
             builder = builder.openai_api_key(api_key);
         }
-        if let Some(seconds) = request_timeout_seconds {
-            if seconds == 0 {
-                return Err(ProviderError::InvalidProfile(
-                    "provider request timeout must be positive".to_owned(),
-                ));
-            }
-            builder = builder.timeout(Duration::from_secs(seconds));
+        let seconds = request_timeout_seconds.unwrap_or(1800);
+        if seconds == 0 {
+            return Err(ProviderError::InvalidProfile(
+                "provider request timeout must be positive".to_owned(),
+            ));
         }
+        builder = builder.timeout(Duration::from_secs(seconds));
         let adapter = builder
             .build()
             .map_err(|error| ProviderError::InvalidProfile(error.to_string()))?;
