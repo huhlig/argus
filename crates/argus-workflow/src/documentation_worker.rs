@@ -364,7 +364,14 @@ impl DocumentationWorker {
             ArgusError::invariant("cannot store documentation workflow").with_source(error)
         })?;
         let manifest = match recovery.load_manifest(langchart_run_id.as_ref()) {
-            Ok(existing) => existing,
+            Ok(mut existing) => {
+                existing.workflow = workflow;
+                existing.actors = recovery.actor_identities(&existing.workflow).map_err(|error| {
+                    ArgusError::invariant("cannot resolve documentation actor identities")
+                        .with_source(error)
+                })?;
+                existing
+            }
             Err(RecoveryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 let manifest = RecoveryManifest {
                     schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
