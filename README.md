@@ -57,6 +57,9 @@ Argus can be run directly using `cargo run` during development or installed glob
    ```bash
    # Process all admitted policies using default profile from project config:
    argus work --limit 10
+
+   # Or process all pending items until the queue is empty:
+   argus work --no-limit
    
    # Or process specific policies with named profile from user catalog or direct file:
    argus work documentation --profile lemonade-qwen --limit 5

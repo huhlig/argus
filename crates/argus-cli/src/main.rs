@@ -134,7 +134,7 @@ Examples:
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work [documentation|correctness|architecture|all] [--profile <name-or-path>] [--limit <positive-integer>] [--config <path>]
+Usage: argus work [documentation|correctness|architecture|all] [--profile <name-or-path>] [--limit <number> | --no-limit] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -144,7 +144,8 @@ Description:
 Arguments & Options:
   documentation | correctness | architecture | all  Review policy to execute (default: all)
   --profile <name-or-path>                    Named provider profile (searched in user catalog) or direct path to profile JSON file
-  --limit <number>                            Maximum number of work items to process (default: 1)
+  --limit <number>                            Maximum number of work items to process (0 for no limit, default: 1)
+  --no-limit                                  Process all pending work items until the queue is empty (alias for --limit 0)
   -c, --config <path>                         Path to project configuration (default: .argus/config/argus.json)
 
 Profile Discovery & Configuration:
@@ -164,7 +165,8 @@ Profile Discovery & Configuration:
 
 Examples:
   argus work --profile ollama --limit 10
-  argus work documentation --profile ollama --limit 10
+  argus work --no-limit
+  argus work documentation --profile ollama --no-limit
   argus work correctness --profile claude-3-7-sonnet --limit 5
   argus work documentation --profile ./custom-profile.json";
 
@@ -1617,7 +1619,7 @@ fn work_command_with_env(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
     }
-    let usage = "usage: argus work [documentation|correctness|architecture|all] [--profile <name-or-path>] [--limit <positive-integer>] [--config <path>]";
+    let usage = "usage: argus work [documentation|correctness|architecture|all] [--profile <name-or-path>] [--limit <integer> | --no-limit] [--config <path>]";
     let mut iter = args.into_iter().peekable();
     let policy_arg = if iter.peek().is_some_and(|a| !a.starts_with('-')) {
         iter.next().map(|arg| arg.to_lowercase())
@@ -1633,7 +1635,9 @@ fn work_command_with_env(
         _ => return Err(argus_core::ArgusError::invalid_input(usage)),
     };
     let mut profile_name = None;
-    let mut limit = 1_usize;
+    let mut limit: Option<usize> = Some(1);
+    let mut limit_explicit = false;
+    let mut no_limit_explicit = false;
     let mut config_path = None;
 
     while let Some(flag) = iter.next() {
@@ -1644,19 +1648,30 @@ fn work_command_with_env(
                         .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?,
                 );
             }
+            "--no-limit" => {
+                if limit_explicit && limit.is_some() {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "cannot specify both --limit and --no-limit",
+                    ));
+                }
+                no_limit_explicit = true;
+                limit = None;
+            }
             "--limit" => {
                 let value = iter
                     .next()
                     .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
-                limit = value.parse::<usize>().map_err(|error| {
-                    argus_core::ArgusError::invalid_input("work limit must be a positive integer")
+                let parsed = value.parse::<usize>().map_err(|error| {
+                    argus_core::ArgusError::invalid_input("work limit must be an integer (0 for no limit)")
                         .with_source(error)
                 })?;
-                if limit == 0 {
+                if parsed > 0 && no_limit_explicit {
                     return Err(argus_core::ArgusError::invalid_input(
-                        "work limit must be positive",
+                        "cannot specify both --limit and --no-limit",
                     ));
                 }
+                limit_explicit = true;
+                limit = if parsed == 0 { None } else { Some(parsed) };
             }
             "-c" | "--config" => {
                 config_path = Some(
@@ -1691,10 +1706,24 @@ fn work_command_with_env(
     }
 }
 
+fn format_work_summary(
+    category: &str,
+    succeeded: usize,
+    retries: usize,
+    failed: usize,
+    limit: Option<usize>,
+) -> String {
+    let limit_str = limit.map_or_else(
+        || "no limit".to_owned(),
+        |l| format!("limit {l}"),
+    );
+    format!("{category} work: {succeeded} succeeded, {retries} retries scheduled, {failed} failed ({limit_str})")
+}
+
 async fn run_worker_step<F, Fut, R>(
     category: &str,
     index: usize,
-    limit: usize,
+    limit: Option<usize>,
     provider_id: &str,
     model_id: &str,
     remaining_in_queue: Option<usize>,
@@ -1711,11 +1740,16 @@ where
 
     metrics::counter!("argus.worker.attempts", "policy" => category.clone()).increment(1);
 
+    let item_label = limit.map_or_else(
+        || format!("{}", index + 1),
+        |l| format!("{}/{}", index + 1, l),
+    );
+
     let span = tracing::info_span!(
         "worker_step",
         policy = %category,
         step = index + 1,
-        limit = limit,
+        limit = limit.unwrap_or(0),
         provider = %provider_id,
         model = %model_id
     );
@@ -1727,12 +1761,10 @@ where
     tracing::info!(
         policy = %category,
         step = index + 1,
-        limit = limit,
+        limit = limit.unwrap_or(0),
         provider = %provider_id,
         model = %model_id,
-        "[{category}] Leased item {}/{}{queue_note} for processing",
-        index + 1,
-        limit
+        "[{category}] Leased item {item_label}{queue_note} for processing"
     );
 
     let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
@@ -1740,6 +1772,7 @@ where
     let ticker_provider = provider_id.clone();
     let ticker_model = model_id.clone();
     let ticker_queue_note = queue_note.clone();
+    let ticker_item_label = item_label.clone();
 
     let ticker_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -1751,17 +1784,11 @@ where
                     tracing::info!(
                         policy = %ticker_category,
                         step = index + 1,
-                        limit = limit,
+                        limit = limit.unwrap_or(0),
                         elapsed_secs = elapsed,
                         provider = %ticker_provider,
                         model = %ticker_model,
-                        "[{ticker_category}] Processing item {}/{}{}... ({}s elapsed, provider: {}, model: {})",
-                        index + 1,
-                        limit,
-                        ticker_queue_note,
-                        elapsed,
-                        ticker_provider,
-                        ticker_model
+                        "[{ticker_category}] Processing item {ticker_item_label}{ticker_queue_note}... ({elapsed}s elapsed, provider: {ticker_provider}, model: {ticker_model})"
                     );
                 }
                 _ = &mut stop_rx => {
@@ -1799,7 +1826,7 @@ fn queue_pending_count(
 async fn execute_all_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
-    limit: usize,
+    limit: Option<usize>,
 ) -> Result<String, argus_core::ArgusError> {
     let doc_res = execute_documentation_work(root, profile.clone(), limit).await?;
     let corr_res = execute_correctness_work(root, profile.clone(), limit).await?;
@@ -1827,7 +1854,7 @@ fn check_unadmitted_run_warning(
 async fn execute_documentation_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
-    limit: usize,
+    limit: Option<usize>,
 ) -> Result<String, argus_core::ArgusError> {
     let queue = std::sync::Arc::new(working_queue(root)?);
     let run_id = current_run(root)?;
@@ -1901,7 +1928,8 @@ async fn execute_documentation_work(
     let provider_id = provider_identity.provider;
     let model_id = provider_identity.model;
 
-    for i in 0..limit {
+    let mut i = 0_usize;
+    while limit.map_or(true, |l| i < l) {
         let remaining = queue_pending_count(&queue, &run_id, "documentation");
         let (result, duration) = run_worker_step(
             "documentation",
@@ -1914,6 +1942,11 @@ async fn execute_documentation_work(
         )
         .await?;
 
+        let item_label = limit.map_or_else(
+            || format!("{}", i + 1),
+            |l| format!("{}/{}", i + 1, l),
+        );
+
         match result {
             argus_workflow::DocumentationWorkerResult::Idle => break,
             argus_workflow::DocumentationWorkerResult::Succeeded { work_id } => {
@@ -1924,9 +1957,7 @@ async fn execute_documentation_work(
                     policy = "documentation",
                     work_id = %work_id,
                     duration_secs = duration.as_secs_f64(),
-                    "[documentation] Item {}/{} ({work_id}) Succeeded in {:.1}s",
-                    i + 1,
-                    limit,
+                    "[documentation] Item {item_label} ({work_id}) Succeeded in {:.1}s",
                     duration.as_secs_f64()
                 );
             }
@@ -1938,9 +1969,7 @@ async fn execute_documentation_work(
                     work_id = %work_id,
                     error = %error,
                     duration_secs = duration.as_secs_f64(),
-                    "[documentation] Item {}/{} ({work_id}) RetryScheduled in {:.1}s: {error}",
-                    i + 1,
-                    limit,
+                    "[documentation] Item {item_label} ({work_id}) RetryScheduled in {:.1}s: {error}",
                     duration.as_secs_f64()
                 );
             }
@@ -1952,24 +1981,21 @@ async fn execute_documentation_work(
                     work_id = %work_id,
                     error = %error,
                     duration_secs = duration.as_secs_f64(),
-                    "[documentation] Item {}/{} ({work_id}) Failed in {:.1}s: {error}",
-                    i + 1,
-                    limit,
+                    "[documentation] Item {item_label} ({work_id}) Failed in {:.1}s: {error}",
                     duration.as_secs_f64()
                 );
             }
         }
+        i += 1;
     }
-    Ok(format!(
-        "Documentation work: {succeeded} succeeded, {retries} retries scheduled, {failed} failed (limit {limit})"
-    ))
+    Ok(format_work_summary("Documentation", succeeded, retries, failed, limit))
 }
 
 #[allow(clippy::too_many_lines)]
 async fn execute_correctness_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
-    limit: usize,
+    limit: Option<usize>,
 ) -> Result<String, argus_core::ArgusError> {
     let queue = std::sync::Arc::new(working_queue(root)?);
     let run_id = current_run(root)?;
@@ -2043,7 +2069,8 @@ async fn execute_correctness_work(
     let provider_id = provider_identity.provider;
     let model_id = provider_identity.model;
 
-    for i in 0..limit {
+    let mut i = 0_usize;
+    while limit.map_or(true, |l| i < l) {
         let remaining = queue_pending_count(&queue, &run_id, "correctness");
         let (result, duration) = run_worker_step(
             "correctness",
@@ -2056,6 +2083,11 @@ async fn execute_correctness_work(
         )
         .await?;
 
+        let item_label = limit.map_or_else(
+            || format!("{}", i + 1),
+            |l| format!("{}/{}", i + 1, l),
+        );
+
         match result {
             argus_workflow::CorrectnessWorkerResult::Idle => break,
             argus_workflow::CorrectnessWorkerResult::Succeeded { work_id } => {
@@ -2065,9 +2097,7 @@ async fn execute_correctness_work(
                     policy = "correctness",
                     work_id = %work_id,
                     duration_secs = duration.as_secs_f64(),
-                    "[correctness] Item {}/{} ({work_id}) Succeeded in {:.1}s",
-                    i + 1,
-                    limit,
+                    "[correctness] Item {item_label} ({work_id}) Succeeded in {:.1}s",
                     duration.as_secs_f64()
                 );
             }
@@ -2079,9 +2109,7 @@ async fn execute_correctness_work(
                     work_id = %work_id,
                     error = %error,
                     duration_secs = duration.as_secs_f64(),
-                    "[correctness] Item {}/{} ({work_id}) RetryScheduled in {:.1}s: {error}",
-                    i + 1,
-                    limit,
+                    "[correctness] Item {item_label} ({work_id}) RetryScheduled in {:.1}s: {error}",
                     duration.as_secs_f64()
                 );
             }
@@ -2093,24 +2121,21 @@ async fn execute_correctness_work(
                     work_id = %work_id,
                     error = %error,
                     duration_secs = duration.as_secs_f64(),
-                    "[correctness] Item {}/{} ({work_id}) Failed in {:.1}s: {error}",
-                    i + 1,
-                    limit,
+                    "[correctness] Item {item_label} ({work_id}) Failed in {:.1}s: {error}",
                     duration.as_secs_f64()
                 );
             }
         }
+        i += 1;
     }
-    Ok(format!(
-        "Correctness work: {succeeded} succeeded, {retries} retries scheduled, {failed} failed (limit {limit})"
-    ))
+    Ok(format_work_summary("Correctness", succeeded, retries, failed, limit))
 }
 
 #[allow(clippy::too_many_lines)]
 async fn execute_architecture_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
-    limit: usize,
+    limit: Option<usize>,
 ) -> Result<String, argus_core::ArgusError> {
     let queue = std::sync::Arc::new(working_queue(root)?);
     let run_id = current_run(root)?;
@@ -2184,7 +2209,8 @@ async fn execute_architecture_work(
     let provider_id = provider_identity.provider;
     let model_id = provider_identity.model;
 
-    for i in 0..limit {
+    let mut i = 0_usize;
+    while limit.map_or(true, |l| i < l) {
         let remaining = queue_pending_count(&queue, &run_id, "architecture");
         let (result, duration) = run_worker_step(
             "architecture",
@@ -2197,6 +2223,11 @@ async fn execute_architecture_work(
         )
         .await?;
 
+        let item_label = limit.map_or_else(
+            || format!("{}", i + 1),
+            |l| format!("{}/{}", i + 1, l),
+        );
+
         match result {
             argus_workflow::ArchitectureWorkerResult::Idle => break,
             argus_workflow::ArchitectureWorkerResult::Succeeded { work_id } => {
@@ -2207,9 +2238,7 @@ async fn execute_architecture_work(
                     policy = "architecture",
                     work_id = %work_id,
                     duration_secs = duration.as_secs_f64(),
-                    "[architecture] Item {}/{} ({work_id}) Succeeded in {:.1}s",
-                    i + 1,
-                    limit,
+                    "[architecture] Item {item_label} ({work_id}) Succeeded in {:.1}s",
                     duration.as_secs_f64()
                 );
             }
@@ -2221,9 +2250,7 @@ async fn execute_architecture_work(
                     work_id = %work_id,
                     error = %error,
                     duration_secs = duration.as_secs_f64(),
-                    "[architecture] Item {}/{} ({work_id}) RetryScheduled in {:.1}s: {error}",
-                    i + 1,
-                    limit,
+                    "[architecture] Item {item_label} ({work_id}) RetryScheduled in {:.1}s: {error}",
                     duration.as_secs_f64()
                 );
             }
@@ -2235,17 +2262,14 @@ async fn execute_architecture_work(
                     work_id = %work_id,
                     error = %error,
                     duration_secs = duration.as_secs_f64(),
-                    "[architecture] Item {}/{} ({work_id}) Failed in {:.1}s: {error}",
-                    i + 1,
-                    limit,
+                    "[architecture] Item {item_label} ({work_id}) Failed in {:.1}s: {error}",
                     duration.as_secs_f64()
                 );
             }
         }
+        i += 1;
     }
-    Ok(format!(
-        "Architecture work: {succeeded} succeeded, {retries} retries scheduled, {failed} failed (limit {limit})"
-    ))
+    Ok(format_work_summary("Architecture", succeeded, retries, failed, limit))
 }
 
 fn prime_command(
@@ -4409,6 +4433,134 @@ mod tests {
             "Documentation work: 0 succeeded, 0 retries scheduled, 0 failed (limit 2)"
         );
         assert!(temporary.path().join(".argus/state/workflow").is_dir());
+    }
+
+    #[test]
+    fn documentation_work_command_supports_no_limit_and_limit_zero() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        run(["prime".to_owned()].into_iter(), temporary.path()).unwrap();
+        let profile = argus_provider::ProviderRuntimeProfile {
+            schema_version: argus_provider::PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION,
+            capabilities: argus_provider::ProviderCapabilities {
+                identity: argus_provider::ProviderIdentity {
+                    provider: "ollama".to_owned(),
+                    provider_version: "langchart@1".to_owned(),
+                    model: "fixture-reviewer".to_owned(),
+                    model_version: "fixture-reviewer".to_owned(),
+                },
+                deployment: argus_provider::DeploymentMode::Local,
+                context_window_tokens: 16_384,
+                max_output_tokens: 2_048,
+                structured_output: argus_provider::StructuredOutputSupport::BestEffort,
+                tool_calling: false,
+                concurrency_capacity: 1,
+                supported_classifications: std::collections::BTreeSet::from([
+                    argus_provider::DataClassification::Internal,
+                ]),
+                reports_token_usage: true,
+                reports_estimated_cost: false,
+            },
+            policy: argus_provider::ProviderPolicy {
+                repository_classification: argus_provider::DataClassification::Internal,
+                authorize_online_transmission: false,
+                substitution: argus_provider::ModelSubstitution::Pinned,
+                limits: argus_provider::ReviewLimits {
+                    max_requests: 1,
+                    max_input_tokens: 10_000,
+                    max_output_tokens: 2_048,
+                    max_evidence_bytes: 1_000_000,
+                    max_evidence_expansions: 0,
+                    max_concurrency: 1,
+                    max_estimated_cost_microusd: None,
+                },
+            },
+            repair: argus_provider::RepairPolicy {
+                max_repair_attempts: 0,
+            },
+            transport: argus_provider::ProviderTransportProfile::Ollama { base_url: None },
+        };
+        std::fs::write(
+            temporary.path().join("provider.json"),
+            serde_json::to_vec_pretty(&profile).unwrap(),
+        )
+        .unwrap();
+
+        let no_limit_output = run(
+            [
+                "work",
+                "documentation",
+                "--profile",
+                "provider.json",
+                "--no-limit",
+            ]
+            .map(str::to_owned)
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            no_limit_output,
+            "Documentation work: 0 succeeded, 0 retries scheduled, 0 failed (no limit)"
+        );
+
+        let limit_zero_output = run(
+            [
+                "work",
+                "documentation",
+                "--profile",
+                "provider.json",
+                "--limit",
+                "0",
+            ]
+            .map(str::to_owned)
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            limit_zero_output,
+            "Documentation work: 0 succeeded, 0 retries scheduled, 0 failed (no limit)"
+        );
+    }
+
+    #[test]
+    fn work_command_rejects_conflicting_limit_and_no_limit() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        run(["prime".to_owned()].into_iter(), temporary.path()).unwrap();
+
+        let err1 = run(
+            [
+                "work",
+                "documentation",
+                "--limit",
+                "5",
+                "--no-limit",
+            ]
+            .map(str::to_owned)
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(err1.to_string().contains("cannot specify both --limit and --no-limit"));
+
+        let err2 = run(
+            [
+                "work",
+                "documentation",
+                "--no-limit",
+                "--limit",
+                "5",
+            ]
+            .map(str::to_owned)
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(err2.to_string().contains("cannot specify both --limit and --no-limit"));
     }
 
     #[test]

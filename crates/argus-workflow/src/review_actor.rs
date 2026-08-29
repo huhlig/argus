@@ -43,6 +43,9 @@ pub trait PolicyAssessmentContract: Send + Sync {
     fn schema(&self) -> Value;
     fn validate(&self, event_type: &str, assessment: &Value) -> Result<(), String>;
     fn candidates(&self, assessment: &Value) -> Result<Vec<Value>, String>;
+    fn instructions(&self) -> &str {
+        ""
+    }
 }
 
 pub struct PolicyReviewDecisionValidator {
@@ -254,7 +257,10 @@ impl AgentActor for PrimaryReviewActor {
                     .saturating_add(u64::try_from(item.source.len()).unwrap_or(u64::MAX))
                     .saturating_add(u64::try_from(item.content.len()).unwrap_or(u64::MAX))
             });
-        let prompt = framed_prompt(&invocation)?;
+        let prompt = framed_prompt(
+            &invocation,
+            self.policy_contract.as_ref().map(|c| c.instructions()),
+        )?;
         let estimated_input_tokens = u64::try_from(prompt.len()).unwrap_or(u64::MAX).max(1);
         let request = ModelRequest {
             request_id: review_request_id(
@@ -464,7 +470,10 @@ fn decision_event(
     })
 }
 
-fn framed_prompt(invocation: &AgentInvocation) -> Result<String, AgentError> {
+fn framed_prompt(
+    invocation: &AgentInvocation,
+    policy_instructions: Option<&str>,
+) -> Result<String, AgentError> {
     let evidence = invocation
         .context_view
         .items
@@ -477,9 +486,18 @@ fn framed_prompt(invocation: &AgentInvocation) -> Result<String, AgentError> {
             })
         })
         .collect::<Vec<_>>();
+    let task = match (
+        invocation.instructions.task.as_deref(),
+        policy_instructions.filter(|text| !text.trim().is_empty()),
+    ) {
+        (Some(task), Some(policy)) => Some(format!("{task}\n\n{policy}")),
+        (Some(task), None) => Some(task.to_owned()),
+        (None, Some(policy)) => Some(policy.to_owned()),
+        (None, None) => None,
+    };
     frame_prompt_fields(
         &invocation.instructions.system,
-        invocation.instructions.task.as_deref(),
+        task.as_deref(),
         &invocation.context_view.content_hash,
         &evidence,
     )

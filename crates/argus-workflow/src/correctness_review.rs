@@ -224,7 +224,29 @@ impl PolicyAssessmentContract for CorrectnessAssessmentContract {
             })
             .collect()
     }
+
+    fn instructions(&self) -> &str {
+        CORRECTNESS_INSTRUCTIONS
+    }
 }
+
+const CORRECTNESS_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded source evidence for correctness.
+You MUST evaluate all 9 standard correctness dimensions:
+1. failure_paths: Handling of unexpected or exceptional execution paths.
+2. invariants: Preservation of class, struct, or functional invariants across operations.
+3. state_transitions: Correctness and safety of lifecycle and state changes.
+4. error_handling: Completeness and accuracy of error reporting, recovery, and propagation.
+5. resource_lifecycle: Allocation, cleanup, and leak prevention for memory, handles, or locks.
+6. concurrency: Thread safety, atomicity, synchronization, and race condition prevention.
+7. persistence: Serialization, data durability, and schema integrity constraints.
+8. unsafe_assumptions: Implicit or unverified preconditions, bounds, or caller assumptions.
+9. boundary_conditions: Edge cases, empty inputs, limits, overflows, and off-by-one behavior.
+
+Decision Rules:
+- For each dimension, provide dimension name, status ("satisfied", "deficient", "unable_to_verify", or "not_applicable"), rationale, and source evidence citation IDs.
+- If ANY dimension is deficient, emit `review.candidate_found` with the assessment containing the candidate findings for each defect found.
+- Emit `review.pass` ONLY when all 9 dimensions are evaluated and none are deficient.
+- `review.failed` is strictly reserved for internal analysis execution errors and must NEVER be used to report code defects or bugs."#;
 
 #[must_use]
 #[allow(clippy::too_many_lines)]
@@ -236,6 +258,9 @@ pub fn correctness_assessment_draft_schema() -> Value {
         "properties": {
             "dimensions": {
                 "type": "array",
+                "minItems": 9,
+                "maxItems": 9,
+                "description": "All 9 standard correctness dimensions must be evaluated.",
                 "items": {
                     "type": "object",
                     "required": ["dimension", "status", "rationale", "evidence"],

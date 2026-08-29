@@ -35,7 +35,7 @@ cargo run -p argus-cli -- --help
 | `snapshot` | Create, show, or verify immutable snapshots | `argus snapshot create` |
 | `prime` | Capture snapshot & extract target inventory | `argus prime --adapter rust` |
 | `audit` | Plan & admit review work items for a policy | `argus audit --pipeline full` |
-| `work` | Execute admitted review items with LLM provider | `argus work --limit 10` |
+| `work` | Execute admitted review items with LLM provider | `argus work --limit 10` / `argus work --no-limit` |
 | `targets` | List or show discovered semantic targets | `argus targets list` |
 | `status` | Real-time queue depth, telemetry & failure logs | `argus status` |
 | `coverage` | Durable review coverage across partitions | `argus coverage` |

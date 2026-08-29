@@ -229,7 +229,50 @@ impl PolicyAssessmentContract for DocumentationAssessmentContract {
             })
             .collect()
     }
+
+    fn instructions(&self) -> &str {
+        DOCUMENTATION_INSTRUCTIONS
+    }
 }
+
+const DOCUMENTATION_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against the documentation policy rubric in two explicit stages:
+1. First, extract claims strictly from records whose kind is documentation. Never infer a documentation claim from a signature, source code, or expected API convention.
+2. Next, compare those extracted claims and material omissions against records whose kind is source.
+
+You MUST evaluate all 14 distinct documentation dimensions exactly once in the `dimensions` array:
+1. presence: Target has attached doc comments / documentation.
+2. purpose: High-level role, rationale, and intent.
+3. behavior: Runtime semantics, side conditions, and guarantees.
+4. inputs: Parameters, arguments, and configuration.
+5. outputs: Return types, success values, and results.
+6. errors: Error variants, failure conditions, and error returns.
+7. panics: Explicit panic conditions and unwinding guarantees.
+8. safety: Undefined behavior, preconditions, or `unsafe` requirements.
+9. side_effects: IO, mutations, external process interaction, or global state changes.
+10. invariants: Struct/type consistency and state invariants.
+11. examples: Accuracy and syntax of provided doc examples.
+12. accuracy: Consistency of doc statements with actual source behavior.
+13. currency: Up-to-date terminology, names, and references.
+14. value: Documentation clarity, completeness, and non-trivial informational value.
+
+For each dimension:
+- Set `documentation_coverage` from documentation evidence alone: "stated", "omitted", "unable_to_verify", or "not_applicable".
+- Set `source_materiality` from source evidence alone: "material_behavior", "no_material_behavior", "unable_to_verify", or "not_applicable".
+- Set `comparison` and `status` strictly following the required truth table:
+  * "consistent" (status: "satisfied"): Stated + MaterialBehavior, Stated + NoMaterialBehavior, or Omitted + NoMaterialBehavior.
+  * "contradictory" (status: "deficient"): Stated documentation claim conflicts with MaterialBehavior in source.
+  * "material_omission" (status: "deficient"): Omitted documentation when source exhibits MaterialBehavior.
+  * "unable_to_verify" (status: "unable_to_verify"): Insufficient evidence.
+  * "not_applicable" (status: "not_applicable"): Dimension is not applicable to this target.
+
+Decision Rules:
+- If ANY dimension is deficient (due to material omission or contradictory documentation):
+  * Emit `event_type: "review.candidate_found"`
+  * Set `assessment.result` to `{"state": "candidate_findings", "findings": [...]}` with finding entries for each defect.
+- If all 14 dimensions are satisfied or not applicable:
+  * Emit `event_type: "review.pass"`
+  * Set `assessment.result` to `{"state": "passed"}`
+- `review.failed` is strictly reserved for internal analysis execution errors and must NEVER be used to report missing or deficient documentation."#;
 
 #[must_use]
 #[allow(clippy::too_many_lines)]

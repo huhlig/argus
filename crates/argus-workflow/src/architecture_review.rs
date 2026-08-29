@@ -211,7 +211,25 @@ impl PolicyAssessmentContract for ArchitectureAssessmentContract {
             })
             .collect()
     }
+
+    fn instructions(&self) -> &str {
+        ARCHITECTURE_INSTRUCTIONS
+    }
 }
+
+const ARCHITECTURE_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against architectural principles and constraints.
+Evaluate all 6 architectural dimensions:
+1. dependency_structure: Proper dependency direction, acyclic graphs, and absence of forbidden couplings.
+2. cycles: Absence of circular dependencies across modules, packages, or components.
+3. public_surface: Encapsulation, minimal export surface, and proper visibility scoping.
+4. ownership_and_cohesion: Clear module responsibility, high cohesion, and proper state ownership.
+5. boundary_analysis: Respect for subsystem boundaries and abstraction layers.
+6. pattern_consistency: Uniformity in architectural conventions, error handling, and design patterns.
+
+Decision Rules:
+- If ANY architectural defect or boundary violation is detected, emit `review.candidate_found` with result status "deficient" and list the architectural candidates.
+- Emit `review.pass` ONLY when all dimensions are satisfied or not applicable and no candidates exist.
+- `review.failed` is strictly reserved for internal analysis execution errors and must NEVER be used to report architectural defects or code issues."#;
 
 #[must_use]
 #[allow(clippy::too_many_lines)]

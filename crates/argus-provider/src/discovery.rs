@@ -378,7 +378,7 @@ pub fn generate_runtime_profile(
         deployment,
         context_window_tokens: 131_072,
         max_output_tokens: 8_192,
-        structured_output: StructuredOutputSupport::BestEffort,
+        structured_output: StructuredOutputSupport::SchemaConstrained,
         tool_calling: false,
         concurrency_capacity: 1,
         supported_classifications: BTreeSet::from([DataClassification::Internal]),
@@ -535,6 +535,10 @@ mod tests {
         assert_eq!(profile.capabilities.identity.provider, "lemonade");
         assert_eq!(profile.capabilities.identity.model, "Qwen3.6-35B-A3B-GGUF");
         assert_eq!(profile.capabilities.deployment, DeploymentMode::SameNetwork);
+        assert_eq!(
+            profile.capabilities.structured_output,
+            StructuredOutputSupport::SchemaConstrained
+        );
         assert!(matches!(
             profile.transport,
             ProviderTransportProfile::Lemonade {
