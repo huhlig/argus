@@ -1,5 +1,9 @@
 # Code-derived architecture policy evaluation
 
+The active policy is `architecture-code-derived@2`. It adds deterministic scoped `architecture_graph` evidence and strict assessment
+validation. Findings emitted by the model are reported as unverified candidates until a dedicated verification workflow
+is implemented.
+
 Phase 11 quality evaluation is separate from an ordinary repository audit. The seeded corpus is
 provided by `argus_test_support::seeded_architecture_fixture` and comprehensively tests all 6
 architecture review dimensions:

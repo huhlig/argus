@@ -27,7 +27,7 @@ use std::{
     path::Path,
 };
 
-pub const ARCHITECTURE_REPORT_SCHEMA_VERSION: u32 = 1;
+pub const ARCHITECTURE_REPORT_SCHEMA_VERSION: u32 = 2;
 pub const ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND: &str = "architecture-assessment.v1";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ pub struct ArchitectureReportSummary {
     pub pending: usize,
     pub leased: usize,
     pub passed: usize,
-    pub candidate_findings: usize,
+    pub unverified_candidates: usize,
     pub unable_to_verify: usize,
     pub failed: usize,
     pub cancelled: usize,
@@ -159,7 +159,7 @@ impl ArchitectureReport {
                                 "pass"
                             }
                             ArchitectureResultStatus::Deficient => {
-                                summary.candidate_findings += 1;
+                                summary.unverified_candidates += 1;
                                 "deficient"
                             }
                             ArchitectureResultStatus::UnableToVerify => {
@@ -194,7 +194,10 @@ impl ArchitectureReport {
                             entry.1 += 1;
                         }
                     } else {
-                        summary.passed += 1;
+                        return Err(argus_core::ArgusError::invariant(format!(
+                            "succeeded architecture work `{}` is missing a valid assessment outcome",
+                            item.id
+                        )));
                     }
                 }
             }
@@ -230,10 +233,10 @@ impl ArchitectureReport {
         writeln!(out, "\nPolicy: `{}`", self.policy_version).unwrap();
         writeln!(
             out,
-            "Summary: {} total, {} passed, {} candidate findings, {} unable-to-verify, {} failed, {} cancelled ({} workspace, {} package, {} module scopes)",
+            "Summary: {} total, {} passed, {} unverified candidates, {} unable-to-verify, {} failed, {} cancelled ({} workspace, {} package, {} module scopes)",
             self.summary.total,
             self.summary.passed,
-            self.summary.candidate_findings,
+            self.summary.unverified_candidates,
             self.summary.unable_to_verify,
             self.summary.failed,
             self.summary.cancelled,
@@ -244,7 +247,7 @@ impl ArchitectureReport {
         .unwrap();
 
         if !self.finding_clusters.is_empty() {
-            writeln!(out, "\n## Structural Findings\n").unwrap();
+            writeln!(out, "\n## Unverified Structural Candidates\n").unwrap();
             for cluster in &self.finding_clusters {
                 let rep = &cluster.representative;
                 let dims = rep
@@ -334,4 +337,33 @@ pub fn architecture_report_from_queue(
         &records.outcomes,
         &records.artifacts,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argus_storage::CoverageKey;
+
+    #[test]
+    fn succeeded_architecture_work_without_assessment_fails_closed() {
+        let run = RunId::derive([b"architecture-report-run".as_slice()]);
+        let mut work = QueueWork::pending_for(
+            WorkItemId::derive([b"missing-assessment".as_slice()]),
+            Vec::new(),
+            run.clone(),
+            CoverageKey {
+                snapshot: "snapshot".to_owned(),
+                configuration: "configuration".to_owned(),
+                adapter: "rust".to_owned(),
+                target_kind: "module".to_owned(),
+                policy: "architecture-code-derived@2".to_owned(),
+            },
+        );
+        work.state = QueueState::Succeeded;
+
+        let error =
+            ArchitectureReport::build(run, "architecture-code-derived@2", &[work], &[], &[])
+                .unwrap_err();
+        assert!(error.to_string().contains("missing a valid assessment"));
+    }
 }

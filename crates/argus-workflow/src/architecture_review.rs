@@ -96,11 +96,74 @@ impl ArchitectureAssessmentContract {
                 "architecture target does not match the trusted review context",
             ));
         }
+        let scope_evidence = context
+            .untrusted_evidence
+            .iter()
+            .filter(|item| {
+                item.kind == argus_core::EvidenceKind::ArchitectureGraph
+                    && item.target.as_ref() == Some(&target.target)
+            })
+            .map(|item| {
+                item.detail
+                    .as_deref()
+                    .ok_or_else(|| {
+                        argus_core::ArgusError::invalid_input(
+                            "architecture scope evidence detail is missing",
+                        )
+                    })
+                    .and_then(|detail| {
+                        serde_json::from_str::<crate::ArchitectureScopeEvidence>(detail).map_err(
+                            |error| {
+                                argus_core::ArgusError::invalid_input(
+                                    "architecture scope evidence is invalid",
+                                )
+                                .with_source(error)
+                            },
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let [scope_evidence] = scope_evidence.as_slice() else {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture review requires exactly one scoped structural evidence artifact",
+            ));
+        };
+        if scope_evidence.target != target.target || scope_evidence.scope != scope {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture scope evidence identity mismatch",
+            ));
+        }
+        let allowed_targets = std::iter::once(scope_evidence.target.clone())
+            .chain(
+                scope_evidence
+                    .constituents
+                    .iter()
+                    .chain(&scope_evidence.boundary_targets)
+                    .map(|target| target.id.clone()),
+            )
+            .collect();
         let binding = ArchitectureAssessmentBinding {
             policy_id: context.trusted_control.policy.clone(),
             work_item_id: work_item,
             target: target.target,
             scope,
+            evidence: context
+                .untrusted_evidence
+                .iter()
+                .map(|item| {
+                    (
+                        item.id.clone(),
+                        argus_policies::ArchitectureEvidenceCitation {
+                            evidence: item.id.clone(),
+                            kind: item.kind,
+                            location: item.location.clone(),
+                            related_targets: item.target.iter().cloned().collect(),
+                        },
+                    )
+                })
+                .collect(),
+            allowed_targets,
+            constituent_health: scope_evidence.constituent_health,
         };
         Ok(Self { binding })
     }
@@ -218,6 +281,7 @@ impl PolicyAssessmentContract for ArchitectureAssessmentContract {
 }
 
 const ARCHITECTURE_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against architectural principles and constraints.
+The static-analysis scope artifact is the authoritative structural input. Use its constituents, internal relations, boundary relations, dependency cycles, and inventory health directly. Cite that artifact for graph-derived claims. Its omitted_* counters identify bounded truncation. Do not invent an edge that is absent from the artifact, and do not treat an absent edge as proof when inventory is incomplete or facts were omitted.
 Evaluate all 6 architectural dimensions:
 1. dependency_structure: Proper dependency direction, acyclic graphs, and absence of forbidden couplings.
 2. cycles: Absence of circular dependencies across modules, packages, or components.
@@ -357,31 +421,60 @@ pub fn architecture_assessment_draft_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argus_core::{Confidence, PolicyId, Severity, TargetId};
+    use argus_core::{Confidence, EvidenceId, EvidenceKind, PolicyId, Severity, TargetId};
     use argus_policies::{
-        ArchitectureCandidateDraft, ArchitectureDimension, ArchitectureFindingKind,
+        ArchitectureCandidateDraft, ArchitectureDimension, ArchitectureEvidenceCitation,
+        ArchitectureFindingKind,
     };
     use argus_provider::OutputValidator;
     use std::collections::BTreeSet;
 
     fn fixture() -> (ArchitectureAssessmentBinding, ArchitectureAssessmentDraft) {
+        let evidence_id = EvidenceId::derive([b"architecture-graph".as_slice()]);
+        let citation = ArchitectureEvidenceCitation {
+            evidence: evidence_id.clone(),
+            kind: EvidenceKind::ArchitectureGraph,
+            location: None,
+            related_targets: Vec::new(),
+        };
         let binding = ArchitectureAssessmentBinding {
-            policy_id: PolicyId::derive([b"architecture-code-derived@1".as_slice()]),
+            policy_id: PolicyId::derive([b"architecture-code-derived@2".as_slice()]),
             work_item_id: WorkItemId::derive([b"work-1".as_slice()]),
             target: TargetId::derive([b"crate::module".as_slice()]),
             scope: ArchitectureScope::Module,
+            evidence: BTreeMap::from([(evidence_id, citation.clone())]),
+            allowed_targets: BTreeSet::new(),
+            constituent_health: ConstituentHealthSummary::default(),
         };
         let draft = ArchitectureAssessmentDraft {
             result: ArchitectureResultDraft {
                 status: ArchitectureResultStatus::Deficient,
-                dimensions: BTreeMap::from([(
-                    ArchitectureDimension::DependencyStructure,
-                    ArchitectureDimensionDraft {
-                        status: ArchitectureDimensionStatus::Deficient,
-                        observations: vec!["Layering violation: calls upstream UI".to_owned()],
-                        rationale: "Domain layer must not depend on UI presentation".to_owned(),
-                    },
-                )]),
+                dimensions: ALL_ARCHITECTURE_DIMENSIONS
+                    .into_iter()
+                    .map(|dimension| {
+                        let deficient = dimension == ArchitectureDimension::DependencyStructure;
+                        (
+                            dimension,
+                            ArchitectureDimensionDraft {
+                                status: if deficient {
+                                    ArchitectureDimensionStatus::Deficient
+                                } else {
+                                    ArchitectureDimensionStatus::Satisfied
+                                },
+                                observations: vec![if deficient {
+                                    "Layering violation: calls upstream UI".to_owned()
+                                } else {
+                                    format!("{dimension:?} is satisfied")
+                                }],
+                                rationale: if deficient {
+                                    "Domain layer must not depend on UI presentation".to_owned()
+                                } else {
+                                    format!("No {dimension:?} deficiency was observed")
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
                 summary: "Module violates clean layering architecture".to_owned(),
                 candidates: vec![ArchitectureCandidateDraft {
                     id: "layering-violation-1".to_owned(),
@@ -390,7 +483,7 @@ mod tests {
                     dimensions: BTreeSet::from([ArchitectureDimension::DependencyStructure]),
                     confidence: Confidence::from_basis_points(9500).unwrap(),
                     explanation: "Direct dependency on presentation layer".to_owned(),
-                    citations: vec![],
+                    citations: vec![citation],
                     observed_facts: vec!["rust:calls edge from storage to ui".to_owned()],
                     inferred_intent: Some("Intended to decouple backend from UI".to_owned()),
                 }],
@@ -454,4 +547,3 @@ mod tests {
         }
     }
 }
-

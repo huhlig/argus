@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use argus_core::{
-    ApplicabilityState, ConfigurationId, ContentHash, EvidenceId, EvidenceKind, EvidenceRecord,
-    PolicyId, PortableTargetKind, SnapshotId, Target, TargetId, TargetKind, TargetVisibility,
-    WorkItemId,
+    ApplicabilityState, Capability, CapabilityStatus, ConfigurationId, ContentHash, EvidenceId,
+    EvidenceKind, EvidenceOrigin, EvidenceProvenance, EvidenceRecord, InventoryState, PolicyId,
+    PortableTargetKind, Relation, ResolutionQuality, SnapshotId, Target, TargetId, TargetKind,
+    TargetVisibility, WorkItemId,
 };
 use argus_evidence::{
     CandidateAvailability, ContextArtifact, DataClassification, EvidenceBudget, EvidenceCandidate,
@@ -24,7 +25,7 @@ use argus_evidence::{
 };
 use argus_policies::{
     ArchitectureApplicabilityDecision, ArchitectureApplicabilityPolicy, ArchitectureScope,
-    ArchitectureTargetClass, ArchitectureTargetProfile,
+    ArchitectureTargetClass, ArchitectureTargetProfile, ConstituentHealthSummary,
 };
 use argus_storage::{CoverageKey, DurableQueue, QueueWork};
 use serde::{Deserialize, Serialize};
@@ -33,7 +34,11 @@ use std::{
     sync::Arc,
 };
 
-pub const ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION: u32 = 1;
+pub const ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION: u32 = 2;
+pub const ARCHITECTURE_SCOPE_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+const MAX_SCOPE_CONSTITUENTS: usize = 2_048;
+const MAX_SCOPE_INTERNAL_RELATIONS: usize = 4_096;
+const MAX_SCOPE_BOUNDARY_RELATIONS: usize = 2_048;
 pub const ARCHITECTURE_EVIDENCE_PACKAGE_ARTIFACT_KIND: &str = "evidence-package";
 pub const ARCHITECTURE_REVIEW_CONTEXT_ARTIFACT_KIND: &str = "review-context";
 
@@ -52,6 +57,42 @@ pub struct ArchitectureReviewUnit {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArchitectureReviewPlan {
     pub units: Vec<ArchitectureReviewUnit>,
+    pub evidence: Vec<EvidenceRecord>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureScopeEvidence {
+    pub schema_version: u32,
+    pub target: TargetId,
+    pub scope: ArchitectureScope,
+    pub constituents: Vec<ArchitectureTargetFact>,
+    pub omitted_constituents: usize,
+    pub boundary_targets: Vec<ArchitectureTargetFact>,
+    pub internal_relations: Vec<ArchitectureRelationFact>,
+    pub omitted_internal_relations: usize,
+    pub boundary_relations: Vec<ArchitectureRelationFact>,
+    pub omitted_boundary_relations: usize,
+    pub dependency_cycles: Vec<Vec<TargetId>>,
+    pub constituent_health: ConstituentHealthSummary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureTargetFact {
+    pub id: TargetId,
+    pub name: String,
+    pub class: ArchitectureTargetClass,
+    pub visibility: TargetVisibility,
+    pub inventory: InventoryState,
+    pub parent: Option<TargetId>,
+    pub capabilities: BTreeMap<String, CapabilityStatus>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureRelationFact {
+    pub source: TargetId,
+    pub target: TargetId,
+    pub kind: String,
+    pub resolution: ResolutionQuality,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -235,8 +276,12 @@ impl ArchitectureReviewUnit {
         }
 
         let requirements = PolicyEvidenceRequirements {
-            allowed_kinds: BTreeSet::from([EvidenceKind::Source, EvidenceKind::Documentation]),
-            required_kinds: BTreeSet::from([EvidenceKind::Source]),
+            allowed_kinds: BTreeSet::from([
+                EvidenceKind::Source,
+                EvidenceKind::Documentation,
+                EvidenceKind::ArchitectureGraph,
+            ]),
+            required_kinds: BTreeSet::from([EvidenceKind::ArchitectureGraph]),
             maximum_classification,
         };
         let package = EvidencePackageBuilder::new(store).build(
@@ -389,17 +434,39 @@ impl<'a> ArchitectureReviewPlanner<'a> {
         configuration: &ConfigurationId,
         targets: &[Target],
         evidence: &[EvidenceRecord],
+        relations: &[Relation],
     ) -> Result<ArchitectureReviewPlan, argus_core::ArgusError> {
-        let targets_by_id = targets
+        let normalized_targets = normalize_architecture_targets(targets)?;
+        let targets_by_id = normalized_targets
             .iter()
             .map(|target| (target.id.clone(), target))
             .collect::<BTreeMap<_, _>>();
-        if targets_by_id.len() != targets.len() {
+        if targets_by_id.len() != normalized_targets.len() {
             return Err(argus_core::ArgusError::invariant(
                 "architecture plan contains duplicate targets",
             ));
         }
+        let mut normalized_relations = relations.to_vec();
+        normalized_relations.sort_by(|left, right| left.id.cmp(&right.id));
+        if normalized_relations
+            .windows(2)
+            .any(|pair| pair[0].id == pair[1].id)
+        {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture plan contains duplicate relations",
+            ));
+        }
+        for relation in &normalized_relations {
+            if !targets_by_id.contains_key(&relation.source)
+                || !targets_by_id.contains_key(&relation.target)
+            {
+                return Err(argus_core::ArgusError::invariant(
+                    "architecture relation references an unknown target",
+                ));
+            }
+        }
         let mut evidence_by_target: BTreeMap<TargetId, Vec<EvidenceId>> = BTreeMap::new();
+        let mut plan_evidence = Vec::with_capacity(evidence.len() + normalized_targets.len());
         for record in evidence {
             record.validate()?;
             if let Some(target) = &record.target {
@@ -413,6 +480,7 @@ impl<'a> ArchitectureReviewPlanner<'a> {
                     .or_default()
                     .push(record.id.clone());
             }
+            plan_evidence.push(record.clone());
         }
         for records in evidence_by_target.values_mut() {
             records.sort();
@@ -442,6 +510,20 @@ impl<'a> ArchitectureReviewPlanner<'a> {
                 self.policy_id.as_str().as_bytes(),
                 self.policy_version.as_bytes(),
             ]);
+            let mut unit_evidence = evidence_by_target.remove(&target.id).unwrap_or_default();
+            if applicability.state == ApplicabilityState::Applicable {
+                let structural = synthesize_scope_evidence(
+                    target,
+                    scope,
+                    &targets_by_id,
+                    &normalized_relations,
+                    configuration,
+                )?;
+                unit_evidence.push(structural.id.clone());
+                plan_evidence.push(structural);
+            }
+            unit_evidence.sort();
+            unit_evidence.dedup();
             units.push(ArchitectureReviewUnit {
                 schema_version: ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION,
                 work_item,
@@ -450,11 +532,369 @@ impl<'a> ArchitectureReviewPlanner<'a> {
                 policy: self.policy_id.clone(),
                 policy_version: self.policy_version.clone(),
                 applicability,
-                evidence: evidence_by_target.remove(&target.id).unwrap_or_default(),
+                evidence: unit_evidence,
             });
         }
-        Ok(ArchitectureReviewPlan { units })
+        plan_evidence.sort_by(|left, right| left.id.cmp(&right.id));
+        if plan_evidence
+            .windows(2)
+            .any(|pair| pair[0].id == pair[1].id)
+        {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture plan contains duplicate evidence IDs",
+            ));
+        }
+        Ok(ArchitectureReviewPlan {
+            units,
+            evidence: plan_evidence,
+        })
     }
+}
+
+fn normalize_architecture_targets(
+    targets: &[Target],
+) -> Result<Vec<Target>, argus_core::ArgusError> {
+    let workspace_targets = targets
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.kind,
+                TargetKind::Portable {
+                    kind: PortableTargetKind::Workspace
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    if workspace_targets.len() > 1 {
+        return Err(argus_core::ArgusError::invariant(
+            "architecture inventory contains multiple workspace targets",
+        ));
+    }
+
+    let workspace_id = workspace_targets.first().map_or_else(
+        || TargetId::derive([b"argus".as_slice(), b"normalized-workspace-v1".as_slice()]),
+        |target| target.id.clone(),
+    );
+    let mut normalized = targets.to_vec();
+    if workspace_targets.is_empty() {
+        normalized.push(Target {
+            id: workspace_id.clone(),
+            kind: TargetKind::Portable {
+                kind: PortableTargetKind::Workspace,
+            },
+            visibility: TargetVisibility::Unknown,
+            name: "workspace".to_owned(),
+            parent: None,
+            location: None,
+            inventory: InventoryState::Represented,
+            capabilities: vec![Capability {
+                name: "architecture-scope-normalization".to_owned(),
+                status: CapabilityStatus::Complete,
+                detail: None,
+                provider: Some("argus-workflow".to_owned()),
+            }],
+            diagnostic: None,
+        });
+    }
+    for target in &mut normalized {
+        target.validate()?;
+        if target.id != workspace_id && target.parent.is_none() {
+            target.parent = Some(workspace_id.clone());
+        }
+    }
+    Ok(normalized)
+}
+
+fn synthesize_scope_evidence(
+    target: &Target,
+    scope: ArchitectureScope,
+    targets: &BTreeMap<TargetId, &Target>,
+    relations: &[Relation],
+    configuration: &ConfigurationId,
+) -> Result<EvidenceRecord, argus_core::ArgusError> {
+    let scope_targets = scope_target_ids(&target.id, targets, relations);
+    let constituent_targets = scope_targets
+        .iter()
+        .filter(|id| *id != &target.id)
+        .filter_map(|id| targets.get(id).copied())
+        .collect::<Vec<_>>();
+    let internal_relation_records = relations
+        .iter()
+        .filter(|relation| {
+            scope_targets.contains(&relation.source) && scope_targets.contains(&relation.target)
+        })
+        .collect::<Vec<_>>();
+    let boundary_relation_records = relations
+        .iter()
+        .filter(|relation| {
+            scope_targets.contains(&relation.source) ^ scope_targets.contains(&relation.target)
+        })
+        .collect::<Vec<_>>();
+    let boundary_target_ids = boundary_relation_records
+        .iter()
+        .flat_map(|relation| [&relation.source, &relation.target])
+        .filter(|id| !scope_targets.contains(*id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let boundary_target_records = boundary_target_ids
+        .iter()
+        .filter_map(|id| targets.get(id).copied())
+        .collect::<Vec<_>>();
+    let constituent_health = ConstituentHealthSummary {
+        total_constituents: constituent_targets.len(),
+        succeeded_constituents: constituent_targets
+            .iter()
+            .filter(|target| target.inventory == InventoryState::Represented)
+            .count(),
+        failed_constituents: constituent_targets
+            .iter()
+            .filter(|target| target.inventory == InventoryState::Failed)
+            .count(),
+        unable_to_verify_constituents: constituent_targets
+            .iter()
+            .filter(|target| {
+                matches!(
+                    target.inventory,
+                    InventoryState::Pending
+                        | InventoryState::Excluded
+                        | InventoryState::Unsupported
+                )
+            })
+            .count(),
+    };
+    let (constituents, omitted_constituents) = bounded(
+        constituent_targets.into_iter().map(target_fact).collect(),
+        MAX_SCOPE_CONSTITUENTS,
+    );
+    let (boundary_targets, _) = bounded(
+        boundary_target_records
+            .into_iter()
+            .map(target_fact)
+            .collect(),
+        MAX_SCOPE_BOUNDARY_RELATIONS,
+    );
+    let (internal_relations, omitted_internal_relations) = bounded(
+        internal_relation_records
+            .into_iter()
+            .map(relation_fact)
+            .collect(),
+        MAX_SCOPE_INTERNAL_RELATIONS,
+    );
+    let (boundary_relations, omitted_boundary_relations) = bounded(
+        boundary_relation_records
+            .into_iter()
+            .map(relation_fact)
+            .collect(),
+        MAX_SCOPE_BOUNDARY_RELATIONS,
+    );
+    let scope_evidence = ArchitectureScopeEvidence {
+        schema_version: ARCHITECTURE_SCOPE_EVIDENCE_SCHEMA_VERSION,
+        target: target.id.clone(),
+        scope,
+        constituents,
+        omitted_constituents,
+        boundary_targets,
+        internal_relations,
+        omitted_internal_relations,
+        boundary_relations,
+        omitted_boundary_relations,
+        dependency_cycles: dependency_cycles(&scope_targets, relations),
+        constituent_health,
+    };
+    let bytes = serde_json::to_vec(&scope_evidence).map_err(|error| {
+        argus_core::ArgusError::invariant("cannot serialize architecture scope evidence")
+            .with_source(error)
+    })?;
+    let id = EvidenceId::derive([
+        b"architecture-scope-evidence-v1".as_slice(),
+        target.id.as_str().as_bytes(),
+        bytes.as_slice(),
+    ]);
+    let detail = String::from_utf8(bytes).map_err(|error| {
+        argus_core::ArgusError::invariant("architecture scope evidence is not UTF-8")
+            .with_source(error)
+    })?;
+    Ok(EvidenceRecord {
+        id,
+        kind: EvidenceKind::ArchitectureGraph,
+        origin: EvidenceOrigin::Inference,
+        target: Some(target.id.clone()),
+        location: None,
+        summary: format!(
+            "Deterministic {scope:?} architecture graph for {}",
+            target.name
+        ),
+        detail: Some(detail),
+        provenance: EvidenceProvenance {
+            provider: "argus-architecture-synthesis".to_owned(),
+            provider_version: "1".to_owned(),
+            configuration: configuration.clone(),
+            ingest_only: true,
+            resolution: ResolutionQuality::Exact,
+        },
+    })
+}
+
+fn target_fact(target: &Target) -> ArchitectureTargetFact {
+    ArchitectureTargetFact {
+        id: target.id.clone(),
+        name: target.name.clone(),
+        class: ArchitectureTargetProfile::from_target(target).class,
+        visibility: target.visibility,
+        inventory: target.inventory,
+        parent: target.parent.clone(),
+        capabilities: target
+            .capabilities
+            .iter()
+            .map(|capability| (capability.name.clone(), capability.status))
+            .collect(),
+    }
+}
+
+fn relation_fact(relation: &Relation) -> ArchitectureRelationFact {
+    ArchitectureRelationFact {
+        source: relation.source.clone(),
+        target: relation.target.clone(),
+        kind: relation.kind.clone(),
+        resolution: relation.provenance.resolution,
+    }
+}
+
+fn bounded<T>(mut values: Vec<T>, maximum: usize) -> (Vec<T>, usize) {
+    let omitted = values.len().saturating_sub(maximum);
+    values.truncate(maximum);
+    (values, omitted)
+}
+
+fn scope_target_ids(
+    root: &TargetId,
+    targets: &BTreeMap<TargetId, &Target>,
+    relations: &[Relation],
+) -> BTreeSet<TargetId> {
+    let mut children: BTreeMap<TargetId, BTreeSet<TargetId>> = BTreeMap::new();
+    for target in targets.values() {
+        if let Some(parent) = &target.parent {
+            children
+                .entry(parent.clone())
+                .or_default()
+                .insert(target.id.clone());
+        }
+    }
+    for relation in relations
+        .iter()
+        .filter(|relation| relation.kind == "core:contains")
+    {
+        children
+            .entry(relation.source.clone())
+            .or_default()
+            .insert(relation.target.clone());
+    }
+    let mut result = BTreeSet::from([root.clone()]);
+    let mut pending = vec![root.clone()];
+    while let Some(parent) = pending.pop() {
+        if let Some(items) = children.get(&parent) {
+            for child in items {
+                if result.insert(child.clone()) {
+                    pending.push(child.clone());
+                }
+            }
+        }
+    }
+    result
+}
+
+fn dependency_cycles(
+    scope_targets: &BTreeSet<TargetId>,
+    relations: &[Relation],
+) -> Vec<Vec<TargetId>> {
+    let mut adjacency = scope_targets
+        .iter()
+        .cloned()
+        .map(|target| (target, Vec::new()))
+        .collect::<BTreeMap<_, _>>();
+    for relation in relations.iter().filter(|relation| {
+        relation.kind.ends_with("depends_on")
+            && scope_targets.contains(&relation.source)
+            && scope_targets.contains(&relation.target)
+    }) {
+        adjacency
+            .entry(relation.source.clone())
+            .or_default()
+            .push(relation.target.clone());
+    }
+    for targets in adjacency.values_mut() {
+        targets.sort();
+        targets.dedup();
+    }
+
+    struct Tarjan<'a> {
+        adjacency: &'a BTreeMap<TargetId, Vec<TargetId>>,
+        next_index: usize,
+        stack: Vec<TargetId>,
+        on_stack: BTreeSet<TargetId>,
+        indices: BTreeMap<TargetId, usize>,
+        lowlinks: BTreeMap<TargetId, usize>,
+        cycles: Vec<Vec<TargetId>>,
+    }
+    impl Tarjan<'_> {
+        fn visit(&mut self, node: TargetId) {
+            let index = self.next_index;
+            self.next_index += 1;
+            self.indices.insert(node.clone(), index);
+            self.lowlinks.insert(node.clone(), index);
+            self.stack.push(node.clone());
+            self.on_stack.insert(node.clone());
+
+            for neighbor in self.adjacency.get(&node).cloned().unwrap_or_default() {
+                if !self.indices.contains_key(&neighbor) {
+                    self.visit(neighbor.clone());
+                    let lowlink = self.lowlinks[&node].min(self.lowlinks[&neighbor]);
+                    self.lowlinks.insert(node.clone(), lowlink);
+                } else if self.on_stack.contains(&neighbor) {
+                    let lowlink = self.lowlinks[&node].min(self.indices[&neighbor]);
+                    self.lowlinks.insert(node.clone(), lowlink);
+                }
+            }
+
+            if self.lowlinks[&node] == self.indices[&node] {
+                let mut component = Vec::new();
+                loop {
+                    let item = self.stack.pop().expect("Tarjan stack contains its root");
+                    self.on_stack.remove(&item);
+                    component.push(item.clone());
+                    if item == node {
+                        break;
+                    }
+                }
+                component.sort();
+                let self_cycle = component.len() == 1
+                    && self
+                        .adjacency
+                        .get(&component[0])
+                        .is_some_and(|neighbors| neighbors.contains(&component[0]));
+                if component.len() > 1 || self_cycle {
+                    self.cycles.push(component);
+                }
+            }
+        }
+    }
+
+    let mut tarjan = Tarjan {
+        adjacency: &adjacency,
+        next_index: 0,
+        stack: Vec::new(),
+        on_stack: BTreeSet::new(),
+        indices: BTreeMap::new(),
+        lowlinks: BTreeMap::new(),
+        cycles: Vec::new(),
+    };
+    for node in adjacency.keys() {
+        if !tarjan.indices.contains_key(node) {
+            tarjan.visit(node.clone());
+        }
+    }
+    tarjan.cycles.sort();
+    tarjan.cycles
 }
 
 fn effective_visibility(
@@ -537,17 +977,33 @@ mod tests {
     #[test]
     fn planner_creates_units_for_modules_packages_and_workspace() {
         let applicability = ArchitectureApplicabilityPolicy::conservative().unwrap();
-        let policy_id = PolicyId::derive([b"architecture-code-derived@1".as_slice()]);
+        let policy_id = PolicyId::derive([b"architecture-code-derived@2".as_slice()]);
         let planner = ArchitectureReviewPlanner::new(
             &applicability,
             policy_id,
-            "architecture-code-derived@1",
+            "architecture-code-derived@2",
         )
         .unwrap();
 
+        let package_id = TargetId::derive([b"crate".as_slice()]);
+        let module_a = TargetId::derive([b"crate::mod_a".as_slice()]);
+        let module_b = TargetId::derive([b"crate::mod_b".as_slice()]);
         let targets = vec![
             Target {
-                id: TargetId::derive([b"crate::mod_a".as_slice()]),
+                id: package_id.clone(),
+                name: "crate".to_owned(),
+                kind: TargetKind::Portable {
+                    kind: PortableTargetKind::Package,
+                },
+                visibility: TargetVisibility::NotApplicable,
+                location: None,
+                inventory: InventoryState::Represented,
+                capabilities: Vec::new(),
+                diagnostic: None,
+                parent: None,
+            },
+            Target {
+                id: module_a.clone(),
                 name: "mod_a".to_owned(),
                 kind: TargetKind::Portable {
                     kind: PortableTargetKind::Module,
@@ -557,7 +1013,20 @@ mod tests {
                 inventory: argus_core::InventoryState::Represented,
                 capabilities: Vec::new(),
                 diagnostic: None,
-                parent: None,
+                parent: Some(package_id.clone()),
+            },
+            Target {
+                id: module_b.clone(),
+                name: "mod_b".to_owned(),
+                kind: TargetKind::Portable {
+                    kind: PortableTargetKind::Module,
+                },
+                visibility: TargetVisibility::Private,
+                location: None,
+                inventory: InventoryState::Represented,
+                capabilities: Vec::new(),
+                diagnostic: None,
+                parent: Some(package_id.clone()),
             },
             Target {
                 id: TargetId::derive([b"crate::mod_a::func".as_slice()]),
@@ -570,7 +1039,37 @@ mod tests {
                 inventory: argus_core::InventoryState::Represented,
                 capabilities: Vec::new(),
                 diagnostic: None,
-                parent: None,
+                parent: Some(module_a.clone()),
+            },
+        ];
+        let relations = vec![
+            Relation {
+                id: argus_core::RelationId::derive([b"a-to-b".as_slice()]),
+                source: module_a.clone(),
+                target: module_b.clone(),
+                kind: "rust:depends_on".to_owned(),
+                provenance: argus_core::RelationProvenance {
+                    provider: "fixture".to_owned(),
+                    provider_version: "1".to_owned(),
+                    configuration: None,
+                    ingest_only: true,
+                    resolution: ResolutionQuality::Exact,
+                    detail: None,
+                },
+            },
+            Relation {
+                id: argus_core::RelationId::derive([b"b-to-a".as_slice()]),
+                source: module_b,
+                target: module_a,
+                kind: "rust:depends_on".to_owned(),
+                provenance: argus_core::RelationProvenance {
+                    provider: "fixture".to_owned(),
+                    provider_version: "1".to_owned(),
+                    configuration: None,
+                    ingest_only: true,
+                    resolution: ResolutionQuality::Exact,
+                    detail: None,
+                },
             },
         ];
 
@@ -578,18 +1077,27 @@ mod tests {
         let configuration = ConfigurationId::derive([b"config-1".as_slice()]);
 
         let plan = planner
-            .plan(&snapshot, &configuration, &targets, &[])
+            .plan(&snapshot, &configuration, &targets, &[], &relations)
             .unwrap();
-        assert_eq!(plan.units.len(), 2);
-        assert_eq!(plan.units[0].scope, ArchitectureScope::Module);
-        assert_eq!(plan.units[0].policy_version, "architecture-code-derived@1");
+        assert_eq!(plan.units.len(), 5);
         assert_eq!(
-            plan.units[0].applicability.state,
-            ApplicabilityState::Applicable
+            plan.units
+                .iter()
+                .filter(|unit| unit.applicability.state == ApplicabilityState::Applicable)
+                .count(),
+            4
         );
-        assert_eq!(
-            plan.units[1].applicability.state,
-            ApplicabilityState::NotApplicable
-        );
+        assert_eq!(plan.evidence.len(), 4);
+        let package_evidence = plan
+            .evidence
+            .iter()
+            .find(|record| record.target.as_ref() == Some(&package_id))
+            .unwrap();
+        let scope: ArchitectureScopeEvidence =
+            serde_json::from_str(package_evidence.detail.as_deref().unwrap()).unwrap();
+        assert_eq!(scope.scope, ArchitectureScope::Package);
+        assert_eq!(scope.constituents.len(), 3);
+        assert_eq!(scope.internal_relations.len(), 2);
+        assert_eq!(scope.dependency_cycles.len(), 1);
     }
 }

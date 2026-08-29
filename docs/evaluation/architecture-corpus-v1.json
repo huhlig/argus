@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "argus-seeded-architecture",
   "version": "1.0.0",
-  "policy_version": "architecture-code-derived@1",
+  "policy_version": "architecture-code-derived@2",
   "expected_issues": [
     {
       "id": "cyclic-dependency",

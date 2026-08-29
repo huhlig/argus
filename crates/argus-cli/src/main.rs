@@ -1531,14 +1531,15 @@ fn audit_command(
         let policy = argus_policies::ArchitectureApplicabilityPolicy::conservative()?;
         let planner = argus_workflow::ArchitectureReviewPlanner::new(
             &policy,
-            argus_core::PolicyId::derive([b"architecture-code-derived@1".as_slice()]),
-            "architecture-code-derived@1",
+            argus_core::PolicyId::derive([b"architecture-code-derived@2".as_slice()]),
+            "architecture-code-derived@2",
         )?;
         let plan = planner.plan(
             &run.snapshot,
             &run.configuration,
             &inventory.targets,
             &inventory.evidence,
+            &inventory.relations,
         )?;
         let applicable = plan
             .units
@@ -1557,7 +1558,7 @@ fn audit_command(
             &evidence_store,
             &run.snapshot,
             argus_evidence::DataClassification::Internal,
-            &inventory.evidence,
+            &plan.evidence,
         )?;
         let batch = plan.materialize_admissible(
             &evidence_store,
@@ -2188,7 +2189,7 @@ async fn execute_architecture_work(
                 audit_snapshot: run.snapshot,
                 audit_run: run.id,
                 provenance: argus_workflow::OutcomeProvenance {
-                    prompt_version: "architecture-review@1".to_owned(),
+                    prompt_version: "architecture-review@2".to_owned(),
                     actor_id: "argus.review".to_owned(),
                     actor_version: "1.0.0".to_owned(),
                     workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),
@@ -2198,7 +2199,7 @@ async fn execute_architecture_work(
                 max_output_tokens,
             },
             adapter: "rust".to_owned(),
-            policy: "architecture-code-derived@1".to_owned(),
+            policy: "architecture-code-derived@2".to_owned(),
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
         },
@@ -2433,53 +2434,54 @@ fn finalize_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("correctness"));
+    let is_documentation = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("documentation"));
 
-    let msg = if is_architecture {
-        let report = argus_report::write_architecture_bundle_reports(
-            &destination,
-            id.clone(),
-            "architecture-code-derived@1",
-        )?;
-        format!(
-            "Finalized run {id} ({} work, {} outcomes, {} artifacts, {} adjudications, {} events; {} architecture assessments)",
-            manifest.work_records,
-            manifest.outcome_records,
-            manifest.artifact_records,
-            manifest.adjudication_records,
-            manifest.event_records,
-            report.assessments.len(),
-        )
-    } else if is_correctness {
-        let report = argus_report::write_correctness_bundle_reports(
-            &destination,
-            id.clone(),
-            "correctness-conservative@1",
-        )?;
-        format!(
-            "Finalized run {id} ({} work, {} outcomes, {} artifacts, {} adjudications, {} events; {} correctness assessments)",
-            manifest.work_records,
-            manifest.outcome_records,
-            manifest.artifact_records,
-            manifest.adjudication_records,
-            manifest.event_records,
-            report.assessments.len(),
-        )
-    } else {
+    let mut report_summaries = Vec::new();
+    if is_documentation || (!is_architecture && !is_correctness) {
         let report = argus_report::write_documentation_bundle_reports(
             &destination,
             id.clone(),
             "documentation-public-api@1",
         )?;
-        format!(
-            "Finalized run {id} ({} work, {} outcomes, {} artifacts, {} adjudications, {} events; {} documentation assessments)",
-            manifest.work_records,
-            manifest.outcome_records,
-            manifest.artifact_records,
-            manifest.adjudication_records,
-            manifest.event_records,
-            report.assessments.len(),
-        )
-    };
+        report_summaries.push(format!(
+            "{} documentation assessments",
+            report.assessments.len()
+        ));
+    }
+    if is_correctness {
+        let report = argus_report::write_correctness_bundle_reports(
+            &destination,
+            id.clone(),
+            "correctness-conservative@1",
+        )?;
+        report_summaries.push(format!(
+            "{} correctness assessments",
+            report.assessments.len()
+        ));
+    }
+    if is_architecture {
+        let report = argus_report::write_architecture_bundle_reports(
+            &destination,
+            id.clone(),
+            "architecture-code-derived@2",
+        )?;
+        report_summaries.push(format!(
+            "{} architecture assessments",
+            report.assessments.len()
+        ));
+    }
+    let msg = format!(
+        "Finalized run {id} ({} work, {} outcomes, {} artifacts, {} adjudications, {} events; {})",
+        manifest.work_records,
+        manifest.outcome_records,
+        manifest.artifact_records,
+        manifest.adjudication_records,
+        manifest.event_records,
+        report_summaries.join(", "),
+    );
     Ok(format!(
         "{msg}\nNext step: Run 'argus report {id}' to view or export review findings."
     ))
@@ -2558,7 +2560,7 @@ fn report_command(
         let mut report = argus_report::architecture_report_from_queue(
             &queue,
             id,
-            "architecture-code-derived@1",
+            "architecture-code-derived@2",
         )?;
 
         if let Some(dim_name) = dimension_str {
@@ -2788,7 +2790,7 @@ fn adjudicate_command(
         let report = argus_report::architecture_report_from_queue(
             &queue,
             run_id.clone(),
-            "architecture-code-derived@1",
+            "architecture-code-derived@2",
         )?;
         report
             .finding_clusters
@@ -5090,19 +5092,51 @@ mod tests {
         assert!(audit_out.contains("Architecture plan for run"));
         assert!(audit_out.contains("newly admitted"));
 
+        let queue = working_queue(temporary.path()).unwrap();
+        let records = queue
+            .run_records(&run_id.parse::<argus_core::RunId>().unwrap())
+            .unwrap();
+        let mut scopes = std::collections::BTreeSet::new();
+        for work in &records.work {
+            if work.coverage.policy != "architecture-code-derived@2" {
+                continue;
+            }
+            let admission: argus_workflow::ArchitectureReviewAdmission =
+                serde_json::from_slice(&work.payload).unwrap();
+            let context = queue
+                .artifact(&admission.review_context_ref)
+                .unwrap()
+                .unwrap();
+            let frame: argus_evidence::ReviewContextFrame =
+                serde_json::from_slice(&context.payload).unwrap();
+            let structural = frame
+                .untrusted_evidence
+                .iter()
+                .find(|item| item.kind == argus_core::EvidenceKind::ArchitectureGraph)
+                .unwrap();
+            let scope: argus_workflow::ArchitectureScopeEvidence =
+                serde_json::from_str(structural.detail.as_deref().unwrap()).unwrap();
+            assert_eq!(scope.target, admission.unit.target.target);
+            scopes.insert(scope.scope);
+        }
+        assert!(scopes.contains(&argus_policies::ArchitectureScope::Workspace));
+        assert!(scopes.contains(&argus_policies::ArchitectureScope::Package));
+        assert!(scopes.contains(&argus_policies::ArchitectureScope::Module));
+        drop(queue);
+
         let report_out = run(
             ["report".to_owned(), run_id.clone()].into_iter(),
             temporary.path(),
         )
         .unwrap();
         assert!(report_out.contains("# Architecture audit"));
-        assert!(report_out.contains("architecture-code-derived@1"));
+        assert!(report_out.contains("architecture-code-derived@2"));
 
         let corpus = argus_report::ArchitectureEvaluationCorpus {
             schema_version: argus_report::ARCHITECTURE_CORPUS_SCHEMA_VERSION,
             name: "architecture-cli-eval".to_owned(),
             version: "1.0.0".to_owned(),
-            policy_version: "architecture-code-derived@1".to_owned(),
+            policy_version: "architecture-code-derived@2".to_owned(),
             expected_issues: vec![argus_report::ExpectedArchitectureIssue {
                 id: "cyclic-dependency".to_owned(),
                 target: argus_core::TargetId::derive([b"target".as_slice()]),

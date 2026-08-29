@@ -50,9 +50,11 @@ pub use architecture_outcome_actor::{
 };
 pub use architecture_plan::{
     ARCHITECTURE_EVIDENCE_PACKAGE_ARTIFACT_KIND, ARCHITECTURE_REVIEW_CONTEXT_ARTIFACT_KIND,
-    ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION, ArchitectureEvidenceCatalog,
-    ArchitectureReviewAdmission, ArchitectureReviewBatch, ArchitectureReviewMaterialization,
-    ArchitectureReviewPlan, ArchitectureReviewPlanner, ArchitectureReviewUnit,
+    ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION, ARCHITECTURE_SCOPE_EVIDENCE_SCHEMA_VERSION,
+    ArchitectureEvidenceCatalog, ArchitectureRelationFact, ArchitectureReviewAdmission,
+    ArchitectureReviewBatch, ArchitectureReviewMaterialization, ArchitectureReviewPlan,
+    ArchitectureReviewPlanner, ArchitectureReviewUnit, ArchitectureScopeEvidence,
+    ArchitectureTargetFact,
 };
 pub use architecture_review::{
     ArchitectureAssessmentContract, ArchitectureReviewTransportValidator,

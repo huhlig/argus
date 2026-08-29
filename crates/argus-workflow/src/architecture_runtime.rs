@@ -14,8 +14,8 @@
 
 use crate::{
     ActorRegistry, ActorRegistryError, ArchitectureReviewMaterialization, CandidateRecorderActor,
-    DurableArchitectureOutcomeActor, EvidenceRequestEvaluatorActor, FindingWorkSchedulerActor,
-    OutcomeProvenance, WorkflowDataStore,
+    DurableArchitectureOutcomeActor, EvidenceRequestEvaluatorActor, OutcomeProvenance,
+    WorkflowDataStore,
 };
 use argus_core::{EvidenceKind, RunId, SnapshotId};
 use argus_evidence::{DataClassification, EvidenceBudget, EvidenceExpansionPolicy};
@@ -112,10 +112,7 @@ pub fn architecture_actor_registry(
     register(
         &mut registry,
         "argus.schedule-finding-work",
-        Arc::new(FindingWorkSchedulerActor::new(
-            workflow_data.clone(),
-            queue.clone(),
-        )),
+        Arc::new(RecordUnverifiedArchitectureCandidatesActor),
     )?;
     register(
         &mut registry,
@@ -265,6 +262,26 @@ impl AgentActor for DecisionRelayActor {
 }
 
 struct DisabledEvidenceExpansionActor;
+
+struct RecordUnverifiedArchitectureCandidatesActor;
+
+#[async_trait]
+impl AgentActor for RecordUnverifiedArchitectureCandidatesActor {
+    async fn run(
+        &self,
+        _invocation: AgentInvocation,
+        _envelope: CapabilityEnvelope,
+        _broker: Arc<CapabilityBroker>,
+    ) -> Result<AgentOutputEvent, AgentError> {
+        Ok(AgentOutputEvent {
+            event_type: "finding_work.scheduled".to_owned(),
+            payload: json!({
+                "work_ids": [],
+                "verification": "not_implemented",
+            }),
+        })
+    }
+}
 
 #[async_trait]
 impl AgentActor for DisabledEvidenceExpansionActor {

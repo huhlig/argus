@@ -51,7 +51,7 @@ pub fn seeded_architecture_fixture() -> SeededArchitectureFixture {
             schema_version: ARCHITECTURE_CORPUS_SCHEMA_VERSION,
             name: "argus-seeded-architecture".to_owned(),
             version: "1.0.0".to_owned(),
-            policy_version: "architecture-code-derived@1".to_owned(),
+            policy_version: "architecture-code-derived@2".to_owned(),
             expected_issues: vec![
                 ExpectedArchitectureIssue {
                     id: "cyclic-dependency".to_owned(),

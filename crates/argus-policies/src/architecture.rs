@@ -121,6 +121,7 @@ impl ArchitectureApplicabilityPolicy {
             ArchitectureVisibility::Private,
             ArchitectureVisibility::Inherited,
             ArchitectureVisibility::Unknown,
+            ArchitectureVisibility::NotApplicable,
         ];
 
         let mut rules = Vec::new();
@@ -347,6 +348,9 @@ pub struct ArchitectureAssessmentBinding {
     pub work_item_id: WorkItemId,
     pub target: TargetId,
     pub scope: ArchitectureScope,
+    pub evidence: BTreeMap<EvidenceId, ArchitectureEvidenceCitation>,
+    pub allowed_targets: BTreeSet<TargetId>,
+    pub constituent_health: ConstituentHealthSummary,
 }
 
 impl ArchitectureAssessmentBinding {
@@ -378,6 +382,33 @@ impl ArchitectureAssessmentBinding {
                     "candidate finding must cite at least one observed code-derived fact",
                 ));
             }
+            let mut seen_citations = BTreeSet::new();
+            for citation in &c.citations {
+                if !seen_citations.insert(&citation.evidence) {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "architecture candidate repeats an evidence citation",
+                    ));
+                }
+                let trusted = self.evidence.get(&citation.evidence).ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input(
+                        "architecture candidate cites evidence outside the trusted package",
+                    )
+                })?;
+                if citation.kind != trusted.kind || citation.location != trusted.location {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "architecture candidate citation metadata does not match trusted evidence",
+                    ));
+                }
+                if citation
+                    .related_targets
+                    .iter()
+                    .any(|target| !self.allowed_targets.contains(target))
+                {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "architecture candidate citation references a target outside its trusted scope",
+                    ));
+                }
+            }
             candidates.push(ArchitectureCandidate {
                 id: c.id,
                 severity: c.severity,
@@ -393,7 +424,7 @@ impl ArchitectureAssessmentBinding {
             });
         }
 
-        Ok(ArchitectureAssessment {
+        let assessment = ArchitectureAssessment {
             schema_version: ARCHITECTURE_ASSESSMENT_SCHEMA_VERSION,
             policy_id: self.policy_id.clone(),
             work_item_id: self.work_item_id.clone(),
@@ -404,10 +435,123 @@ impl ArchitectureAssessmentBinding {
                 dimensions,
                 summary: draft.result.summary,
                 candidates,
-                constituent_health: draft.result.constituent_health,
+                constituent_health: self.constituent_health,
             },
-        })
+        };
+        assessment.validate()?;
+        Ok(assessment)
     }
+}
+
+impl ArchitectureAssessment {
+    pub fn validate(&self) -> Result<(), argus_core::ArgusError> {
+        if self.schema_version != ARCHITECTURE_ASSESSMENT_SCHEMA_VERSION {
+            return Err(argus_core::ArgusError::invalid_input(
+                "unsupported architecture assessment schema",
+            ));
+        }
+        validate_architecture_text("architecture summary", &self.result.summary)?;
+        if self
+            .result
+            .dimensions
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            != BTreeSet::from(ALL_ARCHITECTURE_DIMENSIONS)
+        {
+            return Err(argus_core::ArgusError::invalid_input(
+                "architecture assessment must account for every rubric dimension",
+            ));
+        }
+        for result in self.result.dimensions.values() {
+            validate_architecture_text("architecture dimension rationale", &result.rationale)?;
+            for observation in &result.observations {
+                validate_architecture_text("architecture observation", observation)?;
+            }
+        }
+
+        let deficient = self
+            .result
+            .dimensions
+            .iter()
+            .filter(|(_, result)| result.status == ArchitectureDimensionStatus::Deficient)
+            .map(|(dimension, _)| *dimension)
+            .collect::<BTreeSet<_>>();
+        let unable_to_verify = self
+            .result
+            .dimensions
+            .values()
+            .filter(|result| result.status == ArchitectureDimensionStatus::UnableToVerify)
+            .count();
+
+        match self.result.status {
+            ArchitectureResultStatus::Pass => {
+                if !deficient.is_empty()
+                    || unable_to_verify != 0
+                    || !self.result.candidates.is_empty()
+                {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "architecture pass requires resolved non-deficient dimensions and no candidates",
+                    ));
+                }
+            }
+            ArchitectureResultStatus::Deficient => {
+                if deficient.is_empty() || self.result.candidates.is_empty() {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "deficient architecture result requires a deficient dimension and candidate",
+                    ));
+                }
+            }
+            ArchitectureResultStatus::UnableToVerify => {
+                if unable_to_verify == 0
+                    || !deficient.is_empty()
+                    || !self.result.candidates.is_empty()
+                {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "unable-to-verify architecture result requires unresolved dimensions and no candidates",
+                    ));
+                }
+            }
+        }
+
+        let mut candidate_ids = BTreeSet::new();
+        for candidate in &self.result.candidates {
+            validate_architecture_text("architecture candidate ID", &candidate.id)?;
+            validate_architecture_text(
+                "architecture candidate explanation",
+                &candidate.explanation,
+            )?;
+            if !candidate_ids.insert(&candidate.id)
+                || candidate.dimensions.is_empty()
+                || candidate
+                    .dimensions
+                    .iter()
+                    .any(|dimension| !deficient.contains(dimension))
+                || candidate.citations.is_empty()
+                || candidate.observed_facts.is_empty()
+            {
+                return Err(argus_core::ArgusError::invalid_input(
+                    "architecture candidates must be unique, evidenced, and limited to deficient dimensions",
+                ));
+            }
+            for fact in &candidate.observed_facts {
+                validate_architecture_text("observed architecture fact", fact)?;
+            }
+            if let Some(intent) = &candidate.inferred_intent {
+                validate_architecture_text("inferred architecture intent", intent)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_architecture_text(name: &str, value: &str) -> Result<(), argus_core::ArgusError> {
+    if value.trim().is_empty() || value.trim() != value {
+        return Err(argus_core::ArgusError::invalid_input(format!(
+            "{name} must be non-empty normalized text"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -462,24 +606,57 @@ mod tests {
 
     #[test]
     fn binding_draft_produces_valid_assessment_with_distinguished_facts_and_intent() {
+        let evidence_id = EvidenceId::derive([b"architecture-graph".as_slice()]);
+        let citation = ArchitectureEvidenceCitation {
+            evidence: evidence_id.clone(),
+            kind: EvidenceKind::ArchitectureGraph,
+            location: None,
+            related_targets: Vec::new(),
+        };
         let binding = ArchitectureAssessmentBinding {
-            policy_id: PolicyId::derive([b"architecture-code-derived@1".as_slice()]),
+            policy_id: PolicyId::derive([b"architecture-code-derived@2".as_slice()]),
             work_item_id: WorkItemId::derive([b"work-1".as_slice()]),
             target: TargetId::derive([b"crate::module".as_slice()]),
             scope: ArchitectureScope::Module,
+            evidence: BTreeMap::from([(evidence_id, citation.clone())]),
+            allowed_targets: BTreeSet::new(),
+            constituent_health: ConstituentHealthSummary {
+                total_constituents: 10,
+                succeeded_constituents: 9,
+                failed_constituents: 0,
+                unable_to_verify_constituents: 1,
+            },
         };
 
         let draft = ArchitectureAssessmentDraft {
             result: ArchitectureResultDraft {
                 status: ArchitectureResultStatus::Deficient,
-                dimensions: BTreeMap::from([(
-                    ArchitectureDimension::DependencyStructure,
-                    ArchitectureDimensionDraft {
-                        status: ArchitectureDimensionStatus::Deficient,
-                        observations: vec!["Layering violation: calls upstream UI".to_owned()],
-                        rationale: "Domain layer must not depend on UI presentation".to_owned(),
-                    },
-                )]),
+                dimensions: ALL_ARCHITECTURE_DIMENSIONS
+                    .into_iter()
+                    .map(|dimension| {
+                        let deficient = dimension == ArchitectureDimension::DependencyStructure;
+                        (
+                            dimension,
+                            ArchitectureDimensionDraft {
+                                status: if deficient {
+                                    ArchitectureDimensionStatus::Deficient
+                                } else {
+                                    ArchitectureDimensionStatus::Satisfied
+                                },
+                                observations: vec![if deficient {
+                                    "Layering violation: calls upstream UI".to_owned()
+                                } else {
+                                    format!("{dimension:?} is satisfied")
+                                }],
+                                rationale: if deficient {
+                                    "Domain layer must not depend on UI presentation".to_owned()
+                                } else {
+                                    format!("No {dimension:?} deficiency was observed")
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
                 summary: "Module violates clean layering architecture".to_owned(),
                 candidates: vec![ArchitectureCandidateDraft {
                     id: "layering-violation-1".to_owned(),
@@ -488,7 +665,7 @@ mod tests {
                     dimensions: BTreeSet::from([ArchitectureDimension::DependencyStructure]),
                     confidence: Confidence::from_basis_points(9500).unwrap(),
                     explanation: "Direct dependency on presentation layer".to_owned(),
-                    citations: vec![],
+                    citations: vec![citation],
                     observed_facts: vec!["rust:calls edge from storage to ui".to_owned()],
                     inferred_intent: Some("Intended to decouple backend from UI".to_owned()),
                 }],
@@ -510,5 +687,16 @@ mod tests {
         );
         assert_eq!(assessment.result.constituent_health.total_constituents, 10);
         let _hash = assessment.content_hash();
+
+        let mut incomplete = assessment.clone();
+        incomplete
+            .result
+            .dimensions
+            .remove(&ArchitectureDimension::Cycles);
+        assert!(incomplete.validate().is_err());
+
+        let mut inconsistent_pass = assessment;
+        inconsistent_pass.result.status = ArchitectureResultStatus::Pass;
+        assert!(inconsistent_pass.validate().is_err());
     }
 }

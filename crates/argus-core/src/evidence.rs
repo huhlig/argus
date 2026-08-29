@@ -25,6 +25,7 @@ pub enum EvidenceKind {
     StaticAnalysis,
     CompilerDiagnostic,
     RuntimeMetric,
+    ArchitectureGraph,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
