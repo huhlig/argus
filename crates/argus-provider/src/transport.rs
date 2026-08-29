@@ -95,7 +95,11 @@ impl LangchartModelProvider {
                 "provider request timeout must be positive".to_owned(),
             ));
         }
-        builder = builder.timeout(Duration::from_secs(seconds));
+        let timeout = Duration::from_secs(seconds);
+        builder = builder
+            .timeout(timeout)
+            .first_byte_timeout(timeout)
+            .stream_idle_timeout(timeout);
         let adapter = builder
             .build()
             .map_err(|error| ProviderError::InvalidProfile(error.to_string()))?;
@@ -518,6 +522,7 @@ mod tests {
             finish_reason: FinishReason::Stop,
             refusal: None,
             model: model.to_owned(),
+            reported_model: None,
         }
     }
 

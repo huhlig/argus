@@ -605,6 +605,7 @@ mod tests {
                 finish_reason: FinishReason::Stop,
                 refusal: None,
                 model: "pinned".to_owned(),
+                reported_model: None,
             })
         }
     }
