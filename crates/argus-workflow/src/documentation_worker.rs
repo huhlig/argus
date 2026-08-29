@@ -26,6 +26,10 @@ use langchart_adapters::{
     checkpoint::CheckpointStore,
     context::{ContextError, ContextItem, ContextResolver, ContextView},
     event::EventSink,
+    llm::LlmAdapter,
+    mcp::McpAdapter,
+    memory::MemoryAdapter,
+    secrets::SecretsAdapter,
 };
 use langchart_model::{
     id::{RunId, StateId},
@@ -43,9 +47,25 @@ use tokio::time::{Duration, Instant};
 #[derive(Clone)]
 pub struct DocumentationWorkerRuntime {
     pub executor: Arc<ProviderExecutor>,
-    pub broker: Arc<langchart_runtime::CapabilityBroker>,
+    pub llm: Arc<dyn LlmAdapter>,
+    pub mcp: Arc<dyn McpAdapter>,
+    pub memory: Arc<dyn MemoryAdapter>,
+    pub secrets: Arc<dyn SecretsAdapter>,
     pub event_sink: Arc<dyn EventSink>,
     pub failure_diagnostics: Arc<WorkflowFailureDiagnostics>,
+}
+
+impl DocumentationWorkerRuntime {
+    #[must_use]
+    pub fn create_broker(&self) -> Arc<langchart_runtime::CapabilityBroker> {
+        Arc::new(langchart_runtime::CapabilityBroker::new(
+            self.llm.clone(),
+            self.mcp.clone(),
+            self.memory.clone(),
+            self.secrets.clone(),
+            self.event_sink.clone(),
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -239,7 +259,7 @@ impl DocumentationWorker {
         let mut instance = WorkflowInstance::new(
             langchart_run_id,
             prepared.compiled,
-            self.runtime.broker.clone(),
+            self.runtime.create_broker(),
             self.runtime.event_sink.clone(),
             prepared.actors,
         )
@@ -586,16 +606,16 @@ mod tests {
     }
 
     struct StaticLlm {
-        response: String,
+        responder: Arc<dyn Fn(&LlmRequest) -> String + Send + Sync>,
         delay_millis: u64,
     }
 
     #[async_trait]
     impl LlmAdapter for StaticLlm {
-        async fn complete(&self, _request: LlmRequest) -> Result<LlmResponse, LlmError> {
+        async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
             tokio::time::sleep(Duration::from_millis(self.delay_millis)).await;
             Ok(LlmResponse {
-                content: Some(self.response.clone()),
+                content: Some((self.responder)(&request)),
                 tool_calls: Vec::new(),
                 usage: TokenUsage {
                     prompt_tokens: 100,
@@ -729,6 +749,19 @@ mod tests {
             capabilities: Vec::new(),
             diagnostic: None,
         };
+        let target2 = Target {
+            id: TargetId::derive([b"worker-target-2".as_slice()]),
+            kind: TargetKind::Portable {
+                kind: PortableTargetKind::Callable,
+            },
+            visibility: TargetVisibility::Public,
+            name: "documented_api_2".to_owned(),
+            parent: None,
+            location: None,
+            inventory: InventoryState::Represented,
+            capabilities: Vec::new(),
+            diagnostic: None,
+        };
         let evidence_id = EvidenceId::derive([b"worker-documentation".as_slice()]);
         let evidence = EvidenceRecord {
             id: evidence_id.clone(),
@@ -763,7 +796,42 @@ mod tests {
                 resolution: ResolutionQuality::Exact,
             },
         };
-        let evidence_records = vec![evidence, source_evidence];
+        let evidence_id2 = EvidenceId::derive([b"worker-documentation-2".as_slice()]);
+        let evidence2 = EvidenceRecord {
+            id: evidence_id2.clone(),
+            kind: EvidenceKind::Documentation,
+            origin: EvidenceOrigin::Direct,
+            target: Some(target2.id.clone()),
+            location: None,
+            summary: "The public API 2 is documented.".to_owned(),
+            detail: Some("Performs the documented operation.".to_owned()),
+            provenance: EvidenceProvenance {
+                provider: "fixture".to_owned(),
+                provider_version: "1".to_owned(),
+                configuration: configuration.clone(),
+                ingest_only: true,
+                resolution: ResolutionQuality::Exact,
+            },
+        };
+        let source_evidence_id2 = EvidenceId::derive([b"worker-source-2".as_slice()]);
+        let source_evidence2 = EvidenceRecord {
+            id: source_evidence_id2.clone(),
+            kind: EvidenceKind::Source,
+            origin: EvidenceOrigin::Direct,
+            target: Some(target2.id.clone()),
+            location: None,
+            summary: "The public API 2 implementation.".to_owned(),
+            detail: Some("Performs the documented operation.".to_owned()),
+            provenance: EvidenceProvenance {
+                provider: "fixture".to_owned(),
+                provider_version: "1".to_owned(),
+                configuration: configuration.clone(),
+                ingest_only: true,
+                resolution: ResolutionQuality::Exact,
+            },
+        };
+        let targets = vec![target, target2.clone()];
+        let evidence_records = vec![evidence, source_evidence, evidence2, source_evidence2];
         let policy = argus_policies::DocumentationApplicabilityPolicy::public_api().unwrap();
         let plan = crate::DocumentationReviewPlanner::new(
             &policy,
@@ -774,12 +842,16 @@ mod tests {
         .plan(
             &snapshot,
             &configuration,
-            std::slice::from_ref(&target),
+            &targets,
             &evidence_records,
         )
         .unwrap();
         assert_eq!(
             plan.units[0].applicability.state,
+            ApplicabilityState::Applicable
+        );
+        assert_eq!(
+            plan.units[1].applicability.state,
             ApplicabilityState::Applicable
         );
         let evidence_store = EvidenceStore::open(state.join("evidence")).unwrap();
@@ -825,9 +897,41 @@ mod tests {
             claims: Vec::new(),
             result: DocumentationResultDraft::Passed,
         };
+        let draft2 = DocumentationAssessmentDraft {
+            dimensions: ALL_DOCUMENTATION_DIMENSIONS
+                .into_iter()
+                .map(|dimension| DocumentationDimensionDraft {
+                    dimension,
+                    documentation_coverage: argus_policies::DocumentationCoverage::Stated,
+                    source_materiality: argus_policies::SourceMateriality::MaterialBehavior,
+                    comparison: argus_policies::DocumentationComparison::Consistent,
+                    status: DocumentationDimensionStatus::Satisfied,
+                    rationale: "Satisfied by the bounded documentation evidence.".to_owned(),
+                    evidence: vec![evidence_id2.clone(), source_evidence_id2.clone()],
+                })
+                .collect(),
+            claims: Vec::new(),
+            result: DocumentationResultDraft::Passed,
+        };
+        let draft1_json =
+            json!({"event_type":"review.pass", "payload":{"assessment":draft}}).to_string();
+        let draft2_json =
+            json!({"event_type":"review.pass", "payload":{"assessment":draft2}}).to_string();
+        let target2_id_str = target2.id.to_string();
         let llm: Arc<dyn LlmAdapter> = Arc::new(StaticLlm {
-            response: json!({"event_type":"review.pass", "payload":{"assessment":draft}})
-                .to_string(),
+            responder: Arc::new(move |req: &LlmRequest| {
+                let matches_target2 = req.messages.iter().any(|msg| match msg {
+                    langchart_adapters::llm::Message::User { content } => {
+                        content.contains(&target2_id_str)
+                    }
+                    _ => false,
+                });
+                if matches_target2 {
+                    draft2_json.clone()
+                } else {
+                    draft1_json.clone()
+                }
+            }),
             delay_millis: 400,
         });
         let capabilities = capabilities();
@@ -847,20 +951,16 @@ mod tests {
         );
         let sink = Arc::new(CapturingSink::default());
         let captured = sink.clone();
-        let broker = Arc::new(langchart_runtime::CapabilityBroker::new(
-            llm,
-            Arc::new(NoopMcp),
-            Arc::new(NoopMemory),
-            Arc::new(HostMapSecretsAdapter::empty()) as Arc<dyn SecretsAdapter>,
-            sink.clone(),
-        ));
         let workflow_data = Arc::new(WorkflowDataStore::open(&state).unwrap());
         let worker = DocumentationWorker::new(
             queue.clone(),
             workflow_data,
             DocumentationWorkerRuntime {
                 executor,
-                broker,
+                llm,
+                mcp: Arc::new(NoopMcp),
+                memory: Arc::new(NoopMemory),
+                secrets: Arc::new(HostMapSecretsAdapter::empty()) as Arc<dyn SecretsAdapter>,
                 event_sink: sink,
                 failure_diagnostics: Arc::new(WorkflowFailureDiagnostics::default()),
             },
@@ -887,16 +987,25 @@ mod tests {
         )
         .unwrap();
 
-        let result = worker.run_next(3).await.unwrap();
+        let result1 = worker.run_next(3).await.unwrap();
         let events = captured.payloads().await;
         assert!(
-            matches!(result, DocumentationWorkerResult::Succeeded { .. }),
-            "unexpected worker result: {result:?}; events: {events:#?}"
+            matches!(result1, DocumentationWorkerResult::Succeeded { .. }),
+            "unexpected worker result: {result1:?}; events: {events:#?}"
         );
         assert_eq!(queue.status(3).unwrap().succeeded, 1);
         assert!(queue.events().unwrap().iter().any(|event| {
             event.work_id == materialized.unit.work_item && event.kind == QueueEventKind::Heartbeat
         }));
+
+        // Verify sequential multi-item execution on the same worker instance
+        let result2 = worker.run_next(4).await.unwrap();
+        assert!(
+            matches!(result2, DocumentationWorkerResult::Succeeded { .. }),
+            "unexpected second worker result: {result2:?}"
+        );
+        assert_eq!(queue.status(4).unwrap().succeeded, 2);
+
         let invalid_id = WorkItemId::derive([b"invalid-documentation-admission".as_slice()]);
         let coverage = queue
             .get(&materialized.unit.work_item)
@@ -912,16 +1021,16 @@ mod tests {
             ))
             .unwrap();
         assert!(matches!(
-            worker.run_next(4).await.unwrap(),
+            worker.run_next(5).await.unwrap(),
             DocumentationWorkerResult::RetryScheduled { work_id, .. } if work_id == invalid_id
         ));
         assert!(matches!(
-            worker.run_next(5).await.unwrap(),
+            worker.run_next(6).await.unwrap(),
             DocumentationWorkerResult::Failed { work_id, .. } if work_id == invalid_id
         ));
-        assert_eq!(queue.status(5).unwrap().failed, 1);
+        assert_eq!(queue.status(6).unwrap().failed, 1);
         assert_eq!(
-            worker.run_next(6).await.unwrap(),
+            worker.run_next(7).await.unwrap(),
             DocumentationWorkerResult::Idle
         );
     }

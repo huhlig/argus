@@ -210,7 +210,7 @@ impl CorrectnessWorker {
         let mut instance = WorkflowInstance::new(
             langchart_run_id,
             prepared.compiled,
-            self.runtime.broker.clone(),
+            self.runtime.create_broker(),
             self.runtime.event_sink.clone(),
             prepared.actors,
         )

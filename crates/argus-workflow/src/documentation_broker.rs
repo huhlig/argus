@@ -23,7 +23,6 @@ use langchart_adapters::{
     secrets::{HostMapSecretsAdapter, SecretsAdapter},
 };
 use langchart_model::id::{IdempotencyKey, ServerId, ToolName};
-use langchart_runtime::CapabilityBroker;
 use std::sync::Arc;
 
 #[must_use]
@@ -37,13 +36,10 @@ pub fn documentation_worker_runtime(
     });
     DocumentationWorkerRuntime {
         executor,
-        broker: Arc::new(CapabilityBroker::new(
-            llm,
-            Arc::new(DisabledMcp),
-            Arc::new(DisabledMemory),
-            Arc::new(HostMapSecretsAdapter::empty()) as Arc<dyn SecretsAdapter>,
-            sink.clone(),
-        )),
+        llm,
+        mcp: Arc::new(DisabledMcp),
+        memory: Arc::new(DisabledMemory),
+        secrets: Arc::new(HostMapSecretsAdapter::empty()) as Arc<dyn SecretsAdapter>,
         event_sink: sink,
         failure_diagnostics,
     }
