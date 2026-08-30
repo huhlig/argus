@@ -339,25 +339,47 @@ Examples:
 const HELP_PROVIDER: &str = "Manage and discover model provider configurations
 
 Usage:
-  argus provider discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--project <id>] [--project-env <var>] [--output-dir <path>] [--timeout <seconds>]
+  argus provider discover --type <type> [options]
   argus provider list [--dir <path>]
 
 Commands:
   discover   Query a model provider endpoint, discover available models, and generate user provider config
   list       List all installed provider configurations and models in the user folder
 
-Supported Provider Types:
-  bedrock    AWS Bedrock foundation models (default endpoint/region: us-east-1)
-  lemonade   Lemonade OpenAI-compatible server (default endpoint: http://127.0.0.1:13305/v1)
-  ollama     Ollama server (default endpoint: http://127.0.0.1:11434)
-  openai     OpenAI API (default endpoint: https://api.openai.com/v1)
-  anthropic  Anthropic API (default endpoint: https://api.anthropic.com/v1)
-  lm_studio  LM Studio local server (default endpoint: http://127.0.0.1:1234/v1)
-  watsonx    IBM watsonx.ai runtime (default endpoint: https://us-south.ml.cloud.ibm.com)
+Supported Provider Types & Requirements:
+  bedrock    AWS Bedrock foundation models
+             - Endpoint: AWS region (e.g. us-east-1) or custom/mantle URL
+             - Auth: Bearer token (--api-key) or AWS IAM env (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+
+  watsonx    IBM watsonx.ai foundation models
+             - Endpoint: WatsonX.ai URL (default: https://us-south.ml.cloud.ibm.com)
+             - Auth: IBM Cloud IAM API Key (--api-key or --api-key-env WATSONX_API_KEY)
+             - Project: WatsonX Project ID (--project or --project-env WATSONX_PROJECT_ID)
+
+  openai     OpenAI API
+             - Endpoint: https://api.openai.com/v1
+             - Auth: API Key (--api-key or --api-key-env OPENAI_API_KEY)
+
+  anthropic  Anthropic API
+             - Endpoint: https://api.anthropic.com/v1
+             - Auth: API Key (--api-key or --api-key-env ANTHROPIC_API_KEY)
+
+  lemonade   Lemonade OpenAI-compatible gateway / server
+             - Endpoint: http://127.0.0.1:13305/v1 (or custom host/port)
+             - Auth: Optional API Key (--api-key or --api-key-env)
+
+  ollama     Ollama server
+             - Endpoint: http://127.0.0.1:11434 (or custom host/port)
+             - Auth: None required
+
+  lm_studio  LM Studio local server
+             - Endpoint: http://127.0.0.1:1234/v1 (or custom host/port)
+             - Auth: Optional API Key (--api-key or --api-key-env)
 
 Examples:
   argus provider discover --type bedrock --endpoint us-east-1
-  argus provider discover --type watsonx --endpoint https://us-south.ml.cloud.ibm.com --project 015cc44b-...
+  argus provider discover --type bedrock --endpoint https://bedrock-mantle.us-east-1.api.aws/v1 --api-key \"...\"
+  argus provider discover --type watsonx --api-key \"...\" --project \"015cc44b-...\"
   argus provider discover --type lemonade --endpoint http://10.0.0.51:13305/v1
   argus provider discover --type openai --api-key-env OPENAI_API_KEY
   argus provider discover --type anthropic --api-key-env ANTHROPIC_API_KEY
@@ -369,24 +391,56 @@ const HELP_PROVIDER_DISCOVER: &str = "Discover models from a provider and popula
 Usage:
   argus provider discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--project <id>] [--project-env <var>] [--output-dir <path>] [--timeout <seconds>] [--overwrite]
 
-Options:
-  --type, -t <type>          Provider kind: bedrock, lemonade, ollama, openai, anthropic, lm_studio, watsonx (required)
-  --endpoint, -e <url>       Provider API base endpoint URL or region (default depends on provider type)
-  --api-key, -k <key>        Direct API key for discovery request (optional)
+Required Options:
+  --type, -t <type>          Provider kind: bedrock, watsonx, lemonade, ollama, openai, anthropic, lm_studio (required)
+
+General Options:
+  --endpoint, -e <url>       Provider API base endpoint URL or region (defaults to standard endpoint for provider)
+  --api-key, -k <key>        Direct API key / token for discovery and generated configuration
   --api-key-env <var>        Environment variable name containing the API key (e.g. OPENAI_API_KEY, WATSONX_API_KEY)
-  --project, -p <id>         WatsonX project ID (for watsonx.ai provider)
-  --project-env <var>        Environment variable name containing the WatsonX project ID (e.g. WATSONX_PROJECT_ID)
-  --output-dir, -o <path>    Destination directory for generated provider configuration (default: user providers folder)
+  --project, -p <id>         WatsonX project ID (required for watsonx provider)
+  --project-env <var>        Environment variable name containing the WatsonX project ID (default: WATSONX_PROJECT_ID)
+  --output-dir, -o <path>    Destination directory for provider configuration (default: user providers folder)
   --timeout <seconds>        Request timeout in seconds (default: 1800 for lemonade, 30 for discovery)
   --overwrite                Overwrite existing provider configuration instead of merging newly discovered models
 
-Examples:
-  argus provider discover --type bedrock --endpoint us-east-1
-  argus provider discover --type watsonx --endpoint https://us-south.ml.cloud.ibm.com --project 015cc44b-...
-  argus provider discover --type lemonade --endpoint http://10.0.0.51:13305/v1
-  argus provider discover --type openai --api-key-env OPENAI_API_KEY
-  argus provider discover --type anthropic --api-key-env ANTHROPIC_API_KEY
-  argus provider discover --type ollama --endpoint http://127.0.0.1:11434";
+Provider-Specific Requirements:
+  bedrock:
+    - Endpoint: AWS region (e.g. us-east-1) or Mantle/custom gateway URL
+    - Auth: --api-key (bearer token) or AWS IAM environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_BEARER_TOKEN_BEDROCK)
+    - Example: argus provider discover --type bedrock --endpoint us-east-1
+    - Example: argus provider discover --type bedrock --endpoint https://bedrock-mantle.us-east-1.api.aws/v1 --api-key \"...\"
+
+  watsonx:
+    - Endpoint: WatsonX.ai service URL (default: https://us-south.ml.cloud.ibm.com)
+    - Auth: --api-key <iam_key> or --api-key-env WATSONX_API_KEY (automatically exchanges for IBM IAM token)
+    - Project: --project <project_id> or --project-env WATSONX_PROJECT_ID (required)
+    - Example: argus provider discover --type watsonx --api-key \"...\" --project \"015cc44b-...\"
+
+  openai:
+    - Endpoint: https://api.openai.com/v1 (default)
+    - Auth: --api-key <key> or --api-key-env OPENAI_API_KEY (required)
+    - Example: argus provider discover --type openai --api-key-env OPENAI_API_KEY
+
+  anthropic:
+    - Endpoint: https://api.anthropic.com/v1 (default)
+    - Auth: --api-key <key> or --api-key-env ANTHROPIC_API_KEY (required)
+    - Example: argus provider discover --type anthropic --api-key-env ANTHROPIC_API_KEY
+
+  lemonade:
+    - Endpoint: http://127.0.0.1:13305/v1 (or remote host, e.g. http://10.0.0.51:13305/v1)
+    - Auth: Optional --api-key <key> or --api-key-env <var>
+    - Example: argus provider discover --type lemonade --endpoint http://10.0.0.51:13305/v1
+
+  ollama:
+    - Endpoint: http://127.0.0.1:11434 (default)
+    - Auth: None required
+    - Example: argus provider discover --type ollama --endpoint http://127.0.0.1:11434
+
+  lm_studio:
+    - Endpoint: http://127.0.0.1:1234/v1 (default)
+    - Auth: Optional --api-key <key> or --api-key-env <var>
+    - Example: argus provider discover --type lm_studio --endpoint http://127.0.0.1:1234/v1";
 
 const HELP_PROVIDER_LIST: &str = "List installed provider configurations and models
 
