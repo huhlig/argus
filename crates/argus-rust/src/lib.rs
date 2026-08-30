@@ -17,6 +17,7 @@
 mod cargo;
 mod diagnostics;
 mod execution;
+mod native_relationships;
 mod relationships;
 mod rustdoc;
 mod syntax;
@@ -30,6 +31,7 @@ pub use execution::{
     ToolExecutionPolicy, ToolLimits, ToolOutput, ToolRequest, validate_execution_request,
     validate_tool_output,
 };
+pub use native_relationships::{NativeRustRelationshipInventory, NativeRustRelationshipProvider};
 pub use relationships::{
     RejectedRelationship, RustRelationshipInventory, RustRelationshipProvider,
 };

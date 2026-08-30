@@ -32,7 +32,10 @@ intent (`inferred_intent`). Reviews operate across hierarchical scopes:
 
 Architecture work is leased progressively: modules must become terminal before their package, and packages before the
 workspace. Parent contexts contain compact child status, responsibility summary, and candidate counts rather than lower
-review transcripts. Captured semantic relationships can be merged during priming with
+review transcripts. The Rust adapter natively derives conservative `rust:references`, `rust:calls`, and
+`rust:implements` relationships when names resolve uniquely to inventoried targets. These edges are explicitly marked
+`inferred`; ambiguous names are omitted and make the native relationship partition partial. Captured compiler or
+rustdoc relationships can additionally be merged during priming with
 `argus prime --adapter rust --relationships <jsonl>`. The Rust adapter also discovers
 `.argus/input/rust-relations.jsonl` automatically. Malformed, weakly resolved, or unknown-target relations fail closed.
 Scoped graph evidence is cached durably under `.argus/state/architecture-cache`; cache identity includes the target,

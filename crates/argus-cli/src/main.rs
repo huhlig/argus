@@ -5477,7 +5477,7 @@ mod tests {
         std::fs::create_dir_all(temporary.path().join("src")).unwrap();
         std::fs::write(
             temporary.path().join("src/lib.rs"),
-            b"pub mod a { pub fn run() {} }\npub mod b { pub fn run() {} }\n",
+            b"pub mod a { pub fn helper() {} pub fn run() { helper(); } }\npub mod b { pub fn inspect() {} }\n",
         )
         .unwrap();
         let primed = run(
@@ -5491,6 +5491,12 @@ mod tests {
         )
         .unwrap();
         let run_id = primed.split_whitespace().nth(2).unwrap().to_owned();
+        let inventory = load_inventory(temporary.path()).unwrap();
+        assert!(inventory.relations.iter().any(|relation| {
+            relation.kind == "rust:calls"
+                && relation.provenance.provider == "ra_ap_syntax-native-relations"
+                && relation.provenance.resolution == argus_core::ResolutionQuality::Inferred
+        }));
 
         let audit_out = run(
             [
