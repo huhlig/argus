@@ -50,6 +50,7 @@ langchart-adapters = { git = "https://github.com/huhlig/langchart.git" }
 langchart-checkpoint-redb = { git = "https://github.com/huhlig/langchart.git" }
 langchart-llm-generic = { git = "https://github.com/huhlig/langchart.git" }
 langchart-llm-watsonx = { git = "https://github.com/huhlig/langchart.git" }
+langchart-llm-bedrock = { git = "https://github.com/huhlig/langchart.git" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2"
 thiserror = "2"
@@ -58,6 +59,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"]
 metrics = "0.24"
 clap = { version = "4.5", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+aws-config = { version = "1", features = ["behavior-version-latest", "sso", "credentials-process"] }
+json5 = "0.4"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

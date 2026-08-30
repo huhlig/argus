@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::{
-    DataClassification, DeploymentMode, ModelSubstitution, ProviderCapabilities, ProviderError,
-    ProviderIdentity, ProviderPolicy, ProviderRuntimeProfile, ProviderTransportProfile,
-    RepairPolicy, ReviewLimits, StructuredOutputSupport,
-    runtime_profile::PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION,
+    DataClassification, DeploymentMode, ModelSubstitution, ProviderCapabilities, ProviderConfig,
+    ProviderError, ProviderIdentity, ProviderModelConfig, ProviderPolicy, ProviderRuntimeProfile,
+    ProviderTransportProfile, RepairPolicy, ReviewLimits, StructuredOutputSupport,
+    runtime_profile::{PROVIDER_CONFIG_SCHEMA_VERSION, PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION},
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, str::FromStr};
@@ -31,6 +31,7 @@ pub enum DiscoveredProviderKind {
     Openai,
     Anthropic,
     LmStudio,
+    Bedrock,
 }
 
 impl DiscoveredProviderKind {
@@ -42,6 +43,7 @@ impl DiscoveredProviderKind {
             Self::Openai => "openai",
             Self::Anthropic => "anthropic",
             Self::LmStudio => "lm_studio",
+            Self::Bedrock => "bedrock",
         }
     }
 
@@ -53,6 +55,7 @@ impl DiscoveredProviderKind {
             Self::Openai => "https://api.openai.com/v1",
             Self::Anthropic => "https://api.anthropic.com/v1",
             Self::LmStudio => "http://127.0.0.1:1234/v1",
+            Self::Bedrock => "https://bedrock-runtime.us-east-1.amazonaws.com",
         }
     }
 
@@ -61,7 +64,7 @@ impl DiscoveredProviderKind {
         match self {
             Self::Openai => Some("OPENAI_API_KEY"),
             Self::Anthropic => Some("ANTHROPIC_API_KEY"),
-            Self::Lemonade | Self::LmStudio | Self::Ollama => None,
+            Self::Bedrock | Self::Lemonade | Self::LmStudio | Self::Ollama => None,
         }
     }
 }
@@ -77,8 +80,9 @@ impl FromStr for DiscoveredProviderKind {
             "openai" => Ok(Self::Openai),
             "anthropic" => Ok(Self::Anthropic),
             "lm_studio" | "lmstudio" | "lm-studio" => Ok(Self::LmStudio),
+            "bedrock" | "aws_bedrock" | "aws-bedrock" => Ok(Self::Bedrock),
             _ => Err(ProviderError::InvalidProfile(format!(
-                "unsupported provider type `{s}` (supported: lemonade, ollama, openai, anthropic, lm_studio)"
+                "unsupported provider type `{s}` (supported: lemonade, ollama, openai, anthropic, lm_studio, bedrock)"
             ))),
         }
     }
@@ -115,6 +119,16 @@ pub async fn discover_models(
                 )
             })?;
             discover_anthropic_models(&client, endpoint, key).await
+        }
+        DiscoveredProviderKind::Bedrock => {
+            Ok(vec![
+                "anthropic.claude-3-7-sonnet-20250219-v1:0".to_owned(),
+                "anthropic.claude-3-5-sonnet-20241022-v2:0".to_owned(),
+                "anthropic.claude-3-haiku-20240307-v1:0".to_owned(),
+                "amazon.nova-pro-v1:0".to_owned(),
+                "amazon.nova-lite-v1:0".to_owned(),
+                "meta.llama3-3-70b-instruct-v1:0".to_owned(),
+            ])
         }
     }
 }
@@ -373,12 +387,21 @@ pub fn generate_runtime_profile(
         model_version: model_id.to_owned(),
     };
 
+    let structured_output = match kind {
+        DiscoveredProviderKind::Openai => StructuredOutputSupport::SchemaConstrained,
+        DiscoveredProviderKind::Bedrock
+        | DiscoveredProviderKind::Anthropic
+        | DiscoveredProviderKind::Ollama
+        | DiscoveredProviderKind::Lemonade
+        | DiscoveredProviderKind::LmStudio => StructuredOutputSupport::BestEffort,
+    };
+
     let capabilities = ProviderCapabilities {
         identity,
         deployment,
         context_window_tokens: 131_072,
         max_output_tokens: 8_192,
-        structured_output: StructuredOutputSupport::SchemaConstrained,
+        structured_output,
         tool_calling: false,
         concurrency_capacity: 1,
         supported_classifications: BTreeSet::from([DataClassification::Internal]),
@@ -426,6 +449,30 @@ pub fn generate_runtime_profile(
             base_url: Some(endpoint.to_owned()),
             api_key_env,
         },
+        DiscoveredProviderKind::Bedrock => {
+            let region = if endpoint.contains("bedrock-runtime.") {
+                endpoint
+                    .split("bedrock-runtime.")
+                    .nth(1)
+                    .and_then(|s| s.split('.').next())
+                    .unwrap_or("us-east-1")
+                    .to_owned()
+            } else {
+                "us-east-1".to_owned()
+            };
+            ProviderTransportProfile::Bedrock {
+                region,
+                access_key_id_env: None,
+                secret_access_key_env: None,
+                session_token_env: None,
+                endpoint_url: if endpoint == DiscoveredProviderKind::Bedrock.default_endpoint() {
+                    None
+                } else {
+                    Some(endpoint.to_owned())
+                },
+                profile_name: None,
+            }
+        }
     };
 
     let profile = ProviderRuntimeProfile {
@@ -440,6 +487,129 @@ pub fn generate_runtime_profile(
     profile.policy.authorize(&profile.capabilities)?;
 
     Ok(profile)
+}
+
+/// Helper to produce a simplified model alias from a full model ID.
+#[must_use]
+pub fn slugify_model_alias(model_id: &str) -> String {
+    let trimmed = if let Some(stripped) = model_id.strip_prefix("anthropic.") {
+        stripped
+    } else if let Some(stripped) = model_id.strip_prefix("amazon.") {
+        stripped
+    } else if let Some(stripped) = model_id.strip_prefix("meta.") {
+        stripped
+    } else if let Some(stripped) = model_id.strip_prefix("ibm/") {
+        stripped
+    } else {
+        model_id
+    };
+
+    let without_version = if let Some(pos) = trimmed.find("-202") {
+        &trimmed[..pos]
+    } else if let Some(pos) = trimmed.find("-v1:") {
+        &trimmed[..pos]
+    } else if let Some(pos) = trimmed.find(":latest") {
+        &trimmed[..pos]
+    } else {
+        trimmed
+    };
+
+    without_version.to_ascii_lowercase()
+}
+
+/// Builds a complete `ProviderConfig` for a discovered provider and its models.
+pub fn generate_provider_config(
+    kind: DiscoveredProviderKind,
+    endpoint: &str,
+    model_ids: &[String],
+    api_key_env: Option<String>,
+    request_timeout_seconds: Option<u64>,
+) -> Result<ProviderConfig, ProviderError> {
+    let transport = match kind {
+        DiscoveredProviderKind::Lemonade => ProviderTransportProfile::Lemonade {
+            base_url: Some(endpoint.to_owned()),
+            api_key_env,
+            request_timeout_seconds: request_timeout_seconds.or(Some(1800)),
+        },
+        DiscoveredProviderKind::Ollama => ProviderTransportProfile::Ollama {
+            base_url: Some(endpoint.to_owned()),
+        },
+        DiscoveredProviderKind::Openai => ProviderTransportProfile::Openai {
+            api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".to_owned()),
+        },
+        DiscoveredProviderKind::Anthropic => ProviderTransportProfile::Anthropic {
+            api_key_env: api_key_env.unwrap_or_else(|| "ANTHROPIC_API_KEY".to_owned()),
+        },
+        DiscoveredProviderKind::LmStudio => ProviderTransportProfile::LmStudio {
+            base_url: Some(endpoint.to_owned()),
+            api_key_env,
+        },
+        DiscoveredProviderKind::Bedrock => {
+            let region = if endpoint.contains("bedrock-runtime.") {
+                endpoint
+                    .split("bedrock-runtime.")
+                    .nth(1)
+                    .and_then(|s| s.split('.').next())
+                    .unwrap_or("us-east-1")
+                    .to_owned()
+            } else {
+                "us-east-1".to_owned()
+            };
+            ProviderTransportProfile::Bedrock {
+                region,
+                access_key_id_env: None,
+                secret_access_key_env: None,
+                session_token_env: None,
+                endpoint_url: if endpoint == DiscoveredProviderKind::Bedrock.default_endpoint() {
+                    None
+                } else {
+                    Some(endpoint.to_owned())
+                },
+                profile_name: None,
+            }
+        }
+    };
+
+    let deployment = transport.infer_deployment_mode();
+    let default_structured_output = match kind {
+        DiscoveredProviderKind::Openai => StructuredOutputSupport::SchemaConstrained,
+        _ => StructuredOutputSupport::BestEffort,
+    };
+
+    let mut models = std::collections::BTreeMap::new();
+    for (idx, model_id) in model_ids.iter().enumerate() {
+        let mut aliases = Vec::new();
+        if idx == 0 {
+            aliases.push("default".to_owned());
+        }
+        let alias = slugify_model_alias(model_id);
+        if !alias.is_empty()
+            && alias != model_id.to_ascii_lowercase()
+            && !aliases.contains(&alias)
+        {
+            aliases.push(alias);
+        }
+
+        models.insert(
+            model_id.clone(),
+            ProviderModelConfig {
+                context_window_tokens: 131_072,
+                max_output_tokens: 8_192,
+                structured_output: Some(default_structured_output),
+                concurrency_capacity: if deployment == DeploymentMode::Local { 2 } else { 4 },
+                aliases,
+            },
+        );
+    }
+
+    Ok(ProviderConfig {
+        schema_version: PROVIDER_CONFIG_SCHEMA_VERSION,
+        provider: kind.as_str().to_owned(),
+        transport,
+        default_policy: None,
+        default_repair: None,
+        models,
+    })
 }
 
 #[cfg(test)]
@@ -537,7 +707,7 @@ mod tests {
         assert_eq!(profile.capabilities.deployment, DeploymentMode::SameNetwork);
         assert_eq!(
             profile.capabilities.structured_output,
-            StructuredOutputSupport::SchemaConstrained
+            StructuredOutputSupport::BestEffort
         );
         assert!(matches!(
             profile.transport,
@@ -546,5 +716,58 @@ mod tests {
                 ..
             }
         ));
+
+        let bedrock_profile = generate_runtime_profile(
+            DiscoveredProviderKind::Bedrock,
+            "https://bedrock-runtime.us-west-2.amazonaws.com",
+            "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(bedrock_profile.capabilities.identity.provider, "bedrock");
+        assert_eq!(
+            bedrock_profile.capabilities.identity.model,
+            "anthropic.claude-3-7-sonnet-20250219-v1:0"
+        );
+        assert_eq!(
+            bedrock_profile.capabilities.deployment,
+            DeploymentMode::Online
+        );
+        assert!(matches!(
+            bedrock_profile.transport,
+            ProviderTransportProfile::Bedrock { region, .. } if region == "us-west-2"
+        ));
+    }
+
+    #[test]
+    fn generate_provider_config_creates_valid_config_and_aliases() {
+        let models = vec![
+            "anthropic.claude-3-7-sonnet-20250219-v1:0".to_owned(),
+            "anthropic.claude-3-haiku-20240307-v1:0".to_owned(),
+        ];
+        let config = generate_provider_config(
+            DiscoveredProviderKind::Bedrock,
+            "https://bedrock-runtime.us-east-1.amazonaws.com",
+            &models,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.provider, "bedrock");
+        assert_eq!(config.models.len(), 2);
+
+        let sonnet = config.models.get("anthropic.claude-3-7-sonnet-20250219-v1:0").unwrap();
+        assert!(sonnet.aliases.contains(&"default".to_owned()));
+        assert!(sonnet.aliases.contains(&"claude-3-7-sonnet".to_owned()));
+
+        let haiku = config.models.get("anthropic.claude-3-haiku-20240307-v1:0").unwrap();
+        assert!(haiku.aliases.contains(&"claude-3-haiku".to_owned()));
+
+        // Resolve by alias
+        let resolved = config.resolve_runtime_profile(Some("claude-3-haiku")).unwrap();
+        assert_eq!(resolved.capabilities.identity.model, "anthropic.claude-3-haiku-20240307-v1:0");
     }
 }

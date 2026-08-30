@@ -47,8 +47,8 @@ Review, Adjudication & Evaluation:
   evaluate     Measure precision, recall, and stability against a versioned corpus
   finalize     Publish an immutable terminal run bundle to .argus/reviews/
 
-Provider Profiles & Discovery:
-  profile      Discover models from provider endpoints and manage runtime profiles
+Provider Configurations & Discovery:
+  provider     Discover models from provider endpoints and manage provider configurations (alias: profile)
 
 Options:
   -c, --config <path>  Path to project configuration (default: .argus/config/argus.json)
@@ -134,7 +134,7 @@ Examples:
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work [documentation|correctness|architecture|all] [--profile <name-or-path>] [--limit <number> | --no-limit] [--config <path>]
+Usage: argus work [documentation|correctness|architecture|all] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -143,32 +143,25 @@ Description:
 
 Arguments & Options:
   documentation | correctness | architecture | all  Review policy to execute (default: all)
-  --profile <name-or-path>                    Named provider profile (searched in user catalog) or direct path to profile JSON file
+  -p, --provider, --profile <name[:model]>    Provider configuration (e.g. 'bedrock:claude-3-haiku', 'lemonade:default') or path
+  -j, --concurrency, --threads <number>       Number of concurrent review threads/workers (default: provider max concurrency)
   --limit <number>                            Maximum number of work items to process (0 for no limit, default: 1)
   --no-limit                                  Process all pending work items until the queue is empty (alias for --limit 0)
   -c, --config <path>                         Path to project configuration (default: .argus/config/argus.json)
 
-Profile Discovery & Configuration:
-  Profiles define model identity, limits, and transports with environment variable substitution (${VAR} or ${VAR:-default}).
-  For security, named profiles reside strictly in the User/System catalog (not in project repositories):
-    - Windows: %APPDATA%\\argus\\profiles\\<name>.json
-    - Unix/macOS: ~/.config/argus/profiles/<name>.json
-    - Environment: $ARGUS_CONFIG_DIR/profiles/<name>.json
-  Explicit file paths (e.g. `--profile ./my-profile.json`) can also be provided directly.
-
-  Transports supported in profile JSON:
-    - Ollama:    {\"kind\": \"ollama\", \"base_url\": null}
-    - Anthropic: {\"kind\": \"anthropic\", \"api_key_env\": \"ANTHROPIC_API_KEY\"}
-    - OpenAI:    {\"kind\": \"openai\", \"api_key_env\": \"OPENAI_API_KEY\"}
-    - Lemonade:  {\"kind\": \"lemonade\", \"base_url\": null}
-  See docs/provider-profiles.md for full schema details.
+Provider Discovery & Configuration:
+  Providers define transports and all available models with their aliases and capacities.
+  Configurations reside strictly in the User/System directory:
+    - Windows: %APPDATA%\\argus\\providers\\<provider>.json
+    - Unix/macOS: ~/.config/argus/providers/<provider>.json
+    - Environment: $ARGUS_CONFIG_DIR/providers/<provider>.json
 
 Examples:
-  argus work --profile ollama --limit 10
-  argus work --no-limit
-  argus work documentation --profile ollama --no-limit
-  argus work correctness --profile claude-3-7-sonnet --limit 5
-  argus work documentation --profile ./custom-profile.json";
+  argus work --provider bedrock:claude-3-haiku -j 4 --limit 20
+  argus work --provider lemonade:default -j 2 --no-limit
+  argus work --provider bedrock:sonnet --no-limit -j 4
+  argus work documentation --provider ollama:llama3.2 --no-limit
+  argus work correctness --provider bedrock:claude-3-haiku --limit 5";
 
 const HELP_TARGETS: &str = "List or inspect persisted semantic targets from the current inventory
 
@@ -338,61 +331,64 @@ Examples:
   argus evaluate correctness --corpus docs/evaluation/correctness-corpus-v1.json 5c82a1...
   argus evaluate architecture --corpus docs/evaluation/architecture-corpus-v1.json 5c82a1...";
 
-const HELP_PROFILE: &str = "Manage and discover provider runtime profiles
+const HELP_PROVIDER: &str = "Manage and discover model provider configurations
 
 Usage:
-  argus profile discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--prefix <prefix>] [--timeout <seconds>]
-  argus profile list [--dir <path>]
+  argus provider discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--timeout <seconds>]
+  argus provider list [--dir <path>]
 
 Commands:
-  discover   Query a model provider endpoint, discover available models, and generate user catalog profiles
-  list       List all installed provider runtime profiles in the catalog
+  discover   Query a model provider endpoint, discover available models, and generate user provider config
+  list       List all installed provider configurations and models in the user folder
 
 Supported Provider Types:
+  bedrock    AWS Bedrock foundation models (default endpoint/region: us-east-1)
   lemonade   Lemonade OpenAI-compatible server (default endpoint: http://127.0.0.1:13305/v1)
   ollama     Ollama server (default endpoint: http://127.0.0.1:11434)
   openai     OpenAI API (default endpoint: https://api.openai.com/v1)
   anthropic  Anthropic API (default endpoint: https://api.anthropic.com/v1)
   lm_studio  LM Studio local server (default endpoint: http://127.0.0.1:1234/v1)
+  watsonx    IBM watsonx.ai runtime (default endpoint: https://us-south.ml.cloud.ibm.com)
 
 Examples:
-  argus profile discover --type lemonade --endpoint http://10.0.0.51:13305/v1
-  argus profile discover --type openai --api-key-env OPENAI_API_KEY
-  argus profile discover --type anthropic --api-key-env ANTHROPIC_API_KEY
-  argus profile discover --type ollama --endpoint http://127.0.0.1:11434
-  argus profile list";
+  argus provider discover --type bedrock --endpoint us-east-1
+  argus provider discover --type lemonade --endpoint http://10.0.0.51:13305/v1
+  argus provider discover --type openai --api-key-env OPENAI_API_KEY
+  argus provider discover --type anthropic --api-key-env ANTHROPIC_API_KEY
+  argus provider discover --type ollama --endpoint http://127.0.0.1:11434
+  argus provider list";
 
-const HELP_PROFILE_DISCOVER: &str = "Discover models from a provider and populate the profiles catalog
+const HELP_PROVIDER_DISCOVER: &str = "Discover models from a provider and populate the user provider configuration
 
 Usage:
-  argus profile discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--prefix <prefix>] [--timeout <seconds>]
+  argus provider discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--timeout <seconds>]
 
 Options:
-  --type, -t <type>          Provider kind: lemonade, ollama, openai, anthropic, lm_studio (required)
-  --endpoint, -e <url>       Provider API base endpoint URL (default depends on provider type)
+  --type, -t <type>          Provider kind: bedrock, lemonade, ollama, openai, anthropic, lm_studio, watsonx (required)
+  --endpoint, -e <url>       Provider API base endpoint URL or region (default depends on provider type)
   --api-key, -k <key>        Direct API key for discovery request (optional)
   --api-key-env <var>        Environment variable name containing the API key (e.g. OPENAI_API_KEY)
-  --output-dir, -o <path>    Destination directory for generated profiles (default: user catalog)
-  --prefix <prefix>          Custom prefix for profile file names (default: provider type name)
+  --output-dir, -o <path>    Destination directory for generated provider configuration (default: user providers folder)
   --timeout <seconds>        Request timeout in seconds (default: 1800 for lemonade, 30 for discovery)
 
 Examples:
-  argus profile discover --type lemonade --endpoint http://10.0.0.51:13305/v1
-  argus profile discover --type openai --api-key-env OPENAI_API_KEY
-  argus profile discover --type anthropic --api-key-env ANTHROPIC_API_KEY
-  argus profile discover --type ollama --endpoint http://127.0.0.1:11434";
+  argus provider discover --type bedrock --endpoint us-east-1
+  argus provider discover --type lemonade --endpoint http://10.0.0.51:13305/v1
+  argus provider discover --type openai --api-key-env OPENAI_API_KEY
+  argus provider discover --type anthropic --api-key-env ANTHROPIC_API_KEY
+  argus provider discover --type ollama --endpoint http://127.0.0.1:11434";
 
-const HELP_PROFILE_LIST: &str = "List installed provider runtime profiles
+const HELP_PROVIDER_LIST: &str = "List installed provider configurations and models
 
 Usage:
-  argus profile list [--dir <path>]
+  argus provider list [--dir <path>]
 
 Options:
-  --dir, -d <path>   Optional specific directory to search for profile JSON files
+  --dir, -d <path>   Optional specific directory to search for provider JSON files
 
 Examples:
-  argus profile list
-  argus profile list --dir ~/.config/argus/profiles";
+  argus provider list
+  argus provider list --dir ~/.config/argus/providers";
 
 fn is_help_flag(value: Option<&str>) -> bool {
     matches!(value, Some("-h" | "--help" | "help"))
@@ -414,7 +410,7 @@ fn command_help(command: &str) -> Result<String, argus_core::ArgusError> {
         "report" => Ok(HELP_REPORT.to_owned()),
         "adjudicate" => Ok(HELP_ADJUDICATE.to_owned()),
         "evaluate" => Ok(HELP_EVALUATE.to_owned()),
-        "profile" => Ok(HELP_PROFILE.to_owned()),
+        "provider" | "profile" => Ok(HELP_PROVIDER.to_owned()),
         _ => Err(argus_core::ArgusError::invalid_input(format!(
             "unknown help topic `{command}`; run `argus --help` for available commands"
         ))),
@@ -425,6 +421,8 @@ fn command_help(command: &str) -> Result<String, argus_core::ArgusError> {
 pub struct ProjectConfig {
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
 }
 
@@ -432,6 +430,7 @@ impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
             schema_version: 1,
+            default_provider: None,
             default_profile: None,
         }
     }
@@ -568,6 +567,28 @@ where
     Ok(result)
 }
 
+fn provider_catalog_dirs(env_config_dir: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(env_dir) = env_config_dir {
+        dirs.push(env_dir.join("providers"));
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        dirs.push(std::path::PathBuf::from(appdata).join("argus/providers"));
+    }
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        dirs.push(std::path::PathBuf::from(userprofile).join(".config/argus/providers"));
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        dirs.push(std::path::PathBuf::from(xdg).join("argus/providers"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(std::path::PathBuf::from(home).join(".config/argus/providers"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
+    dirs
+}
+
 fn profile_search_candidates_with_env(
     root: &std::path::Path,
     name_or_path: &str,
@@ -654,6 +675,55 @@ fn resolve_provider_profile_with_env(
     name_or_path: &str,
     env_config_dir: Option<&std::path::Path>,
 ) -> Result<(std::path::PathBuf, argus_provider::ProviderRuntimeProfile), argus_core::ArgusError> {
+    let (provider_spec, model_selector) = if let Some((prov, model)) = name_or_path.split_once(':') {
+        (prov.trim(), Some(model.trim()))
+    } else {
+        (name_or_path.trim(), None)
+    };
+
+    // 1. Search providers catalog: providers/<provider_spec>.json
+    let provider_dirs = provider_catalog_dirs(env_config_dir);
+    for dir in &provider_dirs {
+        let provider_path = dir.join(format!("{provider_spec}.json"));
+        if provider_path.is_file() {
+            let bytes = std::fs::read(&provider_path).map_err(|error| {
+                argus_core::ArgusError::new(
+                    argus_core::ErrorCode::Io,
+                    format!("cannot read provider configuration `{}`", provider_path.display()),
+                )
+                .with_source(error)
+            })?;
+            let raw_text = std::str::from_utf8(&bytes).map_err(|error| {
+                argus_core::ArgusError::invalid_input(format!(
+                    "provider configuration `{}` is not valid UTF-8",
+                    provider_path.display()
+                ))
+                .with_source(error)
+            })?;
+            let substituted = substitute_env_vars(raw_text).map_err(|error| {
+                argus_core::ArgusError::invalid_input(format!(
+                    "failed environment substitution in provider configuration `{}`: {error}",
+                    provider_path.display()
+                ))
+            })?;
+            let config: argus_provider::ProviderConfig =
+                serde_json::from_str(&substituted).map_err(|error| {
+                    argus_core::ArgusError::invalid_input(format!(
+                        "provider configuration `{}` is invalid JSON: {error}",
+                        provider_path.display()
+                    ))
+                })?;
+            let profile = config.resolve_runtime_profile(model_selector).map_err(|error| {
+                argus_core::ArgusError::invalid_input(format!(
+                    "cannot resolve model in provider configuration `{}`: {error}",
+                    provider_path.display()
+                ))
+            })?;
+            return Ok((provider_path, profile));
+        }
+    }
+
+    // 2. Search candidates (explicit paths or legacy profile JSON files)
     let candidates = profile_search_candidates_with_env(root, name_or_path, env_config_dir);
     for path in &candidates {
         if path.is_file() {
@@ -677,20 +747,27 @@ fn resolve_provider_profile_with_env(
                     path.display()
                 ))
             })?;
-            let profile: argus_provider::ProviderRuntimeProfile =
-                serde_json::from_str(&substituted).map_err(|error| {
+            if let Ok(config) = serde_json::from_str::<argus_provider::ProviderConfig>(&substituted) {
+                let profile = config.resolve_runtime_profile(model_selector).map_err(|error| {
                     argus_core::ArgusError::invalid_input(format!(
-                        "provider profile `{}` is invalid JSON: {error}",
+                        "cannot resolve model in provider configuration `{}`: {error}",
                         path.display()
                     ))
                 })?;
-            return Ok((path.clone(), profile));
+                return Ok((path.clone(), profile));
+            }
+            if let Ok(profile) = serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted) {
+                return Ok((path.clone(), profile));
+            }
         }
     }
 
     let mut message = format!(
-        "provider runtime profile `{name_or_path}` not found.\nSearched candidate locations:"
+        "provider configuration or profile `{name_or_path}` not found.\nSearched candidate locations:"
     );
+    for dir in &provider_dirs {
+        write!(message, "\n  - {}", dir.join(format!("{provider_spec}.json")).display()).expect("writing to a String cannot fail");
+    }
     for candidate in &candidates {
         write!(message, "\n  - {}", candidate.display()).expect("writing to a String cannot fail");
     }
@@ -795,6 +872,10 @@ pub enum CliCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    Provider {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 fn run(
@@ -867,7 +948,9 @@ fn run(
             adjudicate_command(root, append_config(args).into_iter())
         }
         CliCommand::Evaluate { args } => evaluate_command(root, append_config(args).into_iter()),
-        CliCommand::Profile { args } => profile_command(root, append_config(args).into_iter()),
+        CliCommand::Profile { args } | CliCommand::Provider { args } => {
+            provider_command(root, append_config(args).into_iter())
+        }
     }
 }
 
@@ -1620,7 +1703,7 @@ fn work_command_with_env(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
     }
-    let usage = "usage: argus work [documentation|correctness|architecture|all] [--profile <name-or-path>] [--limit <integer> | --no-limit] [--config <path>]";
+    let usage = "usage: argus work [documentation|correctness|architecture|all] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--config <path>]";
     let mut iter = args.into_iter().peekable();
     let policy_arg = if iter.peek().is_some_and(|a| !a.starts_with('-')) {
         iter.next().map(|arg| arg.to_lowercase())
@@ -1639,11 +1722,12 @@ fn work_command_with_env(
     let mut limit: Option<usize> = Some(1);
     let mut limit_explicit = false;
     let mut no_limit_explicit = false;
+    let mut concurrency_override: Option<usize> = None;
     let mut config_path = None;
 
     while let Some(flag) = iter.next() {
         match flag.as_str() {
-            "--profile" => {
+            "-p" | "--provider" | "--profile" => {
                 profile_name = Some(
                     iter.next()
                         .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?,
@@ -1674,6 +1758,21 @@ fn work_command_with_env(
                 limit_explicit = true;
                 limit = if parsed == 0 { None } else { Some(parsed) };
             }
+            "-j" | "--concurrency" | "-t" | "--threads" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                let parsed = value.parse::<usize>().map_err(|error| {
+                    argus_core::ArgusError::invalid_input("concurrency must be an integer > 0")
+                        .with_source(error)
+                })?;
+                if parsed == 0 {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "concurrency must be greater than zero",
+                    ));
+                }
+                concurrency_override = Some(parsed);
+            }
             "-c" | "--config" => {
                 config_path = Some(
                     iter.next()
@@ -1688,21 +1787,33 @@ fn work_command_with_env(
     let project_config = load_project_config(root, explicit_config)?;
 
     let profile_target = profile_name
+        .or(project_config.default_provider)
         .or(project_config.default_profile)
         .unwrap_or_else(|| "default".to_owned());
 
-    let (_resolved_path, profile) =
+    let (_resolved_path, mut profile) =
         resolve_provider_profile_with_env(root, &profile_target, env_config_dir)?;
+
+    if let Some(concurrency) = concurrency_override {
+        let capacity = profile.capabilities.concurrency_capacity as usize;
+        if concurrency > capacity {
+            return Err(argus_core::ArgusError::invalid_input(format!(
+                "requested concurrency {concurrency} exceeds provider capacity ({capacity})"
+            )));
+        }
+        profile.policy.limits.max_concurrency = concurrency as u32;
+    }
+    let concurrency = profile.policy.limits.max_concurrency as usize;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(io_error("cannot start worker runtime"))?;
     match policy_name {
-        "documentation" => runtime.block_on(execute_documentation_work(root, profile, limit)),
-        "correctness" => runtime.block_on(execute_correctness_work(root, profile, limit)),
-        "architecture" => runtime.block_on(execute_architecture_work(root, profile, limit)),
-        "all" => runtime.block_on(execute_all_work(root, profile, limit)),
+        "documentation" => runtime.block_on(execute_documentation_work(root, profile, limit, concurrency)),
+        "correctness" => runtime.block_on(execute_correctness_work(root, profile, limit, concurrency)),
+        "architecture" => runtime.block_on(execute_architecture_work(root, profile, limit, concurrency)),
+        "all" => runtime.block_on(execute_all_work(root, profile, limit, concurrency)),
         _ => unreachable!(),
     }
 }
@@ -1824,14 +1935,176 @@ fn queue_pending_count(
     Some(pending)
 }
 
+enum WorkerStepResult {
+    Idle,
+    Succeeded {
+        work_id: argus_core::WorkItemId,
+    },
+    RetryScheduled {
+        work_id: argus_core::WorkItemId,
+        error: String,
+    },
+    Failed {
+        work_id: argus_core::WorkItemId,
+        error: String,
+    },
+}
+
+async fn execute_concurrent_worker_pool<W, F, Fut>(
+    category: &'static str,
+    category_title: &'static str,
+    concurrency: usize,
+    limit: Option<usize>,
+    provider_id: &str,
+    model_id: &str,
+    queue: std::sync::Arc<argus_storage::DurableQueue>,
+    run_id: &argus_core::RunId,
+    worker: std::sync::Arc<W>,
+    step_runner: F,
+) -> Result<String, argus_core::ArgusError>
+where
+    W: Send + Sync + 'static,
+    F: Fn(std::sync::Arc<W>) -> Fut + Send + Sync + Clone + 'static,
+    Fut: std::future::Future<Output = Result<WorkerStepResult, argus_core::ArgusError>> + Send,
+{
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let dispatched = std::sync::Arc::new(AtomicUsize::new(0));
+    let succeeded = std::sync::Arc::new(AtomicUsize::new(0));
+    let retries = std::sync::Arc::new(AtomicUsize::new(0));
+    let failed = std::sync::Arc::new(AtomicUsize::new(0));
+    let is_idle = std::sync::Arc::new(AtomicBool::new(false));
+
+    let pool_size = concurrency.max(1);
+    let mut join_set = tokio::task::JoinSet::new();
+
+    for _ in 0..pool_size {
+        let dispatched = dispatched.clone();
+        let succeeded = succeeded.clone();
+        let retries = retries.clone();
+        let failed = failed.clone();
+        let is_idle = is_idle.clone();
+        let queue = queue.clone();
+        let run_id = run_id.clone();
+        let worker = worker.clone();
+        let step_runner = step_runner.clone();
+        let provider_id = provider_id.to_owned();
+        let model_id = model_id.to_owned();
+
+        join_set.spawn(async move {
+            loop {
+                if is_idle.load(Ordering::Relaxed) {
+                    break;
+                }
+                let item_index = dispatched.fetch_add(1, Ordering::SeqCst);
+                if let Some(l) = limit {
+                    if item_index >= l {
+                        break;
+                    }
+                }
+
+                let remaining = queue_pending_count(&queue, &run_id, category);
+                let worker_clone = worker.clone();
+                let runner_clone = step_runner.clone();
+
+                let step_res = run_worker_step(
+                    category,
+                    item_index,
+                    limit,
+                    &provider_id,
+                    &model_id,
+                    remaining,
+                    || async move { runner_clone(worker_clone).await },
+                )
+                .await;
+
+                let (result, duration) = match step_res {
+                    Ok(r) => r,
+                    Err(err) => return Err(err),
+                };
+
+                let item_label = limit.map_or_else(
+                    || format!("{}", item_index + 1),
+                    |l| format!("{}/{}", item_index + 1, l),
+                );
+
+                match result {
+                    WorkerStepResult::Idle => {
+                        is_idle.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    WorkerStepResult::Succeeded { work_id } => {
+                        succeeded.fetch_add(1, Ordering::SeqCst);
+                        metrics::counter!("argus.worker.succeeded", "policy" => category)
+                            .increment(1);
+                        tracing::info!(
+                            policy = category,
+                            work_id = %work_id,
+                            duration_secs = duration.as_secs_f64(),
+                            "[{category}] Item {item_label} ({work_id}) Succeeded in {:.1}s",
+                            duration.as_secs_f64()
+                        );
+                    }
+                    WorkerStepResult::RetryScheduled { work_id, error } => {
+                        retries.fetch_add(1, Ordering::SeqCst);
+                        metrics::counter!("argus.worker.retries", "policy" => category).increment(1);
+                        tracing::warn!(
+                            policy = category,
+                            work_id = %work_id,
+                            error = %error,
+                            duration_secs = duration.as_secs_f64(),
+                            "[{category}] Item {item_label} ({work_id}) RetryScheduled in {:.1}s: {error}",
+                            duration.as_secs_f64()
+                        );
+                    }
+                    WorkerStepResult::Failed { work_id, error } => {
+                        failed.fetch_add(1, Ordering::SeqCst);
+                        metrics::counter!("argus.worker.failed", "policy" => category).increment(1);
+                        tracing::error!(
+                            policy = category,
+                            work_id = %work_id,
+                            error = %error,
+                            duration_secs = duration.as_secs_f64(),
+                            "[{category}] Item {item_label} ({work_id}) Failed in {:.1}s: {error}",
+                            duration.as_secs_f64()
+                        );
+                    }
+                }
+            }
+            Ok::<(), argus_core::ArgusError>(())
+        });
+    }
+
+    while let Some(task_res) = join_set.join_next().await {
+        match task_res {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => return Err(err),
+            Err(join_err) => {
+                return Err(argus_core::ArgusError::invariant(format!(
+                    "worker task panicked or aborted: {join_err}"
+                )));
+            }
+        }
+    }
+
+    Ok(format_work_summary(
+        category_title,
+        succeeded.load(Ordering::SeqCst),
+        retries.load(Ordering::SeqCst),
+        failed.load(Ordering::SeqCst),
+        limit,
+    ))
+}
+
 async fn execute_all_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
     limit: Option<usize>,
+    concurrency: usize,
 ) -> Result<String, argus_core::ArgusError> {
-    let doc_res = execute_documentation_work(root, profile.clone(), limit).await?;
-    let corr_res = execute_correctness_work(root, profile.clone(), limit).await?;
-    let arch_res = execute_architecture_work(root, profile, limit).await?;
+    let doc_res = execute_documentation_work(root, profile.clone(), limit, concurrency).await?;
+    let corr_res = execute_correctness_work(root, profile.clone(), limit, concurrency).await?;
+    let arch_res = execute_architecture_work(root, profile, limit, concurrency).await?;
     Ok(format!("{doc_res}\n{corr_res}\n{arch_res}"))
 }
 
@@ -1856,6 +2129,7 @@ async fn execute_documentation_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
     limit: Option<usize>,
+    concurrency: usize,
 ) -> Result<String, argus_core::ArgusError> {
     let queue = std::sync::Arc::new(working_queue(root)?);
     let run_id = current_run(root)?;
@@ -1898,7 +2172,7 @@ async fn execute_documentation_work(
     );
     let provider_identity = profile.capabilities.identity.clone();
     let max_output_tokens = profile.capabilities.max_output_tokens;
-    let worker = argus_workflow::DocumentationWorker::new(
+    let worker = std::sync::Arc::new(argus_workflow::DocumentationWorker::new(
         queue.clone(),
         workflow_data,
         argus_workflow::documentation_worker_runtime(executor, built.adapter),
@@ -1922,74 +2196,34 @@ async fn execute_documentation_work(
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
         },
-    )?;
-    let mut succeeded = 0_usize;
-    let mut retries = 0_usize;
-    let mut failed = 0_usize;
-    let provider_id = provider_identity.provider;
-    let model_id = provider_identity.model;
+    )?);
 
-    let mut i = 0_usize;
-    while limit.map_or(true, |l| i < l) {
-        let remaining = queue_pending_count(&queue, &run_id, "documentation");
-        let (result, duration) = run_worker_step(
-            "documentation",
-            i,
-            limit,
-            &provider_id,
-            &model_id,
-            remaining,
-            || async { worker.run_next(now_millis()?).await },
-        )
-        .await?;
-
-        let item_label = limit.map_or_else(
-            || format!("{}", i + 1),
-            |l| format!("{}/{}", i + 1, l),
-        );
-
-        match result {
-            argus_workflow::DocumentationWorkerResult::Idle => break,
-            argus_workflow::DocumentationWorkerResult::Succeeded { work_id } => {
-                succeeded += 1;
-                metrics::counter!("argus.worker.succeeded", "policy" => "documentation")
-                    .increment(1);
-                tracing::info!(
-                    policy = "documentation",
-                    work_id = %work_id,
-                    duration_secs = duration.as_secs_f64(),
-                    "[documentation] Item {item_label} ({work_id}) Succeeded in {:.1}s",
-                    duration.as_secs_f64()
-                );
+    execute_concurrent_worker_pool(
+        "documentation",
+        "Documentation",
+        concurrency,
+        limit,
+        &provider_identity.provider,
+        &provider_identity.model,
+        queue,
+        &run_id,
+        worker,
+        |w| async move {
+            match w.run_next(now_millis()?).await? {
+                argus_workflow::DocumentationWorkerResult::Idle => Ok(WorkerStepResult::Idle),
+                argus_workflow::DocumentationWorkerResult::Succeeded { work_id } => {
+                    Ok(WorkerStepResult::Succeeded { work_id })
+                }
+                argus_workflow::DocumentationWorkerResult::RetryScheduled { work_id, error } => {
+                    Ok(WorkerStepResult::RetryScheduled { work_id, error })
+                }
+                argus_workflow::DocumentationWorkerResult::Failed { work_id, error } => {
+                    Ok(WorkerStepResult::Failed { work_id, error })
+                }
             }
-            argus_workflow::DocumentationWorkerResult::RetryScheduled { work_id, error } => {
-                retries += 1;
-                metrics::counter!("argus.worker.retries", "policy" => "documentation").increment(1);
-                tracing::warn!(
-                    policy = "documentation",
-                    work_id = %work_id,
-                    error = %error,
-                    duration_secs = duration.as_secs_f64(),
-                    "[documentation] Item {item_label} ({work_id}) RetryScheduled in {:.1}s: {error}",
-                    duration.as_secs_f64()
-                );
-            }
-            argus_workflow::DocumentationWorkerResult::Failed { work_id, error } => {
-                failed += 1;
-                metrics::counter!("argus.worker.failed", "policy" => "documentation").increment(1);
-                tracing::error!(
-                    policy = "documentation",
-                    work_id = %work_id,
-                    error = %error,
-                    duration_secs = duration.as_secs_f64(),
-                    "[documentation] Item {item_label} ({work_id}) Failed in {:.1}s: {error}",
-                    duration.as_secs_f64()
-                );
-            }
-        }
-        i += 1;
-    }
-    Ok(format_work_summary("Documentation", succeeded, retries, failed, limit))
+        },
+    )
+    .await
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1997,6 +2231,7 @@ async fn execute_correctness_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
     limit: Option<usize>,
+    concurrency: usize,
 ) -> Result<String, argus_core::ArgusError> {
     let queue = std::sync::Arc::new(working_queue(root)?);
     let run_id = current_run(root)?;
@@ -2039,7 +2274,7 @@ async fn execute_correctness_work(
     );
     let provider_identity = profile.capabilities.identity.clone();
     let max_output_tokens = profile.capabilities.max_output_tokens;
-    let worker = argus_workflow::CorrectnessWorker::new(
+    let worker = std::sync::Arc::new(argus_workflow::CorrectnessWorker::new(
         queue.clone(),
         workflow_data,
         argus_workflow::documentation_worker_runtime(executor, built.adapter),
@@ -2063,73 +2298,34 @@ async fn execute_correctness_work(
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
         },
-    )?;
-    let mut succeeded = 0_usize;
-    let mut retries = 0_usize;
-    let mut failed = 0_usize;
-    let provider_id = provider_identity.provider;
-    let model_id = provider_identity.model;
+    )?);
 
-    let mut i = 0_usize;
-    while limit.map_or(true, |l| i < l) {
-        let remaining = queue_pending_count(&queue, &run_id, "correctness");
-        let (result, duration) = run_worker_step(
-            "correctness",
-            i,
-            limit,
-            &provider_id,
-            &model_id,
-            remaining,
-            || async { worker.run_next(now_millis()?).await },
-        )
-        .await?;
-
-        let item_label = limit.map_or_else(
-            || format!("{}", i + 1),
-            |l| format!("{}/{}", i + 1, l),
-        );
-
-        match result {
-            argus_workflow::CorrectnessWorkerResult::Idle => break,
-            argus_workflow::CorrectnessWorkerResult::Succeeded { work_id } => {
-                succeeded += 1;
-                metrics::counter!("argus.worker.succeeded", "policy" => "correctness").increment(1);
-                tracing::info!(
-                    policy = "correctness",
-                    work_id = %work_id,
-                    duration_secs = duration.as_secs_f64(),
-                    "[correctness] Item {item_label} ({work_id}) Succeeded in {:.1}s",
-                    duration.as_secs_f64()
-                );
+    execute_concurrent_worker_pool(
+        "correctness",
+        "Correctness",
+        concurrency,
+        limit,
+        &provider_identity.provider,
+        &provider_identity.model,
+        queue,
+        &run_id,
+        worker,
+        |w| async move {
+            match w.run_next(now_millis()?).await? {
+                argus_workflow::CorrectnessWorkerResult::Idle => Ok(WorkerStepResult::Idle),
+                argus_workflow::CorrectnessWorkerResult::Succeeded { work_id } => {
+                    Ok(WorkerStepResult::Succeeded { work_id })
+                }
+                argus_workflow::CorrectnessWorkerResult::RetryScheduled { work_id, error } => {
+                    Ok(WorkerStepResult::RetryScheduled { work_id, error })
+                }
+                argus_workflow::CorrectnessWorkerResult::Failed { work_id, error } => {
+                    Ok(WorkerStepResult::Failed { work_id, error })
+                }
             }
-            argus_workflow::CorrectnessWorkerResult::RetryScheduled { work_id, error } => {
-                retries += 1;
-                metrics::counter!("argus.worker.retries", "policy" => "correctness").increment(1);
-                tracing::warn!(
-                    policy = "correctness",
-                    work_id = %work_id,
-                    error = %error,
-                    duration_secs = duration.as_secs_f64(),
-                    "[correctness] Item {item_label} ({work_id}) RetryScheduled in {:.1}s: {error}",
-                    duration.as_secs_f64()
-                );
-            }
-            argus_workflow::CorrectnessWorkerResult::Failed { work_id, error } => {
-                failed += 1;
-                metrics::counter!("argus.worker.failed", "policy" => "correctness").increment(1);
-                tracing::error!(
-                    policy = "correctness",
-                    work_id = %work_id,
-                    error = %error,
-                    duration_secs = duration.as_secs_f64(),
-                    "[correctness] Item {item_label} ({work_id}) Failed in {:.1}s: {error}",
-                    duration.as_secs_f64()
-                );
-            }
-        }
-        i += 1;
-    }
-    Ok(format_work_summary("Correctness", succeeded, retries, failed, limit))
+        },
+    )
+    .await
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2137,6 +2333,7 @@ async fn execute_architecture_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
     limit: Option<usize>,
+    concurrency: usize,
 ) -> Result<String, argus_core::ArgusError> {
     let queue = std::sync::Arc::new(working_queue(root)?);
     let run_id = current_run(root)?;
@@ -2179,7 +2376,7 @@ async fn execute_architecture_work(
     );
     let provider_identity = profile.capabilities.identity.clone();
     let max_output_tokens = profile.capabilities.max_output_tokens;
-    let worker = argus_workflow::ArchitectureWorker::new(
+    let worker = std::sync::Arc::new(argus_workflow::ArchitectureWorker::new(
         queue.clone(),
         workflow_data,
         argus_workflow::documentation_worker_runtime(executor, built.adapter),
@@ -2203,74 +2400,34 @@ async fn execute_architecture_work(
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
         },
-    )?;
-    let mut succeeded = 0_usize;
-    let mut retries = 0_usize;
-    let mut failed = 0_usize;
-    let provider_id = provider_identity.provider;
-    let model_id = provider_identity.model;
+    )?);
 
-    let mut i = 0_usize;
-    while limit.map_or(true, |l| i < l) {
-        let remaining = queue_pending_count(&queue, &run_id, "architecture");
-        let (result, duration) = run_worker_step(
-            "architecture",
-            i,
-            limit,
-            &provider_id,
-            &model_id,
-            remaining,
-            || async { worker.run_next(now_millis()?).await },
-        )
-        .await?;
-
-        let item_label = limit.map_or_else(
-            || format!("{}", i + 1),
-            |l| format!("{}/{}", i + 1, l),
-        );
-
-        match result {
-            argus_workflow::ArchitectureWorkerResult::Idle => break,
-            argus_workflow::ArchitectureWorkerResult::Succeeded { work_id } => {
-                succeeded += 1;
-                metrics::counter!("argus.worker.succeeded", "policy" => "architecture")
-                    .increment(1);
-                tracing::info!(
-                    policy = "architecture",
-                    work_id = %work_id,
-                    duration_secs = duration.as_secs_f64(),
-                    "[architecture] Item {item_label} ({work_id}) Succeeded in {:.1}s",
-                    duration.as_secs_f64()
-                );
+    execute_concurrent_worker_pool(
+        "architecture",
+        "Architecture",
+        concurrency,
+        limit,
+        &provider_identity.provider,
+        &provider_identity.model,
+        queue,
+        &run_id,
+        worker,
+        |w| async move {
+            match w.run_next(now_millis()?).await? {
+                argus_workflow::ArchitectureWorkerResult::Idle => Ok(WorkerStepResult::Idle),
+                argus_workflow::ArchitectureWorkerResult::Succeeded { work_id } => {
+                    Ok(WorkerStepResult::Succeeded { work_id })
+                }
+                argus_workflow::ArchitectureWorkerResult::RetryScheduled { work_id, error } => {
+                    Ok(WorkerStepResult::RetryScheduled { work_id, error })
+                }
+                argus_workflow::ArchitectureWorkerResult::Failed { work_id, error } => {
+                    Ok(WorkerStepResult::Failed { work_id, error })
+                }
             }
-            argus_workflow::ArchitectureWorkerResult::RetryScheduled { work_id, error } => {
-                retries += 1;
-                metrics::counter!("argus.worker.retries", "policy" => "architecture").increment(1);
-                tracing::warn!(
-                    policy = "architecture",
-                    work_id = %work_id,
-                    error = %error,
-                    duration_secs = duration.as_secs_f64(),
-                    "[architecture] Item {item_label} ({work_id}) RetryScheduled in {:.1}s: {error}",
-                    duration.as_secs_f64()
-                );
-            }
-            argus_workflow::ArchitectureWorkerResult::Failed { work_id, error } => {
-                failed += 1;
-                metrics::counter!("argus.worker.failed", "policy" => "architecture").increment(1);
-                tracing::error!(
-                    policy = "architecture",
-                    work_id = %work_id,
-                    error = %error,
-                    duration_secs = duration.as_secs_f64(),
-                    "[architecture] Item {item_label} ({work_id}) Failed in {:.1}s: {error}",
-                    duration.as_secs_f64()
-                );
-            }
-        }
-        i += 1;
-    }
-    Ok(format_work_summary("Architecture", succeeded, retries, failed, limit))
+        },
+    )
+    .await
 }
 
 fn prime_command(
@@ -3297,55 +3454,54 @@ const DEFAULT_PROFILE_JSON: &str = r#"{
 }
 "#;
 
-fn profile_command(
+fn provider_command(
     root: &std::path::Path,
     args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
     let env_config = std::env::var_os("ARGUS_CONFIG_DIR").map(std::path::PathBuf::from);
-    profile_command_with_env(root, args, env_config.as_deref())
+    provider_command_with_env(root, args, env_config.as_deref())
 }
 
-fn profile_command_with_env(
+fn provider_command_with_env(
     root: &std::path::Path,
     args: impl Iterator<Item = String>,
     env_config_dir: Option<&std::path::Path>,
 ) -> Result<String, argus_core::ArgusError> {
     let args: Vec<String> = args.collect();
     if args.is_empty() {
-        return Ok(HELP_PROFILE.to_owned());
+        return Ok(HELP_PROVIDER.to_owned());
     }
 
     let subcmd = args[0].as_str();
     if is_help_flag(Some(subcmd)) {
-        return Ok(HELP_PROFILE.to_owned());
+        return Ok(HELP_PROVIDER.to_owned());
     }
 
     match subcmd {
-        "discover" => profile_discover_command(root, &args[1..], env_config_dir),
-        "list" => profile_list_command(root, &args[1..], env_config_dir),
+        "discover" => provider_discover_command(root, &args[1..], env_config_dir),
+        "list" => provider_list_command(root, &args[1..], env_config_dir),
         _ => Err(argus_core::ArgusError::invalid_input(format!(
-            "unknown profile subcommand `{subcmd}` (supported: discover, list)\nRun 'argus help profile' for details."
+            "unknown provider subcommand `{subcmd}` (supported: discover, list)\nRun 'argus help provider' for details."
         ))),
     }
 }
 
-fn profile_discover_command(
+fn provider_discover_command(
     _root: &std::path::Path,
     args: &[String],
     env_config_dir: Option<&std::path::Path>,
 ) -> Result<String, argus_core::ArgusError> {
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
-        return Ok(HELP_PROFILE_DISCOVER.to_owned());
+        return Ok(HELP_PROVIDER_DISCOVER.to_owned());
     }
 
-    let usage = "usage: argus profile discover --type <lemonade|ollama|openai|anthropic|lm_studio> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--prefix <prefix>] [--timeout <seconds>]";
+    let usage = "usage: argus provider discover --type <bedrock|lemonade|ollama|openai|anthropic|lm_studio|watsonx> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--timeout <seconds>]";
 
     let mut provider_type: Option<String> = None;
     let mut endpoint: Option<String> = None;
     let mut api_key: Option<String> = None;
     let mut api_key_env: Option<String> = None;
     let mut output_dir_arg: Option<String> = None;
-    let mut prefix_arg: Option<String> = None;
     let mut timeout_seconds: Option<u64> = None;
 
     let mut iter = args.iter().peekable();
@@ -3387,11 +3543,7 @@ fn profile_discover_command(
                 );
             }
             "--prefix" => {
-                prefix_arg = Some(
-                    iter.next()
-                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
-                        .clone(),
-                );
+                let _ = iter.next();
             }
             "--timeout" => {
                 let val = iter
@@ -3431,8 +3583,8 @@ fn profile_discover_command(
         None
     };
 
-    // Determine the api_key_env name to store in generated profiles
-    let profile_api_key_env = api_key_env.or_else(|| {
+    // Determine the api_key_env name to store in generated configs
+    let config_api_key_env = api_key_env.or_else(|| {
         if api_key.is_some() || query_api_key.is_some() {
             kind.default_api_key_env().map(ToOwned::to_owned)
         } else {
@@ -3444,15 +3596,15 @@ fn profile_discover_command(
         .as_deref()
         .unwrap_or_else(|| kind.default_endpoint());
 
-    // Resolve output profiles directory
+    // Resolve output providers directory
     let output_dir = if let Some(dir) = output_dir_arg {
         std::path::PathBuf::from(dir)
     } else if let Some(env_dir) = env_config_dir {
-        env_dir.join("profiles")
+        env_dir.join("providers")
     } else if let Some(sys_dir) = system_config_dir() {
-        sys_dir.join("profiles")
+        sys_dir.join("providers")
     } else {
-        std::path::PathBuf::from(".argus/profiles")
+        std::path::PathBuf::from(".argus/providers")
     };
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -3479,113 +3631,88 @@ fn profile_discover_command(
 
     std::fs::create_dir_all(&output_dir).map_err(|err| {
         argus_core::ArgusError::invalid_input(format!(
-            "cannot create profile catalog directory `{}`: {err}",
+            "cannot create provider catalog directory `{}`: {err}",
             output_dir.display()
         ))
     })?;
 
-    let mut created_profiles = Vec::new();
-    let mut updated_profiles = Vec::new();
+    let config = argus_provider::generate_provider_config(
+        kind,
+        effective_endpoint,
+        &models,
+        config_api_key_env,
+        timeout_seconds,
+    )
+    .map_err(|error| {
+        argus_core::ArgusError::invalid_input(format!("cannot generate provider config: {error}"))
+    })?;
 
-    for model_id in &models {
-        let slug = if let Some(ref prefix) = prefix_arg {
-            let sanitized_model: String = model_id
-                .to_ascii_lowercase()
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
-                        c
-                    } else {
-                        '-'
-                    }
-                })
-                .collect();
-            format!("{prefix}-{sanitized_model}")
-        } else {
-            argus_provider::slugify_profile_name(kind, model_id)
-        };
+    let file_path = output_dir.join(format!("{}.json", kind.as_str()));
+    let was_existing = file_path.exists();
 
-        let profile = argus_provider::generate_runtime_profile(
-            kind,
-            effective_endpoint,
-            model_id,
-            profile_api_key_env.clone(),
-            timeout_seconds,
-        )
-        .map_err(|error| {
-            argus_core::ArgusError::invalid_input(format!(
-                "cannot generate profile for model `{model_id}`: {error}"
-            ))
-        })?;
+    let json_content = serde_json::to_string_pretty(&config).map_err(|error| {
+        argus_core::ArgusError::invalid_input(format!(
+            "cannot serialize provider configuration: {error}"
+        ))
+    })?;
 
-        let json_content = serde_json::to_string_pretty(&profile).map_err(|error| {
-            argus_core::ArgusError::invalid_input(format!(
-                "cannot serialize profile for model `{model_id}`: {error}"
-            ))
-        })?;
+    std::fs::write(&file_path, json_content.as_bytes()).map_err(|err| {
+        argus_core::ArgusError::invalid_input(format!(
+            "cannot write provider config `{}`: {err}",
+            file_path.display()
+        ))
+    })?;
 
-        let file_path = output_dir.join(format!("{slug}.json"));
-        let was_existing = file_path.exists();
-
-        std::fs::write(&file_path, json_content.as_bytes()).map_err(|err| {
-            argus_core::ArgusError::invalid_input(format!(
-                "cannot write profile `{}`: {err}",
-                file_path.display()
-            ))
-        })?;
-
-        if was_existing {
-            updated_profiles.push((slug, file_path));
-        } else {
-            created_profiles.push((slug, file_path));
-        }
-    }
-
+    let action = if was_existing { "Updated" } else { "Created" };
     let mut output = String::new();
     writeln!(
         output,
-        "Discovered {} models from `{effective_endpoint}` ({}) into `{}`:\n",
-        models.len(),
+        "{action} configuration for provider `{}` with {} models from `{effective_endpoint}`:\n  -> {}\n",
         kind.as_str(),
-        output_dir.display()
+        models.len(),
+        file_path.display()
     )
     .unwrap();
 
-    if !created_profiles.is_empty() {
-        writeln!(output, "Created {} profiles:", created_profiles.len()).unwrap();
-        for (slug, path) in &created_profiles {
-            writeln!(output, "  + {slug:<35} -> {}", path.display()).unwrap();
-        }
+    writeln!(output, "Models configured:").unwrap();
+    for (model_id, cfg) in &config.models {
+        let alias_str = if cfg.aliases.is_empty() {
+            String::new()
+        } else {
+            format!(" (aliases: {})", cfg.aliases.join(", "))
+        };
+        writeln!(output, "  * {model_id}{alias_str}").unwrap();
     }
 
-    if !updated_profiles.is_empty() {
-        if !created_profiles.is_empty() {
-            writeln!(output).unwrap();
-        }
-        writeln!(output, "Updated {} existing profiles:", updated_profiles.len()).unwrap();
-        for (slug, path) in &updated_profiles {
-            writeln!(output, "  ~ {slug:<35} -> {}", path.display()).unwrap();
-        }
-    }
+    let default_alias = config
+        .models
+        .iter()
+        .find(|(_, c)| c.aliases.contains(&"default".to_owned()))
+        .map(|(m, _)| m.clone())
+        .unwrap_or_else(|| models[0].clone());
 
-    if let Some((first_slug, _)) = created_profiles.first().or(updated_profiles.first()) {
-        writeln!(
-            output,
-            "\nNext step: Run 'argus work --profile {first_slug}' to execute reviews with this model."
-        )
-        .unwrap();
-    }
+    let example_spec = format!(
+        "{}:{}",
+        kind.as_str(),
+        argus_provider::slugify_model_alias(&default_alias)
+    );
+
+    writeln!(
+        output,
+        "\nNext step: Run 'argus work --provider {example_spec}' to execute reviews with this provider."
+    )
+    .unwrap();
 
     Ok(output)
 }
 
-fn profile_list_command(
+fn provider_list_command(
     root: &std::path::Path,
     args: &[String],
     env_config_dir: Option<&std::path::Path>,
 ) -> Result<String, argus_core::ArgusError> {
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
-        return Ok(HELP_PROFILE_LIST.to_owned());
+        return Ok(HELP_PROVIDER_LIST.to_owned());
     }
 
     let mut explicit_dir = None;
@@ -3597,7 +3724,7 @@ fn profile_list_command(
                     iter.next()
                         .ok_or_else(|| {
                             argus_core::ArgusError::invalid_input(
-                                "usage: argus profile list [--dir <path>]",
+                                "usage: argus provider list [--dir <path>]",
                             )
                         })?
                         .clone(),
@@ -3605,7 +3732,7 @@ fn profile_list_command(
             }
             _ => {
                 return Err(argus_core::ArgusError::invalid_input(
-                    "usage: argus profile list [--dir <path>]",
+                    "usage: argus provider list [--dir <path>]",
                 ));
             }
         }
@@ -3616,11 +3743,14 @@ fn profile_list_command(
         search_dirs.push(std::path::PathBuf::from(dir));
     } else {
         if let Some(env_dir) = env_config_dir {
+            search_dirs.push(env_dir.join("providers"));
             search_dirs.push(env_dir.join("profiles"));
         }
         if let Some(sys_dir) = system_config_dir() {
+            search_dirs.push(sys_dir.join("providers"));
             search_dirs.push(sys_dir.join("profiles"));
         }
+        search_dirs.push(root.join(".argus/config/providers"));
         search_dirs.push(root.join(".argus/config/profiles"));
         search_dirs.push(root.join(".argus/config"));
     }
@@ -3628,16 +3758,15 @@ fn profile_list_command(
     let mut seen_dirs = std::collections::HashSet::new();
     search_dirs.retain(|d| seen_dirs.insert(d.clone()));
 
-    struct ProfileEntry {
-        name: String,
-        provider: String,
-        model: String,
-        deployment: String,
+    struct ProviderDisplayEntry {
+        provider_name: String,
         transport: String,
+        models_summary: Vec<(String, Vec<String>, u32)>,
+        file_path: std::path::PathBuf,
     }
 
-    let mut profiles = Vec::new();
-    let mut seen_names = std::collections::HashSet::new();
+    let mut providers = Vec::new();
+    let mut seen_providers = std::collections::HashSet::new();
 
     for dir in &search_dirs {
         if !dir.is_dir() {
@@ -3667,7 +3796,7 @@ fn profile_list_command(
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_owned();
-            if stem == "argus" || stem.is_empty() || !seen_names.insert(stem.clone()) {
+            if stem == "argus" || stem.is_empty() {
                 continue;
             }
 
@@ -3675,73 +3804,82 @@ fn profile_list_command(
                 Ok(b) => b,
                 Err(_) => continue,
             };
-            let profile_res: Result<argus_provider::ProviderRuntimeProfile, _> =
-                serde_json::from_slice(&bytes);
-            if let Ok(profile) = profile_res {
-                let transport_desc = match &profile.transport {
+
+            if let Ok(config) = serde_json::from_slice::<argus_provider::ProviderConfig>(&bytes) {
+                if !seen_providers.insert(config.provider.clone()) {
+                    continue;
+                }
+                let transport_desc = match &config.transport {
                     argus_provider::ProviderTransportProfile::Lemonade { base_url, .. } => {
-                        base_url.as_deref().unwrap_or("default")
+                        base_url.as_deref().unwrap_or("http://127.0.0.1:13305/v1")
                     }
                     argus_provider::ProviderTransportProfile::Ollama { base_url } => {
-                        base_url.as_deref().unwrap_or("default")
+                        base_url.as_deref().unwrap_or("http://127.0.0.1:11434")
                     }
                     argus_provider::ProviderTransportProfile::Openai { .. } => "api.openai.com",
-                    argus_provider::ProviderTransportProfile::Anthropic { .. } => {
-                        "api.anthropic.com"
-                    }
+                    argus_provider::ProviderTransportProfile::Anthropic { .. } => "api.anthropic.com",
                     argus_provider::ProviderTransportProfile::LmStudio { base_url, .. } => {
-                        base_url.as_deref().unwrap_or("default")
+                        base_url.as_deref().unwrap_or("http://127.0.0.1:1234/v1")
                     }
                     argus_provider::ProviderTransportProfile::Watsonx { service_url, .. } => {
                         service_url.as_str()
                     }
-                };
-                let deployment_str = match profile.capabilities.deployment {
-                    argus_provider::DeploymentMode::Local => "local",
-                    argus_provider::DeploymentMode::SameNetwork => "same_network",
-                    argus_provider::DeploymentMode::Online => "online",
+                    argus_provider::ProviderTransportProfile::Bedrock { region, .. } => {
+                        region.as_str()
+                    }
                 };
 
-                profiles.push(ProfileEntry {
-                    name: stem,
-                    provider: profile.capabilities.identity.provider,
-                    model: profile.capabilities.identity.model,
-                    deployment: deployment_str.to_owned(),
+                let mut models_summary = Vec::new();
+                for (id, model_cfg) in &config.models {
+                    models_summary.push((
+                        id.clone(),
+                        model_cfg.aliases.clone(),
+                        model_cfg.concurrency_capacity,
+                    ));
+                }
+
+                providers.push(ProviderDisplayEntry {
+                    provider_name: config.provider,
                     transport: transport_desc.to_owned(),
+                    models_summary,
+                    file_path: path,
                 });
             }
         }
     }
 
-    if profiles.is_empty() {
+    if providers.is_empty() {
         return Ok(
-            "No provider runtime profiles found.\nRun 'argus profile discover --type <type>' to populate your profiles catalog."
+            "No provider configurations found.\nRun 'argus provider discover --type <type>' to configure a provider."
                 .to_owned(),
         );
     }
 
     let mut output = String::new();
-    writeln!(output, "Installed Provider Profiles ({}):", profiles.len()).unwrap();
-    writeln!(
-        output,
-        "  {:<35} {:<12} {:<30} {:<14} {:<25}",
-        "PROFILE NAME", "PROVIDER", "MODEL", "DEPLOYMENT", "ENDPOINT/TRANSPORT"
-    )
-    .unwrap();
-    writeln!(
-        output,
-        "  {:-<35} {:-<12} {:-<30} {:-<14} {:-<25}",
-        "", "", "", "", ""
-    )
-    .unwrap();
+    writeln!(output, "Installed Providers ({}):", providers.len()).unwrap();
 
-    for p in &profiles {
+    for p in &providers {
         writeln!(
             output,
-            "  {:<35} {:<12} {:<30} {:<14} {:<25}",
-            p.name, p.provider, p.model, p.deployment, p.transport
+            "\nProvider: {} [{}] ({})",
+            p.provider_name,
+            p.transport,
+            p.file_path.display()
         )
         .unwrap();
+        writeln!(output, "  Models ({}):", p.models_summary.len()).unwrap();
+        for (model_id, aliases, concurrency) in &p.models_summary {
+            let alias_str = if aliases.is_empty() {
+                String::new()
+            } else {
+                format!(" [aliases: {}]", aliases.join(", "))
+            };
+            writeln!(
+                output,
+                "    - {model_id:<45} (max concurrency: {concurrency}){alias_str}"
+            )
+            .unwrap();
+        }
     }
 
     Ok(output)
@@ -4714,13 +4852,13 @@ mod tests {
                 .unwrap_err();
         assert!(
             err.to_string()
-                .contains("provider runtime profile `project_model` not found")
+                .contains("provider configuration or profile `project_model` not found")
         );
 
         // 4. Missing profile error shows candidate search locations in user/system catalog
         let err = resolve_provider_profile(temporary.path(), "non_existent").unwrap_err();
         let err_msg = err.to_string();
-        assert!(err_msg.contains("provider runtime profile `non_existent` not found"));
+        assert!(err_msg.contains("provider configuration or profile `non_existent` not found"));
         assert!(err_msg.contains("Searched candidate locations"));
     }
 
@@ -5205,72 +5343,71 @@ mod tests {
     }
 
     #[test]
-    fn profile_help_and_subcommand_dispatch() {
+    fn provider_help_and_subcommand_dispatch() {
         let temporary = tempfile::tempdir().unwrap();
-        let help_out = run(["profile".to_owned()].into_iter(), temporary.path()).unwrap();
-        assert!(help_out.contains("Manage and discover provider runtime profiles"));
-        assert!(help_out.contains("argus profile discover"));
-        assert!(help_out.contains("argus profile list"));
+        let help_out = run(["provider".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(help_out.contains("Manage and discover model provider configurations"));
+        assert!(help_out.contains("argus provider discover"));
+        assert!(help_out.contains("argus provider list"));
 
         let help_discover = run(
-            ["profile".to_owned(), "discover".to_owned(), "--help".to_owned()].into_iter(),
+            ["provider".to_owned(), "discover".to_owned(), "--help".to_owned()].into_iter(),
             temporary.path(),
         )
         .unwrap();
         assert!(help_discover.contains("Discover models from a provider"));
 
         let help_list = run(
-            ["profile".to_owned(), "list".to_owned(), "--help".to_owned()].into_iter(),
+            ["provider".to_owned(), "list".to_owned(), "--help".to_owned()].into_iter(),
             temporary.path(),
         )
         .unwrap();
-        assert!(help_list.contains("List installed provider runtime profiles"));
+        assert!(help_list.contains("List installed provider configurations"));
     }
 
     #[test]
-    fn profile_list_scans_and_formats_profiles_correctly() {
+    fn provider_list_scans_and_formats_providers_correctly() {
         let temporary = tempfile::tempdir().unwrap();
-        let profiles_dir = temporary.path().join("profiles");
-        std::fs::create_dir_all(&profiles_dir).unwrap();
+        let providers_dir = temporary.path().join("providers");
+        std::fs::create_dir_all(&providers_dir).unwrap();
 
-        let sample_profile = argus_provider::generate_runtime_profile(
+        let sample_config = argus_provider::generate_provider_config(
             argus_provider::DiscoveredProviderKind::Lemonade,
             "http://10.0.0.51:13305/v1",
-            "Qwen3.6-35B-A3B-GGUF",
+            &["Qwen3.6-35B-A3B-GGUF".to_owned()],
             None,
             Some(1800),
         )
         .unwrap();
 
         std::fs::write(
-            profiles_dir.join("lemonade-qwen.json"),
-            serde_json::to_string_pretty(&sample_profile).unwrap().as_bytes(),
+            providers_dir.join("lemonade.json"),
+            serde_json::to_string_pretty(&sample_config).unwrap().as_bytes(),
         )
         .unwrap();
 
         let list_out = run(
             [
-                "profile".to_owned(),
+                "provider".to_owned(),
                 "list".to_owned(),
                 "--dir".to_owned(),
-                profiles_dir.display().to_string(),
+                providers_dir.display().to_string(),
             ]
             .into_iter(),
             temporary.path(),
         )
         .unwrap();
 
-        assert!(list_out.contains("Installed Provider Profiles (1):"));
-        assert!(list_out.contains("lemonade-qwen"));
+        assert!(list_out.contains("Installed Providers (1):"));
+        assert!(list_out.contains("lemonade"));
         assert!(list_out.contains("Qwen3.6-35B-A3B-GGUF"));
-        assert!(list_out.contains("same_network"));
     }
 
     #[test]
-    fn profile_discover_rejects_missing_or_invalid_type() {
+    fn provider_discover_rejects_missing_or_invalid_type() {
         let temporary = tempfile::tempdir().unwrap();
         let err = run(
-            ["profile".to_owned(), "discover".to_owned()].into_iter(),
+            ["provider".to_owned(), "discover".to_owned()].into_iter(),
             temporary.path(),
         )
         .unwrap_err();
@@ -5278,7 +5415,7 @@ mod tests {
 
         let err2 = run(
             [
-                "profile".to_owned(),
+                "provider".to_owned(),
                 "discover".to_owned(),
                 "--type".to_owned(),
                 "invalid_provider_kind".to_owned(),
@@ -5289,5 +5426,173 @@ mod tests {
         .unwrap_err();
         assert!(err2.to_string().contains("unsupported provider type"));
     }
-}
 
+    #[test]
+    fn work_command_supports_concurrency_flag_and_capacity_validation() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temporary.path().join("Cargo.toml"),
+            b"[package]\nname = \"concurrent_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(
+            temporary.path().join("src/lib.rs"),
+            b"pub fn a() {}\npub fn b() {}\npub fn c() {}\npub fn d() {}\n",
+        )
+        .unwrap();
+
+        run(
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "rust".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        run(
+            [
+                "audit".to_owned(),
+                "--pipeline".to_owned(),
+                "documentation".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        let profile = argus_provider::ProviderRuntimeProfile {
+            schema_version: argus_provider::PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION,
+            capabilities: argus_provider::ProviderCapabilities {
+                identity: argus_provider::ProviderIdentity {
+                    provider: "ollama".to_owned(),
+                    provider_version: "langchart@1".to_owned(),
+                    model: "fixture-reviewer".to_owned(),
+                    model_version: "fixture-reviewer".to_owned(),
+                },
+                deployment: argus_provider::DeploymentMode::Local,
+                context_window_tokens: 16_384,
+                max_output_tokens: 2_048,
+                structured_output: argus_provider::StructuredOutputSupport::BestEffort,
+                tool_calling: false,
+                concurrency_capacity: 4,
+                supported_classifications: std::collections::BTreeSet::from([
+                    argus_provider::DataClassification::Internal,
+                ]),
+                reports_token_usage: true,
+                reports_estimated_cost: false,
+            },
+            policy: argus_provider::ProviderPolicy {
+                repository_classification: argus_provider::DataClassification::Internal,
+                authorize_online_transmission: false,
+                substitution: argus_provider::ModelSubstitution::Pinned,
+                limits: argus_provider::ReviewLimits {
+                    max_requests: 1,
+                    max_input_tokens: 10_000,
+                    max_output_tokens: 2_048,
+                    max_evidence_bytes: 1_000_000,
+                    max_evidence_expansions: 0,
+                    max_concurrency: 2,
+                    max_estimated_cost_microusd: None,
+                },
+            },
+            repair: argus_provider::RepairPolicy {
+                max_repair_attempts: 0,
+            },
+            transport: argus_provider::ProviderTransportProfile::Ollama { base_url: None },
+        };
+        let profile_path = temporary.path().join("concurrent-profile.json");
+        std::fs::write(
+            &profile_path,
+            serde_json::to_string_pretty(&profile).unwrap().as_bytes(),
+        )
+        .unwrap();
+
+        // 1. Concurrency exceeding capacity is rejected
+        let err = run(
+            [
+                "work".to_owned(),
+                "documentation".to_owned(),
+                "--provider".to_owned(),
+                profile_path.display().to_string(),
+                "-j".to_owned(),
+                "8".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("requested concurrency 8 exceeds provider capacity (4)"));
+
+        // 2. Concurrency 0 is rejected
+        let err0 = run(
+            [
+                "work".to_owned(),
+                "documentation".to_owned(),
+                "--provider".to_owned(),
+                profile_path.display().to_string(),
+                "--concurrency".to_owned(),
+                "0".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(err0.to_string().contains("concurrency must be greater than zero"));
+
+        // 3. Concurrency 2 works with offline profile stopping when idle
+        let work_out = run(
+            [
+                "work".to_owned(),
+                "documentation".to_owned(),
+                "--provider".to_owned(),
+                profile_path.display().to_string(),
+                "-j".to_owned(),
+                "2".to_owned(),
+                "--no-limit".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(work_out.contains("Documentation work:"));
+    }
+
+    #[test]
+    fn provider_discover_supports_bedrock_discovery() {
+        let temporary = tempfile::tempdir().unwrap();
+        let providers_dir = temporary.path().join("providers");
+
+        let discover_out = run(
+            [
+                "provider".to_owned(),
+                "discover".to_owned(),
+                "--type".to_owned(),
+                "bedrock".to_owned(),
+                "--endpoint".to_owned(),
+                "https://bedrock-runtime.us-west-2.amazonaws.com".to_owned(),
+                "--output-dir".to_owned(),
+                providers_dir.display().to_string(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(discover_out.contains("configuration for provider `bedrock`"));
+        assert!(providers_dir.join("bedrock.json").exists());
+
+        // Resolve by spec bedrock:claude-3-haiku
+        let (path, profile) = resolve_provider_profile_with_env(
+            temporary.path(),
+            "bedrock:claude-3-haiku",
+            Some(temporary.path()),
+        )
+        .unwrap();
+        assert_eq!(path, providers_dir.join("bedrock.json"));
+        assert_eq!(profile.capabilities.identity.model, "anthropic.claude-3-haiku-20240307-v1:0");
+    }
+}

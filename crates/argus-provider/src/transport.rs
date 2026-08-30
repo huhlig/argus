@@ -187,6 +187,17 @@ impl LangchartModelProvider {
             .map_err(|error| ProviderError::InvalidProfile(error.to_string()))?;
         Self::new(capabilities, Arc::new(adapter))
     }
+
+    pub fn bedrock(
+        capabilities: ProviderCapabilities,
+        config: crate::BedrockConfig,
+        credentials: crate::BedrockCredentials,
+    ) -> Result<Self, ProviderError> {
+        require_deployment(&capabilities, DeploymentMode::Online, "bedrock")?;
+        let adapter = crate::BedrockAdapter::new(config, credentials)
+            .map_err(|error| ProviderError::InvalidProfile(error.to_string()))?;
+        Self::new(capabilities, Arc::new(adapter))
+    }
 }
 
 fn require_deployment(
@@ -299,24 +310,30 @@ impl ModelProvider for LangchartModelProvider {
     }
 
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ProviderError> {
-        let response_format = match self.capabilities.structured_output {
-            StructuredOutputSupport::None => ResponseFormat::Text,
-            StructuredOutputSupport::BestEffort => ResponseFormat::JsonObject,
-            StructuredOutputSupport::SchemaConstrained => ResponseFormat::JsonSchema {
+        let strategy = StructuredOutputStrategy::for_provider(
+            &self.capabilities.identity.provider,
+            self.capabilities.structured_output,
+        );
+        let response_format = match strategy {
+            StructuredOutputStrategy::PromptGuidedText => ResponseFormat::Text,
+            StructuredOutputStrategy::NativeJsonObject => ResponseFormat::JsonObject,
+            StructuredOutputStrategy::NativeJsonSchema => ResponseFormat::JsonSchema {
                 name: "argus_review".to_owned(),
                 description: Some("Argus policy review decision".to_owned()),
                 schema: request.structured_output_schema.clone(),
                 strict: true,
             },
         };
-        let system_content = match self.capabilities.structured_output {
-            StructuredOutputSupport::SchemaConstrained => {
+        let system_content = match strategy {
+            StructuredOutputStrategy::NativeJsonSchema => {
                 "Return only JSON matching the supplied response schema.".to_owned()
             }
-            StructuredOutputSupport::None | StructuredOutputSupport::BestEffort => format!(
-                "Return only JSON matching this schema: {}",
-                request.structured_output_schema
-            ),
+            StructuredOutputStrategy::NativeJsonObject | StructuredOutputStrategy::PromptGuidedText => {
+                format!(
+                    "Return only JSON matching this schema: {}",
+                    request.structured_output_schema
+                )
+            }
         };
         tracing::debug!(
             provider = %self.capabilities.identity.provider,
@@ -395,7 +412,7 @@ impl ModelProvider for LangchartModelProvider {
         let content = response.content.ok_or_else(|| {
             ProviderError::InvalidOutput("model response has no JSON content".to_owned())
         })?;
-        let output = parse_json_response(&content).map_err(|error| {
+        let output = sanitize_and_parse_model_output(&content).map_err(|error| {
             ProviderError::InvalidOutput(format!("model response is not valid JSON: {error}"))
         })?;
         Ok(ModelResponse {
@@ -410,13 +427,182 @@ impl ModelProvider for LangchartModelProvider {
     }
 }
 
-fn parse_json_response(content: &str) -> Result<serde_json::Value, serde_json::Error> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StructuredOutputStrategy {
+    NativeJsonSchema,
+    NativeJsonObject,
+    PromptGuidedText,
+}
+
+impl StructuredOutputStrategy {
+    #[must_use]
+    pub fn for_provider(provider: &str, support: StructuredOutputSupport) -> Self {
+        match support {
+            StructuredOutputSupport::None => Self::PromptGuidedText,
+            StructuredOutputSupport::BestEffort => match provider {
+                "bedrock" | "anthropic" | "watsonx" => Self::PromptGuidedText,
+                _ => Self::NativeJsonObject,
+            },
+            StructuredOutputSupport::SchemaConstrained => match provider {
+                "bedrock" | "anthropic" | "watsonx" => Self::PromptGuidedText,
+                _ => Self::NativeJsonSchema,
+            },
+        }
+    }
+}
+
+fn sanitize_and_parse_model_output(content: &str) -> Result<serde_json::Value, serde_json::Error> {
     let trimmed = content.trim();
-    let json = trimmed
+
+    // 1. Strip reasoning / thinking blocks: <think>...</think>
+    let unthought = if let (Some(start), Some(end)) = (trimmed.find("<think>"), trimmed.find("</think>")) {
+        let before = &trimmed[..start];
+        let after = &trimmed[end + "</think>".len()..];
+        format!("{}{}", before.trim(), after.trim())
+    } else {
+        trimmed.to_owned()
+    };
+
+    let text = unthought.trim();
+
+    // 2. Strip whole-response markdown fences: ```json ... ``` or ``` ... ```
+    let json = text
         .strip_prefix("```json")
+        .or_else(|| text.strip_prefix("```"))
         .and_then(|fenced| fenced.strip_suffix("```"))
-        .map_or(trimmed, str::trim);
+        .map_or(text, str::trim);
+
+    // 3. Try strict JSON parse first
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+        return Ok(value);
+    }
+
+    // 4. Try lenient JSON5 parse
+    if let Ok(value) = json5::from_str::<serde_json::Value>(json) {
+        return Ok(value);
+    }
+
+    // 5. Repair common model formatting issues (unquoted keys, trailing commas)
+    let repaired = repair_json_syntax(json);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&repaired) {
+        return Ok(value);
+    }
+
     serde_json::from_str(json)
+}
+
+fn repair_json_syntax(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 64);
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+    let mut escape = false;
+
+    while let Some(c) = chars.next() {
+        if escape {
+            out.push(c);
+            escape = false;
+            continue;
+        }
+
+        if c == '\\' && in_string {
+            out.push(c);
+            escape = true;
+            continue;
+        }
+
+        if c == '"' {
+            in_string = !in_string;
+            out.push(c);
+            continue;
+        }
+
+        if in_string {
+            out.push(c);
+            continue;
+        }
+
+        // Single quotes converted to double quotes for strings
+        if c == '\'' {
+            out.push('"');
+            continue;
+        }
+
+        // Strip single-line comments // ...
+        if c == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            for nc in chars.by_ref() {
+                if nc == '\n' {
+                    out.push('\n');
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // Strip trailing commas before } or ]
+        if c == ',' {
+            let mut whitespace = String::new();
+            let mut found_closer = false;
+            while let Some(&next_c) = chars.peek() {
+                if next_c.is_whitespace() {
+                    whitespace.push(chars.next().unwrap());
+                } else if next_c == '}' || next_c == ']' {
+                    found_closer = true;
+                    break;
+                } else {
+                    break;
+                }
+            }
+            if found_closer {
+                out.push_str(&whitespace);
+            } else {
+                out.push(',');
+                out.push_str(&whitespace);
+            }
+            continue;
+        }
+
+        // Quote unquoted alphanumeric/ident keys before a colon
+        if c.is_alphanumeric() || c == '_' || c == '-' {
+            let mut ident = String::new();
+            ident.push(c);
+            while let Some(&next_c) = chars.peek() {
+                if next_c.is_alphanumeric() || next_c == '_' || next_c == '-' {
+                    ident.push(chars.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+
+            // Check if following token is ':'
+            let mut whitespace = String::new();
+            while let Some(&next_c) = chars.peek() {
+                if next_c.is_whitespace() {
+                    whitespace.push(chars.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+
+            if chars.peek() == Some(&':') {
+                out.push('"');
+                out.push_str(&ident);
+                out.push('"');
+            } else if ident == "true" || ident == "false" || ident == "null" {
+                out.push_str(&ident);
+            } else if ident.chars().all(|ch| ch.is_ascii_digit() || ch == '.') {
+                out.push_str(&ident);
+            } else {
+                out.push_str(&ident);
+            }
+            out.push_str(&whitespace);
+            continue;
+        }
+
+        out.push(c);
+    }
+
+    out
 }
 
 #[allow(clippy::match_wildcard_for_single_variants)]
@@ -807,6 +993,59 @@ mod tests {
                 WatsonxCredentials::ApiKey("secret".to_owned()),
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn sanitize_and_parse_model_output_handles_varied_formats() {
+        // 1. Clean JSON
+        let clean = r#"{"status": "pass", "claims": []}"#;
+        let parsed = sanitize_and_parse_model_output(clean).unwrap();
+        assert_eq!(parsed["status"], "pass");
+
+        // 2. Markdown fence with json tag
+        let fenced = "```json\n{\n  \"status\": \"pass\",\n  \"claims\": []\n}\n```";
+        let parsed = sanitize_and_parse_model_output(fenced).unwrap();
+        assert_eq!(parsed["status"], "pass");
+
+        // 3. Markdown fence without tag
+        let generic_fenced = "```\n{\n  \"status\": \"candidate_findings\"\n}\n```";
+        let parsed = sanitize_and_parse_model_output(generic_fenced).unwrap();
+        assert_eq!(parsed["status"], "candidate_findings");
+
+        // 4. Thinking tags from DeepSeek/Qwen/Nova CoT models
+        let thinking = "<think>\nLet's evaluate documentation thoroughly.\nDone.\n</think>\n```json\n{\"status\": \"pass\"}\n```";
+        let parsed = sanitize_and_parse_model_output(thinking).unwrap();
+        assert_eq!(parsed["status"], "pass");
+
+        // 5. Surrounding whitespace around fence
+        let padded = "   \n```json\n{\"status\": \"unable_to_verify\"}\n```\n   ";
+        let parsed = sanitize_and_parse_model_output(padded).unwrap();
+        assert_eq!(parsed["status"], "unable_to_verify");
+
+        // 6. Lenient JSON: unquoted keys, comments, trailing commas
+        let lenient = "{\n  status: 'pass',\n  // note\n  claims: [],\n}";
+        let parsed = sanitize_and_parse_model_output(lenient).unwrap();
+        assert_eq!(parsed["status"], "pass");
+    }
+
+    #[test]
+    fn structured_output_strategy_selection() {
+        assert_eq!(
+            StructuredOutputStrategy::for_provider("bedrock", StructuredOutputSupport::BestEffort),
+            StructuredOutputStrategy::PromptGuidedText
+        );
+        assert_eq!(
+            StructuredOutputStrategy::for_provider("anthropic", StructuredOutputSupport::BestEffort),
+            StructuredOutputStrategy::PromptGuidedText
+        );
+        assert_eq!(
+            StructuredOutputStrategy::for_provider("lemonade", StructuredOutputSupport::BestEffort),
+            StructuredOutputStrategy::NativeJsonObject
+        );
+        assert_eq!(
+            StructuredOutputStrategy::for_provider("openai", StructuredOutputSupport::SchemaConstrained),
+            StructuredOutputStrategy::NativeJsonSchema
         );
     }
 }

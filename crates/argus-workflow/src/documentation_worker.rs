@@ -839,12 +839,7 @@ mod tests {
             "documentation-public-api@1",
         )
         .unwrap()
-        .plan(
-            &snapshot,
-            &configuration,
-            &targets,
-            &evidence_records,
-        )
+        .plan(&snapshot, &configuration, &targets, &evidence_records)
         .unwrap();
         assert_eq!(
             plan.units[0].applicability.state,

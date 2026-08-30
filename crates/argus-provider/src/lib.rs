@@ -252,18 +252,20 @@ impl Error for ProviderError {}
 
 pub use assignment::{ModelAssignment, ModelAssignmentBook};
 pub use discovery::{
-    DiscoveredProviderKind, discover_models, generate_runtime_profile, infer_deployment_mode,
-    slugify_profile_name,
+    DiscoveredProviderKind, discover_models, generate_provider_config, generate_runtime_profile,
+    infer_deployment_mode, slugify_model_alias, slugify_profile_name,
 };
 pub use executor::{
     OutputValidator, ProviderExecutor, ProviderTelemetry, ProviderTelemetrySink, RepairPolicy,
 };
+pub use langchart_llm_bedrock::{BedrockAdapter, BedrockConfig, BedrockCredentials};
 pub use langchart_llm_watsonx::{WatsonxConfig, WatsonxCredentials, WatsonxScope};
 pub use runtime_profile::{
-    BuiltProviderRuntime, PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION, ProviderRuntimeProfile,
-    ProviderTransportProfile, WatsonxCredentialProfile, WatsonxScopeProfile,
+    BuiltProviderRuntime, PROVIDER_CONFIG_SCHEMA_VERSION, PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION,
+    ProviderConfig, ProviderModelConfig, ProviderRuntimeProfile, ProviderTransportProfile,
+    WatsonxCredentialProfile, WatsonxScopeProfile,
 };
-pub use transport::LangchartModelProvider;
+pub use transport::{LangchartModelProvider, StructuredOutputStrategy};
 
 #[cfg(test)]
 mod tests {

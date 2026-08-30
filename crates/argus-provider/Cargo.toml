@@ -25,6 +25,7 @@ async-trait.workspace = true
 langchart-adapters.workspace = true
 langchart-llm-generic.workspace = true
 langchart-llm-watsonx.workspace = true
+langchart-llm-bedrock.workspace = true
 langchart-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -33,6 +34,8 @@ url.workspace = true
 tracing.workspace = true
 metrics.workspace = true
 reqwest.workspace = true
+aws-config.workspace = true
+json5.workspace = true
 
 [dev-dependencies]
 
