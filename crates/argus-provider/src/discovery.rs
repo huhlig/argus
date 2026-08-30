@@ -16,6 +16,7 @@ use crate::{
     DataClassification, DeploymentMode, ModelSubstitution, ProviderCapabilities, ProviderConfig,
     ProviderError, ProviderIdentity, ProviderModelConfig, ProviderPolicy, ProviderRuntimeProfile,
     ProviderTransportProfile, RepairPolicy, ReviewLimits, StructuredOutputSupport,
+    WatsonxCredentialProfile, WatsonxScopeProfile,
     runtime_profile::{PROVIDER_CONFIG_SCHEMA_VERSION, PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION},
 };
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,7 @@ pub enum DiscoveredProviderKind {
     Anthropic,
     LmStudio,
     Bedrock,
+    Watsonx,
 }
 
 impl DiscoveredProviderKind {
@@ -44,6 +46,7 @@ impl DiscoveredProviderKind {
             Self::Anthropic => "anthropic",
             Self::LmStudio => "lm_studio",
             Self::Bedrock => "bedrock",
+            Self::Watsonx => "watsonx",
         }
     }
 
@@ -56,6 +59,7 @@ impl DiscoveredProviderKind {
             Self::Anthropic => "https://api.anthropic.com/v1",
             Self::LmStudio => "http://127.0.0.1:1234/v1",
             Self::Bedrock => "https://bedrock-runtime.us-east-1.amazonaws.com",
+            Self::Watsonx => "https://us-south.ml.cloud.ibm.com",
         }
     }
 
@@ -64,6 +68,7 @@ impl DiscoveredProviderKind {
         match self {
             Self::Openai => Some("OPENAI_API_KEY"),
             Self::Anthropic => Some("ANTHROPIC_API_KEY"),
+            Self::Watsonx => Some("WATSONX_API_KEY"),
             Self::Bedrock | Self::Lemonade | Self::LmStudio | Self::Ollama => None,
         }
     }
@@ -81,8 +86,11 @@ impl FromStr for DiscoveredProviderKind {
             "anthropic" => Ok(Self::Anthropic),
             "lm_studio" | "lmstudio" | "lm-studio" => Ok(Self::LmStudio),
             "bedrock" | "aws_bedrock" | "aws-bedrock" => Ok(Self::Bedrock),
+            "watsonx" | "ibm" | "ibm_watsonx" | "ibm-watsonx" | "watsonx.ai" | "watsonx_ai" => {
+                Ok(Self::Watsonx)
+            }
             _ => Err(ProviderError::InvalidProfile(format!(
-                "unsupported provider type `{s}` (supported: lemonade, ollama, openai, anthropic, lm_studio, bedrock)"
+                "unsupported provider type `{s}` (supported: lemonade, ollama, openai, anthropic, lm_studio, bedrock, watsonx)"
             ))),
         }
     }
@@ -123,7 +131,114 @@ pub async fn discover_models(
         DiscoveredProviderKind::Bedrock => {
             discover_openai_compatible_models(&client, endpoint, api_key).await
         }
+        DiscoveredProviderKind::Watsonx => {
+            discover_watsonx_models(&client, endpoint, api_key).await
+        }
     }
+}
+
+async fn discover_watsonx_models(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<String>, ProviderError> {
+    let token = if let Some(key) = api_key.filter(|k| !k.trim().is_empty()) {
+        let key = key.trim();
+        if key.starts_with("Bearer ") || key.starts_with("bearer ") {
+            key.trim_start_matches("Bearer ")
+                .trim_start_matches("bearer ")
+                .trim()
+                .to_owned()
+        } else if key.len() > 100 && !key.contains('_') && !key.contains('-') {
+            key.to_owned()
+        } else {
+            // Exchange IBM Cloud IAM API Key for IAM bearer token
+            let params = [
+                ("grant_type", "urn:ibm:params:oauth:grant-type:apikey"),
+                ("apikey", key),
+            ];
+            let iam_res = client
+                .post("https://iam.cloud.ibm.com/identity/token")
+                .form(&params)
+                .send()
+                .await
+                .map_err(|err| {
+                    ProviderError::Unavailable(format!("IBM Cloud IAM token exchange failed: {err}"))
+                })?;
+
+            if !iam_res.status().is_success() {
+                let status = iam_res.status();
+                let body = iam_res.text().await.unwrap_or_default();
+                return Err(ProviderError::Unavailable(format!(
+                    "IBM Cloud IAM authentication failed with HTTP {status}: {body}"
+                )));
+            }
+
+            let iam_json: serde_json::Value = iam_res.json().await.map_err(|err| {
+                ProviderError::InvalidOutput(format!("cannot parse IAM token response: {err}"))
+            })?;
+
+            iam_json
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    ProviderError::InvalidOutput(
+                        "IAM token response missing `access_token`".to_owned(),
+                    )
+                })?
+                .to_owned()
+        }
+    } else {
+        return Err(ProviderError::InvalidProfile(
+            "watsonx model discovery requires an API key (--api-key or --api-key-env)".to_owned(),
+        ));
+    };
+
+    let base = base_url.trim_end_matches('/');
+    let url = if base.contains("/ml/v1") {
+        format!("{base}/foundation_model_specs?version=2023-05-29")
+    } else {
+        format!("{base}/ml/v1/foundation_model_specs?version=2023-05-29")
+    };
+
+    let response = client
+        .get(&url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|err| {
+            ProviderError::Unavailable(format!(
+                "failed to query WatsonX models at `{url}`: {err}"
+            ))
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(ProviderError::Unavailable(format!(
+            "WatsonX model discovery request to `{url}` returned HTTP {status}: {body}"
+        )));
+    }
+
+    let json: serde_json::Value = response.json().await.map_err(|err| {
+        ProviderError::InvalidOutput(format!("cannot parse JSON from `{url}`: {err}"))
+    })?;
+
+    if let Some(resources) = json.get("resources").and_then(|r| r.as_array()) {
+        let ids: Vec<String> = resources
+            .iter()
+            .filter_map(|item| {
+                item.get("model_id")
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned)
+            })
+            .collect();
+        if !ids.is_empty() {
+            return Ok(ids);
+        }
+    }
+
+    parse_model_ids_from_json(&json)
 }
 
 async fn discover_openai_compatible_models(
@@ -386,7 +501,8 @@ pub fn generate_runtime_profile(
         | DiscoveredProviderKind::Anthropic
         | DiscoveredProviderKind::Ollama
         | DiscoveredProviderKind::Lemonade
-        | DiscoveredProviderKind::LmStudio => StructuredOutputSupport::BestEffort,
+        | DiscoveredProviderKind::LmStudio
+        | DiscoveredProviderKind::Watsonx => StructuredOutputSupport::BestEffort,
     };
 
     let capabilities = ProviderCapabilities {
@@ -481,6 +597,22 @@ pub fn generate_runtime_profile(
                 profile_name: None,
             }
         }
+        DiscoveredProviderKind::Watsonx => {
+            let service_url = if endpoint.is_empty() {
+                "${WATSONX_AI_ENDPOINT:-https://us-south.ml.cloud.ibm.com}".to_owned()
+            } else {
+                endpoint.to_owned()
+            };
+            let api_key_var = api_key_env
+                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .unwrap_or_else(|| "${WATSONX_API_KEY}".to_owned());
+            ProviderTransportProfile::Watsonx {
+                service_url,
+                api_version: "2023-05-29".to_owned(),
+                scope: WatsonxScopeProfile::Project("${WATSONX_PROJECT_ID}".to_owned()),
+                credential: WatsonxCredentialProfile::ApiKey(api_key_var),
+            }
+        }
     };
 
     let profile = ProviderRuntimeProfile {
@@ -513,6 +645,10 @@ pub fn slugify_model_alias(model_id: &str) -> String {
     } else if let Some(stripped) = model_id.strip_prefix("cohere.") {
         stripped
     } else if let Some(stripped) = model_id.strip_prefix("ibm/") {
+        stripped
+    } else if let Some(stripped) = model_id.strip_prefix("meta-llama/") {
+        stripped
+    } else if let Some(stripped) = model_id.strip_prefix("mistralai/") {
         stripped
     } else {
         model_id
@@ -569,7 +705,14 @@ pub fn generate_provider_config(
             api_key: api_key_env,
         },
         DiscoveredProviderKind::Bedrock => {
-            let region = if endpoint.contains("bedrock-runtime.") {
+            let region = if let Some(pos) = endpoint.find(".api.aws") {
+                let prefix = &endpoint[..pos];
+                prefix
+                    .split('.')
+                    .last()
+                    .unwrap_or("us-east-1")
+                    .to_owned()
+            } else if endpoint.contains("bedrock-runtime.") {
                 endpoint
                     .split("bedrock-runtime.")
                     .nth(1)
@@ -594,6 +737,22 @@ pub fn generate_provider_config(
                     Some(endpoint.to_owned())
                 },
                 profile_name: None,
+            }
+        }
+        DiscoveredProviderKind::Watsonx => {
+            let service_url = if endpoint.is_empty() {
+                "${WATSONX_AI_ENDPOINT:-https://us-south.ml.cloud.ibm.com}".to_owned()
+            } else {
+                endpoint.to_owned()
+            };
+            let api_key_var = api_key_env
+                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .unwrap_or_else(|| "${WATSONX_API_KEY}".to_owned());
+            ProviderTransportProfile::Watsonx {
+                service_url,
+                api_version: "2023-05-29".to_owned(),
+                scope: WatsonxScopeProfile::Project("${WATSONX_PROJECT_ID}".to_owned()),
+                credential: WatsonxCredentialProfile::ApiKey(api_key_var),
             }
         }
     };
@@ -809,5 +968,35 @@ mod tests {
         // Resolve by alias
         let resolved = config.resolve_runtime_profile(Some("claude-3-haiku")).unwrap();
         assert_eq!(resolved.capabilities.identity.model, "anthropic.claude-3-haiku-20240307-v1:0");
+    }
+
+    #[test]
+    fn generate_provider_config_creates_valid_watsonx_config_and_aliases() {
+        let models = vec![
+            "ibm/granite-3-8b-instruct".to_owned(),
+            "meta-llama/llama-3-3-70b-instruct".to_owned(),
+        ];
+        let config = generate_provider_config(
+            DiscoveredProviderKind::Watsonx,
+            Some("https://us-south.ml.cloud.ibm.com"),
+            None,
+            None,
+            &models,
+        )
+        .unwrap();
+
+        assert_eq!(config.provider, "watsonx");
+        assert_eq!(config.models.len(), 2);
+
+        let granite = config.models.get("ibm/granite-3-8b-instruct").unwrap();
+        assert!(granite.aliases.contains(&"default".to_owned()));
+        assert!(granite.aliases.contains(&"granite-3-8b-instruct".to_owned()));
+
+        let llama = config.models.get("meta-llama/llama-3-3-70b-instruct").unwrap();
+        assert!(llama.aliases.contains(&"llama-3-3-70b-instruct".to_owned()));
+
+        // Resolve by alias
+        let resolved = config.resolve_runtime_profile(Some("llama-3-3-70b-instruct")).unwrap();
+        assert_eq!(resolved.capabilities.identity.model, "meta-llama/llama-3-3-70b-instruct");
     }
 }

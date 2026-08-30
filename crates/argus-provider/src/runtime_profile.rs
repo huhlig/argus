@@ -330,14 +330,16 @@ impl ProviderRuntimeProfile {
             } => {
                 let service_url = substitute_value(service_url, &mut read_secret)?;
                 let api_version = substitute_value(api_version, &mut read_secret)?;
+                let resolved_scope = scope.resolve(&mut read_secret)?;
+                let resolved_credential = credential.resolve(&mut read_secret)?;
                 LangchartModelProvider::watsonx(
                     self.capabilities.clone(),
                     WatsonxConfig {
                         service_url,
                         api_version,
-                        scope: scope.resolve(),
+                        scope: resolved_scope,
                     },
-                    credential.resolve(&mut read_secret)?,
+                    resolved_credential,
                 )
             }
             ProviderTransportProfile::Bedrock {
@@ -437,10 +439,13 @@ impl ProviderTransportProfile {
 }
 
 impl WatsonxScopeProfile {
-    fn resolve(&self) -> WatsonxScope {
+    fn resolve(
+        &self,
+        mut read_secret: impl FnMut(&str) -> Option<String>,
+    ) -> Result<WatsonxScope, ProviderError> {
         match self {
-            Self::Project(id) => WatsonxScope::Project(id.clone()),
-            Self::Space(id) => WatsonxScope::Space(id.clone()),
+            Self::Project(id) => substitute_value(id, &mut read_secret).map(WatsonxScope::Project),
+            Self::Space(id) => substitute_value(id, &mut read_secret).map(WatsonxScope::Space),
         }
     }
 }
