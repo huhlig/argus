@@ -194,12 +194,27 @@ async fn discover_watsonx_models(
         ));
     };
 
-    let base = base_url.trim_end_matches('/');
-    let url = if base.contains("/ml/v1") {
-        format!("{base}/foundation_model_specs?version=2023-05-29")
+    let (base_clean, query_pid) = if let Some((clean, query)) = base_url.split_once('?') {
+        let extracted_pid = query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("project_id="))
+            .map(ToOwned::to_owned);
+        (clean.trim_end_matches('/'), extracted_pid)
     } else {
-        format!("{base}/ml/v1/foundation_model_specs?version=2023-05-29")
+        (base_url.trim_end_matches('/'), None)
     };
+
+    let project_id_env = std::env::var("WATSONX_PROJECT_ID").ok();
+    let effective_pid = query_pid.or(project_id_env);
+
+    let mut url = if base_clean.contains("/ml/v1") {
+        format!("{base_clean}/foundation_model_specs?version=2023-05-29")
+    } else {
+        format!("{base_clean}/ml/v1/foundation_model_specs?version=2023-05-29")
+    };
+    if let Some(pid) = effective_pid.as_deref().filter(|p| !p.trim().is_empty()) {
+        url.push_str(&format!("&project_id={}", pid.trim()));
+    }
 
     let response = client
         .get(&url)

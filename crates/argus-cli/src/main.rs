@@ -339,7 +339,7 @@ Examples:
 const HELP_PROVIDER: &str = "Manage and discover model provider configurations
 
 Usage:
-  argus provider discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--timeout <seconds>]
+  argus provider discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--project <id>] [--project-env <var>] [--output-dir <path>] [--timeout <seconds>]
   argus provider list [--dir <path>]
 
 Commands:
@@ -357,6 +357,7 @@ Supported Provider Types:
 
 Examples:
   argus provider discover --type bedrock --endpoint us-east-1
+  argus provider discover --type watsonx --endpoint https://us-south.ml.cloud.ibm.com --project 015cc44b-...
   argus provider discover --type lemonade --endpoint http://10.0.0.51:13305/v1
   argus provider discover --type openai --api-key-env OPENAI_API_KEY
   argus provider discover --type anthropic --api-key-env ANTHROPIC_API_KEY
@@ -366,19 +367,22 @@ Examples:
 const HELP_PROVIDER_DISCOVER: &str = "Discover models from a provider and populate the user provider configuration
 
 Usage:
-  argus provider discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--output-dir <path>] [--timeout <seconds>] [--overwrite]
+  argus provider discover --type <type> [--endpoint <url>] [--api-key <key>] [--api-key-env <var>] [--project <id>] [--project-env <var>] [--output-dir <path>] [--timeout <seconds>] [--overwrite]
 
 Options:
   --type, -t <type>          Provider kind: bedrock, lemonade, ollama, openai, anthropic, lm_studio, watsonx (required)
   --endpoint, -e <url>       Provider API base endpoint URL or region (default depends on provider type)
   --api-key, -k <key>        Direct API key for discovery request (optional)
-  --api-key-env <var>        Environment variable name containing the API key (e.g. OPENAI_API_KEY)
+  --api-key-env <var>        Environment variable name containing the API key (e.g. OPENAI_API_KEY, WATSONX_API_KEY)
+  --project, -p <id>         WatsonX project ID (for watsonx.ai provider)
+  --project-env <var>        Environment variable name containing the WatsonX project ID (e.g. WATSONX_PROJECT_ID)
   --output-dir, -o <path>    Destination directory for generated provider configuration (default: user providers folder)
   --timeout <seconds>        Request timeout in seconds (default: 1800 for lemonade, 30 for discovery)
   --overwrite                Overwrite existing provider configuration instead of merging newly discovered models
 
 Examples:
   argus provider discover --type bedrock --endpoint us-east-1
+  argus provider discover --type watsonx --endpoint https://us-south.ml.cloud.ibm.com --project 015cc44b-...
   argus provider discover --type lemonade --endpoint http://10.0.0.51:13305/v1
   argus provider discover --type openai --api-key-env OPENAI_API_KEY
   argus provider discover --type anthropic --api-key-env ANTHROPIC_API_KEY
@@ -3878,6 +3882,8 @@ fn provider_discover_command(
     let mut endpoint: Option<String> = None;
     let mut api_key: Option<String> = None;
     let mut api_key_env: Option<String> = None;
+    let mut project_id: Option<String> = None;
+    let mut project_env: Option<String> = None;
     let mut output_dir_arg: Option<String> = None;
     let mut timeout_seconds: Option<u64> = None;
     let mut overwrite = false;
@@ -3928,6 +3934,26 @@ fn provider_discover_command(
                         .clone(),
                 };
                 api_key_env = Some(val);
+            }
+            "--project" | "--project-id" | "-p" => {
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                };
+                project_id = Some(val);
+            }
+            "--project-env" => {
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                };
+                project_env = Some(val);
             }
             "--output-dir" | "-o" => {
                 let val = match inline_val {
@@ -4033,6 +4059,30 @@ fn provider_discover_command(
         _ => None,
     });
 
+    // Extract project fallback from existing transport
+    let existing_project = existing_config.as_ref().and_then(|cfg| match &cfg.transport {
+        argus_provider::ProviderTransportProfile::Watsonx { scope, .. } => match scope {
+            argus_provider::WatsonxScopeProfile::Project(id) => Some(id.clone()),
+            argus_provider::WatsonxScopeProfile::Space(id) => Some(id.clone()),
+        },
+        _ => None,
+    });
+
+    let effective_project = project_id
+        .clone()
+        .or_else(|| project_env.as_ref().map(|v| if v.starts_with('$') { v.clone() } else { format!("${{{v}}}") }))
+        .or(existing_project);
+
+    let discovery_endpoint = if let Some(ref pid) = project_id {
+        if effective_endpoint.contains('?') {
+            format!("{effective_endpoint}&project_id={pid}")
+        } else {
+            format!("{effective_endpoint}?project_id={pid}")
+        }
+    } else {
+        effective_endpoint.to_owned()
+    };
+
     // Determine effective API key for the discovery network query
     let query_api_key = if let Some(ref key) = api_key {
         Some(key.clone())
@@ -4067,7 +4117,7 @@ fn provider_discover_command(
     let models = runtime
         .block_on(argus_provider::discover_models(
             kind,
-            Some(effective_endpoint),
+            Some(&discovery_endpoint),
             query_api_key.as_deref(),
         ))
         .map_err(|error| {
@@ -4088,7 +4138,7 @@ fn provider_discover_command(
         ))
     })?;
 
-    let newly_generated = argus_provider::generate_provider_config(
+    let mut newly_generated = argus_provider::generate_provider_config(
         kind,
         Some(effective_endpoint),
         config_api_key_env,
@@ -4099,9 +4149,16 @@ fn provider_discover_command(
         argus_core::ArgusError::invalid_input(format!("cannot generate provider config: {error}"))
     })?;
 
+    // Apply configured project ID if WatsonX
+    if let Some(ref pid) = effective_project {
+        if let argus_provider::ProviderTransportProfile::Watsonx { ref mut scope, .. } = newly_generated.transport {
+            *scope = argus_provider::WatsonxScopeProfile::Project(pid.clone());
+        }
+    }
+
     let config = if let Some(mut existing) = existing_config {
         // If explicit CLI flags were passed, update transport; otherwise preserve existing transport
-        if endpoint.is_some() || api_key.is_some() || api_key_env.is_some() || timeout_seconds.is_some() {
+        if endpoint.is_some() || api_key.is_some() || api_key_env.is_some() || project_id.is_some() || project_env.is_some() || timeout_seconds.is_some() {
             existing.transport = newly_generated.transport;
         }
         // Merge models: preserve existing configured models (custom limits, custom aliases), add newly discovered models
