@@ -265,6 +265,13 @@ For each dimension:
   * "unable_to_verify" (status: "unable_to_verify"): Insufficient evidence.
   * "not_applicable" (status: "not_applicable"): Dimension is not applicable to this target.
 
+Evidence Citation Rules:
+- In `claims[].evidence`: Cite strictly documentation evidence IDs (records with kind="documentation").
+- In `dimensions[].evidence`:
+  * For dimension "presence": Cite at least one documentation evidence ID (kind="documentation").
+  * For all other 13 dimensions (purpose, behavior, inputs, outputs, errors, panics, safety, side_effects, invariants, examples, accuracy, currency, value) when status is "satisfied" or "deficient": You MUST cite BOTH at least one documentation evidence ID (kind="documentation") AND at least one source evidence ID (kind="source") from the provided evidence list.
+- In `findings[].evidence`: You MUST cite BOTH at least one documentation evidence ID and at least one source evidence ID.
+
 Decision Rules:
 - If ANY dimension is deficient (due to material omission or contradictory documentation):
   * Emit `event_type: "review.candidate_found"`
