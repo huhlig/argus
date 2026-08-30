@@ -72,7 +72,7 @@ pub struct ProviderExecutor {
     policy: ProviderPolicy,
     repair: RepairPolicy,
     validator: Arc<dyn OutputValidator>,
-    concurrency: Semaphore,
+    concurrency: Arc<Semaphore>,
     telemetry: Mutex<ProviderTelemetry>,
     telemetry_sink: Option<Arc<dyn ProviderTelemetrySink>>,
 }
@@ -95,9 +95,9 @@ impl ProviderExecutor {
         Ok(Self {
             provider,
             expected_identity,
-            concurrency: Semaphore::new(
+            concurrency: Arc::new(Semaphore::new(
                 usize::try_from(policy.limits.max_concurrency).unwrap_or(usize::MAX),
-            ),
+            )),
             policy,
             repair,
             validator,
@@ -110,6 +110,26 @@ impl ProviderExecutor {
     pub fn with_telemetry_sink(mut self, sink: Arc<dyn ProviderTelemetrySink>) -> Self {
         self.telemetry_sink = Some(sink);
         self
+    }
+
+    /// Returns a child executor scoped for an individual work item review.
+    ///
+    /// The scoped executor shares the provider adapter, expected identity, validation,
+    /// policy configuration, repair policy, concurrency semaphore, and telemetry sink,
+    /// but tracks budget consumption (request count, token count) independently for the
+    /// single work item lifecycle.
+    #[must_use]
+    pub fn scoped_for_review(&self) -> Arc<Self> {
+        Arc::new(Self {
+            provider: self.provider.clone(),
+            expected_identity: self.expected_identity.clone(),
+            policy: self.policy.clone(),
+            repair: self.repair,
+            validator: self.validator.clone(),
+            concurrency: self.concurrency.clone(),
+            telemetry: Mutex::new(ProviderTelemetry::default()),
+            telemetry_sink: self.telemetry_sink.clone(),
+        })
     }
 
     pub async fn execute(&self, request: ModelRequest) -> Result<ModelResponse, ProviderError> {
@@ -841,5 +861,35 @@ mod tests {
         assert!(snapshots[0].1.provider_call_millis >= 1);
         assert_eq!(snapshots[0].1.input_tokens, 90);
         assert_eq!(snapshots[0].1.output_tokens, 20);
+    }
+
+    #[tokio::test]
+    async fn scoped_for_review_resets_budget_per_item_while_sharing_concurrency() {
+        let provider = fixture([
+            Ok(response(json!({"status": "pass"}), 0)),
+            Ok(response(json!({"status": "pass"}), 0)),
+        ]);
+        let parent = ProviderExecutor::new(
+            provider,
+            identity(),
+            policy(1), // max_requests: 1
+            RepairPolicy {
+                max_repair_attempts: 0,
+            },
+            status_validator(),
+        )
+        .unwrap();
+
+        // First scoped executor executes 1 request (satisfying its budget of 1)
+        let item1 = parent.scoped_for_review();
+        assert!(item1.execute(request()).await.is_ok());
+        assert!(matches!(
+            item1.execute(request()).await,
+            Err(ProviderError::BudgetExceeded(_))
+        ));
+
+        // Second scoped executor gets a fresh budget of 1 request
+        let item2 = parent.scoped_for_review();
+        assert!(item2.execute(request()).await.is_ok());
     }
 }

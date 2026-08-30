@@ -325,6 +325,12 @@ impl ArchitectureAssessment {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ArchitectureEvidenceCitationDraft {
+    pub evidence: EvidenceId,
+    pub related_targets: Vec<TargetId>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ArchitectureCandidateDraft {
     pub id: String,
     pub severity: Severity,
@@ -332,7 +338,7 @@ pub struct ArchitectureCandidateDraft {
     pub dimensions: BTreeSet<ArchitectureDimension>,
     pub confidence: Confidence,
     pub explanation: String,
-    pub citations: Vec<ArchitectureEvidenceCitation>,
+    pub citations: Vec<ArchitectureEvidenceCitationDraft>,
     pub observed_facts: Vec<String>,
     pub inferred_intent: Option<String>,
 }
@@ -400,8 +406,9 @@ impl ArchitectureAssessmentBinding {
                 ));
             }
             let mut seen_citations = BTreeSet::new();
-            for citation in &c.citations {
-                if !seen_citations.insert(&citation.evidence) {
+            let mut citations = Vec::with_capacity(c.citations.len());
+            for citation in c.citations {
+                if !seen_citations.insert(citation.evidence.clone()) {
                     return Err(argus_core::ArgusError::invalid_input(
                         "architecture candidate repeats an evidence citation",
                     ));
@@ -411,11 +418,6 @@ impl ArchitectureAssessmentBinding {
                         "architecture candidate cites evidence outside the trusted package",
                     )
                 })?;
-                if citation.kind != trusted.kind || citation.location != trusted.location {
-                    return Err(argus_core::ArgusError::invalid_input(
-                        "architecture candidate citation metadata does not match trusted evidence",
-                    ));
-                }
                 if citation
                     .related_targets
                     .iter()
@@ -425,6 +427,12 @@ impl ArchitectureAssessmentBinding {
                         "architecture candidate citation references a target outside its trusted scope",
                     ));
                 }
+                citations.push(ArchitectureEvidenceCitation {
+                    evidence: citation.evidence,
+                    kind: trusted.kind,
+                    location: trusted.location.clone(),
+                    related_targets: citation.related_targets,
+                });
             }
             candidates.push(ArchitectureCandidate {
                 id: c.id,
@@ -433,7 +441,7 @@ impl ArchitectureAssessmentBinding {
                 dimensions: c.dimensions,
                 confidence: c.confidence,
                 explanation: c.explanation,
-                citations: c.citations,
+                citations,
                 target: self.target.clone(),
                 scope: self.scope,
                 observed_facts: c.observed_facts,
@@ -704,7 +712,10 @@ mod tests {
                     dimensions: BTreeSet::from([ArchitectureDimension::DependencyStructure]),
                     confidence: Confidence::from_basis_points(9500).unwrap(),
                     explanation: "Direct dependency on presentation layer".to_owned(),
-                    citations: vec![citation],
+                    citations: vec![ArchitectureEvidenceCitationDraft {
+                        evidence: citation.evidence.clone(),
+                        related_targets: citation.related_targets.clone(),
+                    }],
                     observed_facts: vec!["rust:calls edge from storage to ui".to_owned()],
                     inferred_intent: Some("Intended to decouple backend from UI".to_owned()),
                 }],
@@ -724,6 +735,7 @@ mod tests {
             assessment.result.candidates[0].defect_kind,
             ArchitectureFindingKind::StructuralDefect
         );
+        assert_eq!(assessment.result.candidates[0].citations, vec![citation]);
         assert_eq!(assessment.result.constituent_health.total_constituents, 10);
         let _hash = assessment.content_hash();
 

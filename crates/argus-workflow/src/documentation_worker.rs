@@ -447,7 +447,7 @@ impl DocumentationWorker {
             self.queue.clone(),
             self.workflow_data.clone(),
             materialized,
-            self.runtime.executor.clone(),
+            self.runtime.executor.scoped_for_review(),
             self.config.identity.clone(),
         )
         .map_err(|error| {

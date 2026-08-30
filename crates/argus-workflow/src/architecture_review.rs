@@ -450,7 +450,7 @@ impl PolicyAssessmentContract for ArchitectureAssessmentContract {
 }
 
 const ARCHITECTURE_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against architectural principles and constraints.
-Return only the final JSON decision. Do not emit analysis, chain-of-thought, or commentary outside the schema. Keep every rationale, observation, explanation, and summary concise: one sentence per string, no more than two observations per dimension, and no repeated evidence narrative.
+Return only the final JSON decision. Do not emit analysis, chain-of-thought, or commentary outside the schema. Keep every rationale, observation, explanation, and summary concise: one sentence per string, no more than two observations per dimension, and no repeated evidence narrative. In each citation, copy `evidence` exactly from a supplied evidence item's `id` field (never its hash or location), and include only related target IDs present in that evidence.
 The static-analysis scope artifact is the authoritative structural input. Use its constituents, internal relations, boundary relations, dependency cycles, and inventory health directly. For package and workspace scopes, the constituent-summary artifact contains terminal lower-scope assessments and is authoritative for reviewed constituent health. Cite the applicable artifact for graph-derived or roll-up claims. The graph fingerprint identifies its complete pre-truncation input, while omitted_* counters identify bounded truncation. Do not invent an edge that is absent from the artifact, and do not treat an absent edge as proof when inventory is incomplete or facts were omitted.
 Evaluate all 6 architectural dimensions:
 1. dependency_structure: Proper dependency direction, acyclic graphs, and absence of forbidden couplings.
@@ -551,11 +551,10 @@ pub fn architecture_assessment_draft_schema() -> Value {
                                     "type": "array",
                                     "items": {
                                         "type": "object",
-                                        "required": ["evidence", "kind", "related_targets"],
+                                        "required": ["evidence", "related_targets"],
+                                        "additionalProperties": false,
                                         "properties": {
                                             "evidence": { "type": "string" },
-                                            "kind": { "type": "string" },
-                                            "location": { "type": ["object", "null"] },
                                             "related_targets": {
                                                 "type": "array",
                                                 "items": { "type": "string" }
@@ -594,7 +593,7 @@ mod tests {
     use argus_core::{Confidence, EvidenceId, EvidenceKind, PolicyId, Severity, TargetId};
     use argus_policies::{
         ArchitectureCandidateDraft, ArchitectureDimension, ArchitectureEvidenceCitation,
-        ArchitectureFindingKind,
+        ArchitectureEvidenceCitationDraft, ArchitectureFindingKind,
     };
     use argus_provider::OutputValidator;
     use std::collections::BTreeSet;
@@ -654,7 +653,10 @@ mod tests {
                     dimensions: BTreeSet::from([ArchitectureDimension::DependencyStructure]),
                     confidence: Confidence::from_basis_points(9500).unwrap(),
                     explanation: "Direct dependency on presentation layer".to_owned(),
-                    citations: vec![citation],
+                    citations: vec![ArchitectureEvidenceCitationDraft {
+                        evidence: citation.evidence.clone(),
+                        related_targets: citation.related_targets.clone(),
+                    }],
                     observed_facts: vec!["rust:calls edge from storage to ui".to_owned()],
                     inferred_intent: Some("Intended to decouple backend from UI".to_owned()),
                 }],
