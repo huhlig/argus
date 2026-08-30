@@ -121,6 +121,13 @@ pub async fn discover_models(
             discover_anthropic_models(&client, endpoint, key).await
         }
         DiscoveredProviderKind::Bedrock => {
+            if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+                if let Ok(models) = discover_openai_compatible_models(&client, endpoint, api_key).await {
+                    if !models.is_empty() {
+                        return Ok(models);
+                    }
+                }
+            }
             Ok(vec![
                 "anthropic.claude-3-7-sonnet-20250219-v1:0".to_owned(),
                 "anthropic.claude-3-5-sonnet-20241022-v2:0".to_owned(),
@@ -454,7 +461,14 @@ pub fn generate_runtime_profile(
             api_key: api_key_env,
         },
         DiscoveredProviderKind::Bedrock => {
-            let region = if endpoint.contains("bedrock-runtime.") {
+            let region = if let Some(pos) = endpoint.find(".api.aws") {
+                let prefix = &endpoint[..pos];
+                prefix
+                    .split('.')
+                    .last()
+                    .unwrap_or("us-east-1")
+                    .to_owned()
+            } else if endpoint.contains("bedrock-runtime.") {
                 endpoint
                     .split("bedrock-runtime.")
                     .nth(1)
