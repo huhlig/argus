@@ -778,10 +778,34 @@ pub fn generate_provider_config(
         _ => StructuredOutputSupport::BestEffort,
     };
 
+    let default_model_idx = model_ids
+        .iter()
+        .position(|m| {
+            let lower = m.to_ascii_lowercase();
+            lower.contains("claude-3-7")
+                || lower.contains("claude-3-5")
+                || lower.contains("llama-3-3-70b")
+                || lower.contains("granite-3-8b")
+                || lower.contains("qwen3.6-35b")
+                || lower.contains("qwen3.8-27b")
+        })
+        .or_else(|| {
+            model_ids.iter().position(|m| {
+                let lower = m.to_ascii_lowercase();
+                !lower.contains("embed")
+                    && !lower.contains("rerank")
+                    && !lower.contains("cross-encoder")
+                    && !lower.contains("slate")
+                    && !lower.contains("ttm")
+                    && !lower.contains("guardian")
+            })
+        })
+        .unwrap_or(0);
+
     let mut models = std::collections::BTreeMap::new();
     for (idx, model_id) in model_ids.iter().enumerate() {
         let mut aliases = Vec::new();
-        if idx == 0 {
+        if idx == default_model_idx {
             aliases.push("default".to_owned());
         }
         let alias = slugify_model_alias(model_id);
