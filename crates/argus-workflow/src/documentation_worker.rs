@@ -98,6 +98,7 @@ pub struct DocumentationWorker {
     workflow_data: Arc<WorkflowDataStore>,
     runtime: DocumentationWorkerRuntime,
     config: DocumentationWorkerConfig,
+    checkpoint_store: Arc<dyn CheckpointStore>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -131,11 +132,18 @@ impl DocumentationWorker {
                 "documentation worker adapter and policy must not be empty",
             ));
         }
+        let checkpoint_store = Arc::new(
+            open_checkpoint_store(&config.state_directory).map_err(|error| {
+                ArgusError::invariant("cannot open documentation checkpoint store")
+                    .with_source(error)
+            })?,
+        );
         Ok(Self {
             queue,
             workflow_data,
             runtime,
             config,
+            checkpoint_store,
         })
     }
 
@@ -448,16 +456,10 @@ impl DocumentationWorker {
         let actors = registry.reconstruct(&manifest).map_err(|error| {
             ArgusError::invariant("cannot reconstruct documentation actors").with_source(error)
         })?;
-        let checkpoint_store = Arc::new(
-            open_checkpoint_store(&self.config.state_directory).map_err(|error| {
-                ArgusError::invariant("cannot open documentation checkpoint store")
-                    .with_source(error)
-            })?,
-        );
         Ok(PreparedDocumentationRuntime {
             compiled,
             actors,
-            checkpoint_store,
+            checkpoint_store: self.checkpoint_store.clone(),
         })
     }
 
@@ -982,24 +984,22 @@ mod tests {
         )
         .unwrap();
 
-        let result1 = worker.run_next(3).await.unwrap();
+        let (result1, result2) = tokio::join!(worker.run_next(3), worker.run_next(3));
+        let result1 = result1.unwrap();
+        let result2 = result2.unwrap();
         let events = captured.payloads().await;
         assert!(
             matches!(result1, DocumentationWorkerResult::Succeeded { .. }),
             "unexpected worker result: {result1:?}; events: {events:#?}"
         );
-        assert_eq!(queue.status(3).unwrap().succeeded, 1);
+        assert!(
+            matches!(result2, DocumentationWorkerResult::Succeeded { .. }),
+            "unexpected concurrent worker result: {result2:?}; events: {events:#?}"
+        );
+        assert_eq!(queue.status(3).unwrap().succeeded, 2);
         assert!(queue.events().unwrap().iter().any(|event| {
             event.work_id == materialized.unit.work_item && event.kind == QueueEventKind::Heartbeat
         }));
-
-        // Verify sequential multi-item execution on the same worker instance
-        let result2 = worker.run_next(4).await.unwrap();
-        assert!(
-            matches!(result2, DocumentationWorkerResult::Succeeded { .. }),
-            "unexpected second worker result: {result2:?}"
-        );
-        assert_eq!(queue.status(4).unwrap().succeeded, 2);
 
         let invalid_id = WorkItemId::derive([b"invalid-documentation-admission".as_slice()]);
         let coverage = queue

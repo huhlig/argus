@@ -61,6 +61,7 @@ pub struct ArchitectureWorker {
     workflow_data: Arc<WorkflowDataStore>,
     runtime: DocumentationWorkerRuntime,
     config: ArchitectureWorkerConfig,
+    checkpoint_store: Arc<dyn CheckpointStore>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,11 +95,18 @@ impl ArchitectureWorker {
                 "architecture worker adapter and policy must not be empty",
             ));
         }
+        let checkpoint_store = Arc::new(
+            open_checkpoint_store(&config.state_directory).map_err(|error| {
+                ArgusError::invariant("cannot open architecture checkpoint store")
+                    .with_source(error)
+            })?,
+        );
         Ok(Self {
             queue,
             workflow_data,
             runtime,
             config,
+            checkpoint_store,
         })
     }
 
@@ -630,16 +638,10 @@ impl ArchitectureWorker {
         let actors = registry.reconstruct(&manifest).map_err(|error| {
             ArgusError::invariant("cannot reconstruct architecture actors").with_source(error)
         })?;
-        let checkpoint_store = Arc::new(
-            open_checkpoint_store(&self.config.state_directory).map_err(|error| {
-                ArgusError::invariant("cannot open architecture checkpoint store")
-                    .with_source(error)
-            })?,
-        );
         Ok(PreparedArchitectureRuntime {
             compiled,
             actors,
-            checkpoint_store,
+            checkpoint_store: self.checkpoint_store.clone(),
         })
     }
 

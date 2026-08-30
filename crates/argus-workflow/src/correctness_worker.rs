@@ -49,6 +49,7 @@ pub struct CorrectnessWorker {
     workflow_data: Arc<WorkflowDataStore>,
     runtime: DocumentationWorkerRuntime,
     config: CorrectnessWorkerConfig,
+    checkpoint_store: Arc<dyn CheckpointStore>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,11 +83,17 @@ impl CorrectnessWorker {
                 "correctness worker adapter and policy must not be empty",
             ));
         }
+        let checkpoint_store = Arc::new(
+            open_checkpoint_store(&config.state_directory).map_err(|error| {
+                ArgusError::invariant("cannot open correctness checkpoint store").with_source(error)
+            })?,
+        );
         Ok(Self {
             queue,
             workflow_data,
             runtime,
             config,
+            checkpoint_store,
         })
     }
 
@@ -398,15 +405,10 @@ impl CorrectnessWorker {
         let actors = registry.reconstruct(&manifest).map_err(|error| {
             ArgusError::invariant("cannot reconstruct correctness actors").with_source(error)
         })?;
-        let checkpoint_store = Arc::new(
-            open_checkpoint_store(&self.config.state_directory).map_err(|error| {
-                ArgusError::invariant("cannot open correctness checkpoint store").with_source(error)
-            })?,
-        );
         Ok(PreparedCorrectnessRuntime {
             compiled,
             actors,
-            checkpoint_store,
+            checkpoint_store: self.checkpoint_store.clone(),
         })
     }
 

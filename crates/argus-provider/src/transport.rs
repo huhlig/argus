@@ -324,17 +324,11 @@ impl ModelProvider for LangchartModelProvider {
                 strict: true,
             },
         };
-        let system_content = match strategy {
-            StructuredOutputStrategy::NativeJsonSchema => {
-                "Return only JSON matching the supplied response schema.".to_owned()
-            }
-            StructuredOutputStrategy::NativeJsonObject | StructuredOutputStrategy::PromptGuidedText => {
-                format!(
-                    "Return only JSON matching this schema: {}",
-                    request.structured_output_schema
-                )
-            }
-        };
+        let system_content = structured_system_content(
+            strategy,
+            &request.structured_output_schema,
+            &self.capabilities.identity.model,
+        );
         tracing::debug!(
             provider = %self.capabilities.identity.provider,
             model = %self.capabilities.identity.model,
@@ -449,6 +443,25 @@ impl StructuredOutputStrategy {
             },
         }
     }
+}
+
+fn structured_system_content(
+    strategy: StructuredOutputStrategy,
+    schema: &serde_json::Value,
+    model: &str,
+) -> String {
+    let mut content = match strategy {
+        StructuredOutputStrategy::NativeJsonSchema => {
+            "Return only JSON matching the supplied response schema.".to_owned()
+        }
+        StructuredOutputStrategy::NativeJsonObject | StructuredOutputStrategy::PromptGuidedText => {
+            format!("Return only JSON matching this schema: {schema}")
+        }
+    };
+    if model.to_ascii_lowercase().starts_with("qwen3") {
+        content.push_str("\n/no_think");
+    }
+    content
 }
 
 fn sanitize_and_parse_model_output(content: &str) -> Result<serde_json::Value, serde_json::Error> {
@@ -1047,5 +1060,22 @@ mod tests {
             StructuredOutputStrategy::for_provider("openai", StructuredOutputSupport::SchemaConstrained),
             StructuredOutputStrategy::NativeJsonSchema
         );
+    }
+
+    #[test]
+    fn qwen3_structured_requests_disable_thinking() {
+        let schema = serde_json::json!({"type": "object"});
+        let qwen = structured_system_content(
+            StructuredOutputStrategy::NativeJsonObject,
+            &schema,
+            "Qwen3.6-35B-A3B-GGUF",
+        );
+        let other = structured_system_content(
+            StructuredOutputStrategy::NativeJsonObject,
+            &schema,
+            "Bonsai-8B-gguf",
+        );
+        assert!(qwen.ends_with("/no_think"));
+        assert!(!other.contains("/no_think"));
     }
 }

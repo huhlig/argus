@@ -450,6 +450,7 @@ impl PolicyAssessmentContract for ArchitectureAssessmentContract {
 }
 
 const ARCHITECTURE_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against architectural principles and constraints.
+Return only the final JSON decision. Do not emit analysis, chain-of-thought, or commentary outside the schema. Keep every rationale, observation, explanation, and summary concise: one sentence per string, no more than two observations per dimension, and no repeated evidence narrative.
 The static-analysis scope artifact is the authoritative structural input. Use its constituents, internal relations, boundary relations, dependency cycles, and inventory health directly. For package and workspace scopes, the constituent-summary artifact contains terminal lower-scope assessments and is authoritative for reviewed constituent health. Cite the applicable artifact for graph-derived or roll-up claims. The graph fingerprint identifies its complete pre-truncation input, while omitted_* counters identify bounded truncation. Do not invent an edge that is absent from the artifact, and do not treat an absent edge as proof when inventory is incomplete or facts were omitted.
 Evaluate all 6 architectural dimensions:
 1. dependency_structure: Proper dependency direction, acyclic graphs, and absence of forbidden couplings.
@@ -715,6 +716,12 @@ mod tests {
                 "schema contains forbidden key: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn architecture_instructions_bound_the_final_response() {
+        assert!(ARCHITECTURE_INSTRUCTIONS.contains("Return only the final JSON decision"));
+        assert!(ARCHITECTURE_INSTRUCTIONS.contains("no more than two observations per dimension"));
     }
 
     #[test]

@@ -653,10 +653,9 @@ fn provider_catalog_dirs(env_config_dir: Option<&std::path::Path>) -> Vec<std::p
     dirs
 }
 
-fn provider_search_candidates_with_env(
+fn explicit_provider_path_candidates(
     root: &std::path::Path,
     name_or_path: &str,
-    env_config_dir: Option<&std::path::Path>,
 ) -> Vec<std::path::PathBuf> {
     let mut candidates = Vec::new();
     let as_path = std::path::PathBuf::from(name_or_path);
@@ -679,31 +678,15 @@ fn provider_search_candidates_with_env(
         return candidates;
     }
 
-    // 2. Named provider catalog: ONLY searched in secure user/system provider directories
-    let provider_dirs = provider_catalog_dirs(env_config_dir);
-    for dir in provider_dirs {
-        if !has_json {
-            candidates.push(dir.join(format!("{name_or_path}.json")));
-        }
-        candidates.push(dir.join(name_or_path));
-    }
-
-    // Workspace provider locations
-    candidates.push(root.join(format!(".argus/providers/{name_or_path}.json")));
-    candidates.push(root.join(format!(".argus/config/providers/{name_or_path}.json")));
-
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|p| seen.insert(p.clone()));
     candidates
 }
 
 fn format_available_providers_and_models(
-    root: &std::path::Path,
     env_config_dir: Option<&std::path::Path>,
 ) -> String {
     let mut search_dirs = provider_catalog_dirs(env_config_dir);
-    search_dirs.push(root.join(".argus/providers"));
-    search_dirs.push(root.join(".argus/config/providers"));
 
     let mut seen_dirs = std::collections::HashSet::new();
     search_dirs.retain(|d| seen_dirs.insert(d.clone()));
@@ -775,7 +758,7 @@ fn resolve_provider_profile_with_env(
 
     // 1. Direct explicit file path passed
     if is_explicit_path(name_or_path) {
-        let candidates = provider_search_candidates_with_env(root, name_or_path, env_config_dir);
+        let candidates = explicit_provider_path_candidates(root, name_or_path);
         for path in &candidates {
             if path.is_file() {
                 if let Ok(bytes) = std::fs::read(path) {
@@ -933,7 +916,7 @@ fn resolve_provider_profile_with_env(
         }
     }
 
-    let available = format_available_providers_and_models(root, env_config_dir);
+    let available = format_available_providers_and_models(env_config_dir);
     Err(argus_core::ArgusError::invalid_input(format!(
         "provider configuration or model `{name_or_path}` not found.{available}"
     )))
@@ -2036,15 +2019,6 @@ where
     let queue_note =
         remaining_in_queue.map_or_else(String::new, |count| format!(" ({count} pending in queue)"));
 
-    tracing::info!(
-        policy = %category,
-        step = index + 1,
-        limit = limit.unwrap_or(0),
-        provider = %provider_id,
-        model = %model_id,
-        "[{category}] Leased item {item_label}{queue_note} for processing"
-    );
-
     let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
     let ticker_category = category.clone();
     let ticker_provider = provider_id.clone();
@@ -2082,6 +2056,7 @@ where
     let duration = start.elapsed();
     metrics::histogram!("argus.worker.step_duration_seconds", "policy" => category.clone())
         .record(duration.as_secs_f64());
+
     result.map(|res| (res, duration))
 }
 
@@ -4063,7 +4038,9 @@ fn provider_discover_command(
     } else if let Some(sys_dir) = system_config_dir() {
         sys_dir.join("providers")
     } else {
-        std::path::PathBuf::from(".argus/providers")
+        return Err(argus_core::ArgusError::invalid_input(
+            "cannot determine the user provider directory; pass --output-dir explicitly",
+        ));
     };
 
     let file_path = output_dir.join(format!("{}.json", kind.as_str()));
@@ -4289,7 +4266,7 @@ fn provider_discover_command(
 }
 
 fn provider_list_command(
-    root: &std::path::Path,
+    _root: &std::path::Path,
     args: &[String],
     env_config_dir: Option<&std::path::Path>,
 ) -> Result<String, argus_core::ArgusError> {
@@ -4337,8 +4314,6 @@ fn provider_list_command(
         if let Some(sys_dir) = system_config_dir() {
             search_dirs.push(sys_dir.join("providers"));
         }
-        search_dirs.push(root.join(".argus/config/providers"));
-        search_dirs.push(root.join(".argus/config"));
     }
 
     let mut seen_dirs = std::collections::HashSet::new();
