@@ -349,7 +349,7 @@ impl ModelProvider for LangchartModelProvider {
                     profile: None,
                     model: Some(self.capabilities.identity.model.clone()),
                     temperature: Some(0.0),
-                    max_tokens: Some(request.max_output_tokens),
+                    max_tokens: Some(request.max_output_tokens.min(self.capabilities.max_output_tokens)),
                 },
                 messages: vec![
                     Message::System {

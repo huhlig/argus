@@ -226,6 +226,8 @@ pub enum ProviderTransportProfile {
         #[serde(default)]
         session_token_env: Option<String>,
         #[serde(default)]
+        bearer_token_env: Option<String>,
+        #[serde(default)]
         endpoint_url: Option<String>,
         #[serde(default)]
         profile_name: Option<String>,
@@ -293,20 +295,28 @@ impl ProviderRuntimeProfile {
                 base_url,
                 api_key_env,
                 request_timeout_seconds,
-            } => LangchartModelProvider::lemonade_with_timeout(
-                self.capabilities.clone(),
-                base_url.as_deref(),
-                resolve_optional_secret(api_key_env.as_deref(), &mut read_secret)?,
-                *request_timeout_seconds,
-            ),
+            } => {
+                let api_key =
+                    resolve_optional_secret(api_key_env.as_deref(), &mut read_secret)?;
+                LangchartModelProvider::lemonade_with_timeout(
+                    self.capabilities.clone(),
+                    base_url.as_deref(),
+                    api_key,
+                    *request_timeout_seconds,
+                )
+            }
             ProviderTransportProfile::LmStudio {
                 base_url,
                 api_key_env,
-            } => LangchartModelProvider::lm_studio(
-                self.capabilities.clone(),
-                base_url.as_deref(),
-                resolve_optional_secret(api_key_env.as_deref(), &mut read_secret)?,
-            ),
+            } => {
+                let api_key =
+                    resolve_optional_secret(api_key_env.as_deref(), &mut read_secret)?;
+                LangchartModelProvider::lm_studio(
+                    self.capabilities.clone(),
+                    base_url.as_deref(),
+                    api_key,
+                )
+            }
             ProviderTransportProfile::Watsonx {
                 service_url,
                 api_version,
@@ -314,7 +324,11 @@ impl ProviderRuntimeProfile {
                 credential,
             } => LangchartModelProvider::watsonx(
                 self.capabilities.clone(),
-                WatsonxConfig::new(service_url, api_version, scope.resolve()),
+                WatsonxConfig {
+                    service_url: service_url.clone(),
+                    api_version: api_version.clone(),
+                    scope: scope.resolve(),
+                },
                 credential.resolve(&mut read_secret)?,
             ),
             ProviderTransportProfile::Bedrock {
@@ -322,29 +336,40 @@ impl ProviderRuntimeProfile {
                 access_key_id_env,
                 secret_access_key_env,
                 session_token_env,
+                bearer_token_env,
                 endpoint_url,
                 profile_name,
             } => {
+                let bearer_token = bearer_token_env
+                    .as_deref()
+                    .and_then(&mut read_secret)
+                    .or_else(|| read_secret("AWS_BEARER_TOKEN_BEDROCK"));
                 let access_key =
                     resolve_optional_secret(access_key_id_env.as_deref(), &mut read_secret)?;
                 let secret_key =
                     resolve_optional_secret(secret_access_key_env.as_deref(), &mut read_secret)?;
                 let session_token =
                     resolve_optional_secret(session_token_env.as_deref(), &mut read_secret)?;
-                let credentials = match (access_key, secret_key) {
-                    (Some(ak), Some(sk)) => crate::BedrockCredentials::Static {
-                        access_key_id: ak,
-                        secret_access_key: sk,
-                        session_token,
-                    },
-                    (None, None) => crate::BedrockCredentials::EnvironmentOrProfile,
-                    _ => {
-                        return Err(ProviderError::InvalidProfile(
-                            "both access_key_id and secret_access_key must be supplied for static credentials"
-                                .to_owned(),
-                        ));
+
+                let credentials = if let Some(token) = bearer_token {
+                    crate::BedrockCredentials::BearerToken(token)
+                } else {
+                    match (access_key, secret_key) {
+                        (Some(ak), Some(sk)) => crate::BedrockCredentials::Static {
+                            access_key_id: ak,
+                            secret_access_key: sk,
+                            session_token,
+                        },
+                        (None, None) => crate::BedrockCredentials::EnvironmentOrProfile,
+                        _ => {
+                            return Err(ProviderError::InvalidProfile(
+                                "both access_key_id and secret_access_key must be supplied for static credentials"
+                                    .to_owned(),
+                            ));
+                        }
                     }
                 };
+
                 LangchartModelProvider::bedrock(
                     self.capabilities.clone(),
                     crate::BedrockConfig {
@@ -540,6 +565,7 @@ mod tests {
                 access_key_id_env: Some("AWS_ACCESS_KEY_ID".to_owned()),
                 secret_access_key_env: Some("AWS_SECRET_ACCESS_KEY".to_owned()),
                 session_token_env: None,
+                bearer_token_env: None,
                 endpoint_url: None,
                 profile_name: None,
             }),
@@ -605,6 +631,7 @@ mod tests {
                 access_key_id_env: None,
                 secret_access_key_env: None,
                 session_token_env: None,
+                bearer_token_env: None,
                 endpoint_url: None,
                 profile_name: None,
             },

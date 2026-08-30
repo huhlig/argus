@@ -99,6 +99,7 @@ fn bedrock_runtime_profile_roundtrip_and_build() {
             access_key_id_env: Some("MY_AWS_KEY".to_owned()),
             secret_access_key_env: Some("MY_AWS_SECRET".to_owned()),
             session_token_env: None,
+            bearer_token_env: None,
             endpoint_url: None,
             profile_name: None,
         },
@@ -118,6 +119,37 @@ fn bedrock_runtime_profile_roundtrip_and_build() {
 
     assert_eq!(
         built.provider.capabilities().identity.model,
+        "anthropic.claude-3-7-sonnet-20250219-v1:0"
+    );
+
+    // Test Bearer Token resolution
+    let bearer_profile = ProviderRuntimeProfile {
+        schema_version: PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION,
+        capabilities: bedrock_capabilities(),
+        policy: bedrock_policy(),
+        repair: RepairPolicy {
+            max_repair_attempts: 1,
+        },
+        transport: ProviderTransportProfile::Bedrock {
+            region: "us-east-1".to_owned(),
+            access_key_id_env: None,
+            secret_access_key_env: None,
+            session_token_env: None,
+            bearer_token_env: Some("AWS_BEARER_TOKEN_BEDROCK".to_owned()),
+            endpoint_url: None,
+            profile_name: None,
+        },
+    };
+
+    let bearer_built = bearer_profile
+        .build_with_secrets(|name| match name {
+            "AWS_BEARER_TOKEN_BEDROCK" => Some("ABSK_FIXTURE_TOKEN".to_owned()),
+            _ => None,
+        })
+        .unwrap();
+
+    assert_eq!(
+        bearer_built.provider.capabilities().identity.model,
         "anthropic.claude-3-7-sonnet-20250219-v1:0"
     );
 }

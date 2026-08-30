@@ -465,6 +465,7 @@ pub fn generate_runtime_profile(
                 access_key_id_env: None,
                 secret_access_key_env: None,
                 session_token_env: None,
+                bearer_token_env: api_key_env.or_else(|| Some("AWS_BEARER_TOKEN_BEDROCK".to_owned())),
                 endpoint_url: if endpoint == DiscoveredProviderKind::Bedrock.default_endpoint() {
                     None
                 } else {
@@ -560,6 +561,7 @@ pub fn generate_provider_config(
                 access_key_id_env: None,
                 secret_access_key_env: None,
                 session_token_env: None,
+                bearer_token_env: api_key_env.or_else(|| Some("AWS_BEARER_TOKEN_BEDROCK".to_owned())),
                 endpoint_url: if endpoint == DiscoveredProviderKind::Bedrock.default_endpoint() {
                     None
                 } else {
@@ -590,11 +592,23 @@ pub fn generate_provider_config(
             aliases.push(alias);
         }
 
+        let (context_window_tokens, max_output_tokens) = if model_id.contains("haiku") {
+            (200_000, 4_096)
+        } else if model_id.contains("claude") {
+            (200_000, 8_192)
+        } else if model_id.contains("nova") {
+            (300_000, 5_120)
+        } else if model_id.contains("llama") {
+            (128_000, 8_192)
+        } else {
+            (131_072, 8_192)
+        };
+
         models.insert(
             model_id.clone(),
             ProviderModelConfig {
-                context_window_tokens: 131_072,
-                max_output_tokens: 8_192,
+                context_window_tokens,
+                max_output_tokens,
                 structured_output: Some(default_structured_output),
                 concurrency_capacity: if deployment == DeploymentMode::Local { 2 } else { 4 },
                 aliases,
