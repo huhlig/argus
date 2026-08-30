@@ -297,9 +297,13 @@ impl ProviderExecutor {
             || request.max_output_tokens == 0
             || request.max_output_tokens > capabilities.max_output_tokens
             || u64::from(request.max_output_tokens) > self.policy.limits.max_output_tokens
+            || request
+                .estimated_input_tokens
+                .saturating_add(u64::from(request.max_output_tokens))
+                > u64::from(capabilities.context_window_tokens)
         {
             return Err(ProviderError::InvalidPolicy(
-                "request token bounds exceed the assigned provider or policy".to_owned(),
+                "request token bounds exceed the assigned provider context window or policy".to_owned(),
             ));
         }
         Ok(())

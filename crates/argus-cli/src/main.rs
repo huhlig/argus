@@ -1637,8 +1637,8 @@ fn audit_command(
             &run.snapshot,
             &run.configuration,
             &argus_evidence::EvidenceBudget {
-                max_bytes: 1_000_000,
-                max_tokens: 250_000,
+                max_bytes: 400_000,
+                max_tokens: 80_000,
                 max_items: 32,
                 max_relation_depth: 0,
             },
@@ -1696,8 +1696,8 @@ fn audit_command(
             &run.snapshot,
             &run.configuration,
             &argus_evidence::EvidenceBudget {
-                max_bytes: 1_000_000,
-                max_tokens: 250_000,
+                max_bytes: 400_000,
+                max_tokens: 80_000,
                 max_items: 32,
                 max_relation_depth: 0,
             },
@@ -1757,8 +1757,8 @@ fn audit_command(
             &run.snapshot,
             &run.configuration,
             &argus_evidence::EvidenceBudget {
-                max_bytes: 1_000_000,
-                max_tokens: 250_000,
+                max_bytes: 400_000,
+                max_tokens: 80_000,
                 max_items: 64,
                 max_relation_depth: 2,
             },
