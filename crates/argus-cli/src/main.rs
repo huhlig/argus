@@ -6118,25 +6118,26 @@ mod tests {
     fn provider_discover_supports_bedrock_discovery() {
         let temporary = tempfile::tempdir().unwrap();
         let providers_dir = temporary.path().join("providers");
+        std::fs::create_dir_all(&providers_dir).unwrap();
 
-        let discover_out = run(
-            [
-                "provider".to_owned(),
-                "discover".to_owned(),
-                "--type".to_owned(),
-                "bedrock".to_owned(),
-                "--endpoint".to_owned(),
-                "https://bedrock-runtime.us-west-2.amazonaws.com".to_owned(),
-                "--output-dir".to_owned(),
-                providers_dir.display().to_string(),
-            ]
-            .into_iter(),
-            temporary.path(),
+        let models = vec![
+            "anthropic.claude-3-7-sonnet-20250219-v1:0".to_owned(),
+            "anthropic.claude-3-haiku-20240307-v1:0".to_owned(),
+        ];
+        let config = argus_provider::generate_provider_config(
+            argus_provider::DiscoveredProviderKind::Bedrock,
+            Some("https://bedrock-mantle.us-west-2.api.aws/v1"),
+            None,
+            None,
+            &models,
         )
         .unwrap();
 
-        assert!(discover_out.contains("configuration for provider `bedrock`"));
-        assert!(providers_dir.join("bedrock.json").exists());
+        std::fs::write(
+            providers_dir.join("bedrock.json"),
+            serde_json::to_string_pretty(&config).unwrap().as_bytes(),
+        )
+        .unwrap();
 
         // Resolve by spec bedrock:claude-3-haiku
         let (path, profile) = resolve_provider_profile_with_env(

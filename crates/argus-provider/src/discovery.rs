@@ -121,21 +121,7 @@ pub async fn discover_models(
             discover_anthropic_models(&client, endpoint, key).await
         }
         DiscoveredProviderKind::Bedrock => {
-            if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
-                if let Ok(models) = discover_openai_compatible_models(&client, endpoint, api_key).await {
-                    if !models.is_empty() {
-                        return Ok(models);
-                    }
-                }
-            }
-            Ok(vec![
-                "anthropic.claude-3-7-sonnet-20250219-v1:0".to_owned(),
-                "anthropic.claude-3-5-sonnet-20241022-v2:0".to_owned(),
-                "anthropic.claude-3-haiku-20240307-v1:0".to_owned(),
-                "amazon.nova-pro-v1:0".to_owned(),
-                "amazon.nova-lite-v1:0".to_owned(),
-                "meta.llama3-3-70b-instruct-v1:0".to_owned(),
-            ])
+            discover_openai_compatible_models(&client, endpoint, api_key).await
         }
     }
 }

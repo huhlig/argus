@@ -17,7 +17,7 @@ use argus_provider::{
     DiscoveredProviderKind, LangchartModelProvider, ModelProvider, ModelSubstitution,
     PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION, ProviderCapabilities, ProviderIdentity,
     ProviderPolicy, ProviderRuntimeProfile, ProviderTransportProfile, RepairPolicy, ReviewLimits,
-    StructuredOutputSupport, discover_models, generate_runtime_profile,
+    StructuredOutputSupport, generate_provider_config, generate_runtime_profile,
 };
 use std::collections::BTreeSet;
 
@@ -154,21 +154,27 @@ fn bedrock_runtime_profile_roundtrip_and_build() {
     );
 }
 
-#[tokio::test]
-async fn bedrock_discovery_returns_foundation_models() {
-    let models = discover_models(DiscoveredProviderKind::Bedrock, None, None)
-        .await
-        .unwrap();
-    assert!(
-        models
-            .iter()
-            .any(|m| m == "anthropic.claude-3-7-sonnet-20250219-v1:0")
-    );
-    assert!(models.iter().any(|m| m == "amazon.nova-pro-v1:0"));
+#[test]
+fn bedrock_provider_config_generation_and_profile_resolution() {
+    let models = vec![
+        "anthropic.claude-3-7-sonnet-20250219-v1:0".to_owned(),
+        "amazon.nova-pro-v1:0".to_owned(),
+    ];
+    let config = generate_provider_config(
+        DiscoveredProviderKind::Bedrock,
+        Some("https://bedrock-mantle.us-east-1.api.aws/v1"),
+        None,
+        None,
+        &models,
+    )
+    .unwrap();
+
+    assert_eq!(config.provider, "bedrock");
+    assert_eq!(config.models.len(), 2);
 
     let profile = generate_runtime_profile(
         DiscoveredProviderKind::Bedrock,
-        "https://bedrock-runtime.us-east-1.amazonaws.com",
+        "https://bedrock-mantle.us-east-1.api.aws/v1",
         "anthropic.claude-3-7-sonnet-20250219-v1:0",
         None,
         None,
@@ -176,6 +182,10 @@ async fn bedrock_discovery_returns_foundation_models() {
     .unwrap();
 
     assert_eq!(profile.capabilities.identity.provider, "bedrock");
+    assert_eq!(
+        profile.capabilities.identity.model,
+        "anthropic.claude-3-7-sonnet-20250219-v1:0"
+    );
 }
 
 #[test]
