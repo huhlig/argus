@@ -277,43 +277,203 @@ impl AgentActor for PrimaryReviewActor {
             return self.record_decision(decision, &invocation.output_event_types, record).await;
         }
 
-        let (prompt, evidence_bytes) = framed_prompt(
-            &invocation,
-            self.policy_contract.as_ref().map(|c| c.instructions()),
-            effective_input_budget,
-        )?;
-        let estimated_input_tokens = u64::try_from(prompt.len().div_ceil(3)).unwrap_or(u64::MAX).max(1);
-        let request = ModelRequest {
-            request_id: review_request_id(
-                invocation.run_id.as_ref(),
-                invocation.state_id.as_ref(),
-                record.data.evidence_revision,
-            ),
-            attempt: 0,
-            prompt,
-            structured_output_schema: self
-                .policy_contract
-                .as_ref()
-                .map_or_else(review_decision_schema, |contract| {
-                    review_decision_schema_for(&contract.schema())
-                }),
-            evidence_bytes,
-            estimated_input_tokens,
-            max_output_tokens: self.max_output_tokens,
+        let base_task = match (
+            invocation.instructions.task.as_deref(),
+            self.policy_contract.as_ref().map(|c| c.instructions()).filter(|text| !text.trim().is_empty()),
+        ) {
+            (Some(task), Some(policy)) => Some(format!("{task}\n\n{policy}")),
+            (Some(task), None) => Some(task.to_owned()),
+            (None, Some(policy)) => Some(policy.to_owned()),
+            (None, None) => None,
         };
+
+        let base_prompt = frame_prompt_fields(
+            &invocation.instructions.system,
+            base_task.as_deref(),
+            &invocation.context_view.content_hash,
+            &[],
+        )?;
+        let base_tokens = base_prompt.len().div_ceil(3);
+        let available_evidence_tokens = usize::try_from(effective_input_budget)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(base_tokens)
+            .saturating_sub(500);
+
+        let chunks = partition_context_items_into_chunks(
+            &invocation.context_view.items,
+            available_evidence_tokens,
+        );
+
         let adapter = Arc::new(BrokerInvocationAdapter {
             broker,
             envelope: Mutex::new(envelope),
         });
         let provider = LangchartModelProvider::new(self.executor.capabilities().clone(), adapter)
             .map_err(|error| AgentError::Internal(error.to_string()))?;
-        self.execute_and_record_with_provider(
-            &provider,
-            request,
-            &invocation.output_event_types,
-            record,
-        )
-        .await
+
+        if chunks.len() <= 1 {
+            let chunk_items = chunks.first().map_or(&[][..], Vec::as_slice);
+            let (prompt, evidence_bytes) = framed_prompt_for_items(
+                &invocation,
+                self.policy_contract.as_ref().map(|c| c.instructions()),
+                effective_input_budget,
+                chunk_items,
+            )?;
+            let estimated_input_tokens = u64::try_from(prompt.len().div_ceil(3)).unwrap_or(u64::MAX).max(1);
+            let request = ModelRequest {
+                request_id: review_request_id(
+                    invocation.run_id.as_ref(),
+                    invocation.state_id.as_ref(),
+                    record.data.evidence_revision,
+                ),
+                attempt: 0,
+                prompt,
+                structured_output_schema: self
+                    .policy_contract
+                    .as_ref()
+                    .map_or_else(review_decision_schema, |contract| {
+                        review_decision_schema_for(&contract.schema())
+                    }),
+                evidence_bytes,
+                estimated_input_tokens,
+                max_output_tokens: self.max_output_tokens,
+            };
+            return self
+                .execute_and_record_with_provider(
+                    &provider,
+                    request,
+                    &invocation.output_event_types,
+                    record,
+                )
+                .await;
+        }
+
+        // Multi-chunk sequential continuation loop
+        let total_chunks = chunks.len();
+        let mut aggregated_candidates = Vec::new();
+        let mut aggregated_suggestions = Vec::new();
+        let mut last_assessment: Option<Value> = None;
+        let mut last_response_provider = self.executor.capabilities().identity.clone();
+        let base_request_id = review_request_id(
+            invocation.run_id.as_ref(),
+            invocation.state_id.as_ref(),
+            record.data.evidence_revision,
+        );
+
+        for (idx, chunk_items) in chunks.iter().enumerate() {
+            let chunk_num = idx + 1;
+            let chunk_note = format!(
+                "Evidence Chunk {chunk_num} of {total_chunks}. Evaluate this portion of evidence against the policy rubric."
+            );
+            let chunk_instructions = match self.policy_contract.as_ref().map(|c| c.instructions()) {
+                Some(policy) if !policy.trim().is_empty() => format!("{policy}\n\n{chunk_note}"),
+                _ => chunk_note,
+            };
+
+            let (prompt, evidence_bytes) = framed_prompt_for_items(
+                &invocation,
+                Some(&chunk_instructions),
+                effective_input_budget,
+                chunk_items,
+            )?;
+
+            let estimated_input_tokens = u64::try_from(prompt.len().div_ceil(3)).unwrap_or(u64::MAX).max(1);
+            let request = ModelRequest {
+                request_id: format!("{base_request_id}:chunk-{chunk_num}"),
+                attempt: 0,
+                prompt,
+                structured_output_schema: self
+                    .policy_contract
+                    .as_ref()
+                    .map_or_else(review_decision_schema, |contract| {
+                        review_decision_schema_for(&contract.schema())
+                    }),
+                evidence_bytes,
+                estimated_input_tokens,
+                max_output_tokens: self.max_output_tokens,
+            };
+
+            let response = if let Some(contract) = &self.policy_contract {
+                let validator = PolicyReviewDecisionValidator::new(contract.clone());
+                self.executor
+                    .execute_with_provider_and_validator(&provider, request, &validator)
+                    .await
+            } else {
+                self.executor.execute_with_provider(&provider, request).await
+            }
+            .map_err(|error| AgentError::Internal(error.to_string()))?;
+
+            last_response_provider = response.provider.clone();
+
+            let (event_type, payload) = review_event(&response.output).map_err(|message| {
+                AgentError::Internal(format!("invalid review decision in chunk {chunk_num}: {message}"))
+            })?;
+
+            if event_type == "review.failed" || event_type == "review.unable_to_verify" {
+                let decision = PrimaryReviewDecision {
+                    evidence_revision: record.data.evidence_revision,
+                    event_type: event_type.to_owned(),
+                    payload: payload.clone(),
+                    provider: response.provider,
+                    request_id: response.request_id,
+                    attempt: response.attempt,
+                };
+                return self.record_decision(decision, &invocation.output_event_types, record).await;
+            }
+
+            if let Some(assessment) = payload.get("assessment") {
+                last_assessment = Some(assessment.clone());
+                if let Some(contract) = &self.policy_contract {
+                    if let Ok(candidates) = contract.candidates(assessment) {
+                        for cand in candidates {
+                            if !aggregated_candidates.contains(&cand) {
+                                aggregated_candidates.push(cand);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(suggestions) = payload.get("suggestions").and_then(|s| s.as_array()) {
+                for sugg in suggestions {
+                    if let Some(s_str) = sugg.as_str() {
+                        let owned = s_str.to_owned();
+                        if !aggregated_suggestions.contains(&owned) {
+                            aggregated_suggestions.push(owned);
+                        }
+                    }
+                }
+            }
+        }
+
+        let (event_type, payload) = if !aggregated_candidates.is_empty() {
+            let assessment_val = last_assessment.unwrap_or_else(|| json!({}));
+            ("review.candidate_found".to_owned(), json!({
+                "assessment": assessment_val,
+                "candidates": aggregated_candidates,
+            }))
+        } else if !aggregated_suggestions.is_empty() {
+            let assessment_val = last_assessment.unwrap_or_else(|| json!({}));
+            ("review.suggestion".to_owned(), json!({
+                "assessment": assessment_val,
+                "suggestions": aggregated_suggestions,
+            }))
+        } else {
+            let assessment_val = last_assessment.unwrap_or_else(|| json!({}));
+            ("review.pass".to_owned(), json!({
+                "assessment": assessment_val,
+            }))
+        };
+
+        let decision = PrimaryReviewDecision {
+            evidence_revision: record.data.evidence_revision,
+            event_type,
+            payload,
+            provider: last_response_provider,
+            request_id: base_request_id,
+            attempt: 0,
+        };
+        self.record_decision(decision, &invocation.output_event_types, record).await
     }
 }
 
@@ -552,10 +712,82 @@ fn fit_context_items_to_budget(
     (evidence, evidence_bytes)
 }
 
-fn framed_prompt(
+fn partition_context_items_into_chunks(
+    items: &[langchart_adapters::context::ContextItem],
+    max_tokens_per_chunk: usize,
+) -> Vec<Vec<langchart_adapters::context::ContextItem>> {
+    if items.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut current_chunk = Vec::new();
+    let mut current_tokens = 0usize;
+
+    for item in items {
+        let item_tokens = (item.tokens as usize).max(item.content.len().div_ceil(3));
+
+        if item_tokens > max_tokens_per_chunk && max_tokens_per_chunk >= 200 {
+            if !current_chunk.is_empty() {
+                chunks.push(std::mem::take(&mut current_chunk));
+                current_tokens = 0;
+            }
+
+            let max_chars_per_part = max_tokens_per_chunk.saturating_mul(3).saturating_sub(100);
+            let total_parts = item.content.len().div_ceil(max_chars_per_part);
+            let mut offset = 0;
+            let mut part_num = 1;
+
+            while offset < item.content.len() {
+                let mut end = (offset + max_chars_per_part).min(item.content.len());
+                while end > offset && !item.content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                if end == offset {
+                    end = (offset + 1).min(item.content.len());
+                }
+                let part_content = format!(
+                    "[Part {part_num} of {total_parts} for {}]\n{}",
+                    item.source,
+                    &item.content[offset..end]
+                );
+                let part_tokens = part_content.len().div_ceil(3);
+                chunks.push(vec![langchart_adapters::context::ContextItem {
+                    source: format!("{}#part-{}", item.source, part_num),
+                    content: part_content,
+                    tokens: u32::try_from(part_tokens).unwrap_or(u32::MAX),
+                }]);
+                offset = end;
+                part_num += 1;
+            }
+        } else if current_tokens.saturating_add(item_tokens) <= max_tokens_per_chunk {
+            current_tokens += item_tokens;
+            current_chunk.push(item.clone());
+        } else {
+            if !current_chunk.is_empty() {
+                chunks.push(std::mem::take(&mut current_chunk));
+            }
+            current_tokens = item_tokens;
+            current_chunk.push(item.clone());
+        }
+    }
+
+    if !current_chunk.is_empty() {
+        chunks.push(current_chunk);
+    }
+
+    if chunks.is_empty() {
+        chunks.push(Vec::new());
+    }
+
+    chunks
+}
+
+fn framed_prompt_for_items(
     invocation: &AgentInvocation,
     policy_instructions: Option<&str>,
     effective_input_budget: u64,
+    items: &[langchart_adapters::context::ContextItem],
 ) -> Result<(String, u64), AgentError> {
     let task = match (
         invocation.instructions.task.as_deref(),
@@ -576,19 +808,32 @@ fn framed_prompt(
     let base_tokens = base_prompt.len().div_ceil(3);
     let available_evidence_tokens = usize::try_from(effective_input_budget)
         .unwrap_or(usize::MAX)
-        .saturating_sub(base_tokens);
+        .saturating_sub(base_tokens)
+        .saturating_sub(500);
 
-    let (evidence, evidence_bytes) = fit_context_items_to_budget(
-        &invocation.context_view.items,
+    let (mut evidence, evidence_bytes) = fit_context_items_to_budget(
+        items,
         available_evidence_tokens,
     );
 
-    let prompt = frame_prompt_fields(
+    let mut prompt = frame_prompt_fields(
         &invocation.instructions.system,
         task.as_deref(),
         &invocation.context_view.content_hash,
         &evidence,
     )?;
+
+    while prompt.len().div_ceil(3) > usize::try_from(effective_input_budget).unwrap_or(usize::MAX)
+        && !evidence.is_empty()
+    {
+        evidence.pop();
+        prompt = frame_prompt_fields(
+            &invocation.instructions.system,
+            task.as_deref(),
+            &invocation.context_view.content_hash,
+            &evidence,
+        )?;
+    }
 
     Ok((prompt, evidence_bytes))
 }
@@ -1263,5 +1508,36 @@ mod tests {
         assert_eq!(evidence[0]["content"], "a".repeat(3_000));
         assert!(evidence[1]["content"].as_str().unwrap().contains("omitted for model context budget"));
         assert!(evidence_bytes > 0);
+    }
+
+    #[test]
+    fn partition_context_items_into_chunks_splits_by_budget_and_segments_oversized() {
+        let items = vec![
+            langchart_adapters::context::ContextItem {
+                source: "file1.rs".to_owned(),
+                content: "a".repeat(1_500), // ~500 tokens
+                tokens: 500,
+            },
+            langchart_adapters::context::ContextItem {
+                source: "file2.rs".to_owned(),
+                content: "b".repeat(1_500), // ~500 tokens
+                tokens: 500,
+            },
+            langchart_adapters::context::ContextItem {
+                source: "file3_huge.rs".to_owned(),
+                content: "c".repeat(6_000), // ~2000 tokens
+                tokens: 2_000,
+            },
+        ];
+
+        // Budget of 600 tokens per chunk:
+        // Chunk 1: file1.rs (500 tokens)
+        // Chunk 2: file2.rs (500 tokens)
+        // Chunk 3+: file3_huge.rs segmented
+        let chunks = partition_context_items_into_chunks(&items, 600);
+        assert!(chunks.len() >= 3);
+        assert_eq!(chunks[0][0].source, "file1.rs");
+        assert_eq!(chunks[1][0].source, "file2.rs");
+        assert!(chunks[2][0].source.contains("file3_huge.rs"));
     }
 }
