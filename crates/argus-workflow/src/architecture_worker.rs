@@ -13,12 +13,20 @@
 // limitations under the License.
 
 use crate::{
-    ArchitectureReviewAdmission, ArchitectureReviewMaterialization, ArchitectureRuntimeIdentity,
-    DocumentationWorkerRuntime, RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryError, RecoveryManifest,
-    RecoveryStore, WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, architecture_actor_registry,
+    ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ArchitectureAssessmentContract,
+    ArchitectureConstituentAssessmentFact, ArchitectureConstituentEvidence,
+    ArchitectureConstituentStatus, ArchitectureReviewAdmission, ArchitectureReviewMaterialization,
+    ArchitectureRuntimeIdentity, DocumentationWorkerRuntime, EffectiveOutcome,
+    RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryError, RecoveryManifest, RecoveryStore,
+    WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, architecture_actor_registry,
     open_checkpoint_store,
 };
-use argus_core::{ArgusError, RunId as AuditRunId, WorkItemId};
+use argus_core::{
+    ArgusError, ContentHash, EvidenceId, EvidenceKind, EvidenceOrigin, RunId as AuditRunId,
+    WorkItemId,
+};
+use argus_evidence::{DataClassification, EvidenceDisposition, FramedEvidence};
+use argus_policies::{ArchitectureAssessment, ArchitectureResultStatus, ConstituentHealthSummary};
 use argus_storage::{DurableQueue, LeasedWork, QueueEventKind, QueueState};
 use async_trait::async_trait;
 use langchart_adapters::{
@@ -31,7 +39,11 @@ use langchart_model::{
     validation::CompiledWorkflow,
 };
 use langchart_runtime::{AgentActor, InstanceCheckpoint, RunStatus, WorkflowInstance};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
@@ -91,12 +103,36 @@ impl ArchitectureWorker {
     }
 
     pub async fn run_next(&self, now_millis: u64) -> Result<ArchitectureWorkerResult, ArgusError> {
-        let Some(leased) = self.queue.lease_next_for_partition(
+        let prerequisite_states = self
+            .queue
+            .run_records(&self.config.identity.audit_run)?
+            .work
+            .into_iter()
+            .map(|work| (work.id, work.state))
+            .collect::<BTreeMap<_, _>>();
+        let Some(leased) = self.queue.lease_next_for_partition_matching(
             now_millis,
             self.config.lease_duration_millis,
             &self.config.identity.audit_run,
             &self.config.adapter,
             &self.config.policy,
+            |work| {
+                serde_json::from_slice::<ArchitectureReviewAdmission>(&work.payload).map_or(
+                    true,
+                    |admission| {
+                        admission.unit.prerequisite_work.iter().all(|work_id| {
+                            prerequisite_states.get(work_id).is_none_or(|state| {
+                                matches!(
+                                    state,
+                                    QueueState::Succeeded
+                                        | QueueState::Failed
+                                        | QueueState::Cancelled
+                                )
+                            })
+                        })
+                    },
+                )
+            },
         )?
         else {
             return Ok(ArchitectureWorkerResult::Idle);
@@ -293,7 +329,8 @@ impl ArchitectureWorker {
                 "architecture worker identity does not own the leased work",
             ));
         }
-        let materialized = ArchitectureReviewMaterialization::restore(&self.queue, &admission)?;
+        let mut materialized = ArchitectureReviewMaterialization::restore(&self.queue, &admission)?;
+        self.attach_constituent_evidence(&admission, &mut materialized)?;
         if materialized.package.package.snapshot != self.config.identity.audit_snapshot {
             return Err(ArgusError::invariant(
                 "architecture package is outside the worker snapshot",
@@ -321,6 +358,199 @@ impl ArchitectureWorker {
                     .with_source(error)
             })?;
         Ok((admission, materialized, langchart_run_id))
+    }
+
+    fn attach_constituent_evidence(
+        &self,
+        admission: &ArchitectureReviewAdmission,
+        materialized: &mut ArchitectureReviewMaterialization,
+    ) -> Result<(), ArgusError> {
+        if admission.unit.prerequisite_work.is_empty() {
+            return Ok(());
+        }
+        let records = self.queue.run_records(&self.config.identity.audit_run)?;
+        let work = records
+            .work
+            .iter()
+            .map(|item| (item.id.clone(), item))
+            .collect::<BTreeMap<_, _>>();
+        let artifacts = records
+            .artifacts
+            .iter()
+            .map(|artifact| (artifact.reference.as_str(), artifact))
+            .collect::<HashMap<_, _>>();
+        let mut facts = Vec::with_capacity(admission.unit.prerequisite_work.len());
+        for prerequisite in &admission.unit.prerequisite_work {
+            let item = work.get(prerequisite).ok_or_else(|| {
+                ArgusError::invariant("architecture prerequisite work is missing")
+            })?;
+            let child: ArchitectureReviewAdmission = serde_json::from_slice(&item.payload)
+                .map_err(|error| {
+                    ArgusError::invalid_input("invalid architecture prerequisite admission")
+                        .with_source(error)
+                })?;
+            let (status, summary, candidate_count) = match item.state {
+                QueueState::Succeeded => {
+                    let outcome = records
+                        .outcomes
+                        .iter()
+                        .find(|outcome| outcome.work_id == item.id)
+                        .ok_or_else(|| {
+                            ArgusError::invariant(
+                                "succeeded architecture prerequisite has no outcome",
+                            )
+                        })?;
+                    let effective: EffectiveOutcome = serde_json::from_slice(&outcome.payload)
+                        .map_err(|error| {
+                            ArgusError::invalid_input("invalid architecture prerequisite outcome")
+                                .with_source(error)
+                        })?;
+                    let artifact =
+                        artifacts
+                            .get(effective.result_ref.as_str())
+                            .ok_or_else(|| {
+                                ArgusError::invariant(
+                                    "architecture prerequisite assessment artifact is missing",
+                                )
+                            })?;
+                    if artifact.kind != ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND {
+                        return Err(ArgusError::invariant(
+                            "architecture prerequisite outcome has the wrong artifact kind",
+                        ));
+                    }
+                    let assessment: ArchitectureAssessment =
+                        serde_json::from_slice(&artifact.payload).map_err(|error| {
+                            ArgusError::invalid_input(
+                                "invalid architecture prerequisite assessment",
+                            )
+                            .with_source(error)
+                        })?;
+                    let status = match assessment.result.status {
+                        ArchitectureResultStatus::Pass => ArchitectureConstituentStatus::Passed,
+                        ArchitectureResultStatus::Deficient => {
+                            ArchitectureConstituentStatus::Deficient
+                        }
+                        ArchitectureResultStatus::UnableToVerify => {
+                            ArchitectureConstituentStatus::UnableToVerify
+                        }
+                    };
+                    (
+                        status,
+                        assessment.result.summary,
+                        assessment.result.candidates.len(),
+                    )
+                }
+                QueueState::Failed => (
+                    ArchitectureConstituentStatus::Failed,
+                    item.last_error
+                        .clone()
+                        .unwrap_or_else(|| "constituent review failed".to_owned()),
+                    0,
+                ),
+                QueueState::Cancelled => (
+                    ArchitectureConstituentStatus::Cancelled,
+                    "constituent review was cancelled".to_owned(),
+                    0,
+                ),
+                QueueState::Pending | QueueState::Leased => {
+                    return Err(ArgusError::invariant(
+                        "architecture prerequisite was leased before reaching a terminal state",
+                    ));
+                }
+            };
+            facts.push(ArchitectureConstituentAssessmentFact {
+                work_item: prerequisite.clone(),
+                target: child.unit.target.target,
+                scope: child.unit.scope,
+                status,
+                summary,
+                candidate_count,
+            });
+        }
+        facts.sort_by(|left, right| left.work_item.cmp(&right.work_item));
+        let health = ConstituentHealthSummary {
+            total_constituents: facts.len(),
+            succeeded_constituents: facts
+                .iter()
+                .filter(|fact| {
+                    matches!(
+                        fact.status,
+                        ArchitectureConstituentStatus::Passed
+                            | ArchitectureConstituentStatus::Deficient
+                    )
+                })
+                .count(),
+            failed_constituents: facts
+                .iter()
+                .filter(|fact| {
+                    matches!(
+                        fact.status,
+                        ArchitectureConstituentStatus::Failed
+                            | ArchitectureConstituentStatus::Cancelled
+                    )
+                })
+                .count(),
+            unable_to_verify_constituents: facts
+                .iter()
+                .filter(|fact| fact.status == ArchitectureConstituentStatus::UnableToVerify)
+                .count(),
+        };
+        let aggregate = ArchitectureConstituentEvidence {
+            schema_version: 1,
+            target: admission.unit.target.target.clone(),
+            scope: admission.unit.scope,
+            constituents: facts,
+            constituent_health: health,
+        };
+        let bytes = serde_json::to_vec(&aggregate).map_err(|error| {
+            ArgusError::invariant("cannot serialize architecture constituent evidence")
+                .with_source(error)
+        })?;
+        let hash = ContentHash::digest(&bytes);
+        let id = EvidenceId::derive([
+            b"architecture-constituent-evidence-v1".as_slice(),
+            admission.unit.target.target.as_str().as_bytes(),
+            bytes.as_slice(),
+        ]);
+        materialized
+            .context
+            .frame
+            .untrusted_evidence
+            .push(FramedEvidence {
+                hash,
+                id,
+                kind: EvidenceKind::ArchitectureSummary,
+                origin: EvidenceOrigin::Inference,
+                target: Some(admission.unit.target.target.clone()),
+                location: None,
+                classification: DataClassification::Internal,
+                disposition: EvidenceDisposition::Included,
+                summary: "Deterministic roll-up of terminal constituent architecture reviews"
+                    .to_owned(),
+                detail: Some(String::from_utf8(bytes).map_err(|error| {
+                    ArgusError::invariant("architecture constituent evidence is not UTF-8")
+                        .with_source(error)
+                })?),
+                untrusted: true,
+            });
+        materialized
+            .context
+            .frame
+            .untrusted_evidence
+            .sort_by(|left, right| left.hash.as_str().cmp(right.hash.as_str()));
+        materialized.context.canonical_json = serde_json::to_vec(&materialized.context.frame)
+            .map_err(|error| {
+                ArgusError::invariant("cannot serialize enriched architecture context")
+                    .with_source(error)
+            })?;
+        materialized.context.hash = ContentHash::digest(&materialized.context.canonical_json);
+        materialized.contract = Arc::new(ArchitectureAssessmentContract::from_context(
+            admission.unit.work_item.clone(),
+            admission.unit.target.clone(),
+            admission.unit.scope,
+            &materialized.context.frame,
+        )?);
+        Ok(())
     }
 
     fn prepare_runtime(

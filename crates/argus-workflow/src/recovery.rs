@@ -30,7 +30,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub const RECOVERY_MANIFEST_SCHEMA_VERSION: u32 = 2;
+pub const RECOVERY_MANIFEST_SCHEMA_VERSION: u32 = 1;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

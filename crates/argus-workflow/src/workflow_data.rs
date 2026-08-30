@@ -22,11 +22,11 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, error::Error, fmt, fs, path::Path};
 
-pub const WORKFLOW_DATA_SCHEMA_VERSION: u32 = 5;
+pub const WORKFLOW_DATA_SCHEMA_VERSION: u32 = 1;
 pub const WORKFLOW_DATA_DATABASE_FILE: &str = "workflow-data.redb";
 
-const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("workflow_data_v5");
-const HASH_DOMAIN: &[u8] = b"argus.workflow-data.v5\0";
+const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("workflow_data_v1");
+const HASH_DOMAIN: &[u8] = b"argus.workflow-data.v1\0";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CandidateFindingRecord {

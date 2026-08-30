@@ -13,12 +13,15 @@
 // limitations under the License.
 
 use crate::{
-    ActorRegistry, ActorRegistryError, ArchitectureReviewMaterialization, CandidateRecorderActor,
-    DurableArchitectureOutcomeActor, EvidenceRequestEvaluatorActor, OutcomeProvenance,
-    WorkflowDataStore,
+    ActorRegistry, ActorRegistryError, ArchitectureAssessmentContract,
+    ArchitectureReviewMaterialization, CandidateRecorderActor, DurableArchitectureOutcomeActor,
+    EvidenceRequestEvaluatorActor, OutcomeProvenance, WorkflowDataStore, WorkflowDataWrite,
 };
 use argus_core::{EvidenceKind, RunId, SnapshotId};
 use argus_evidence::{DataClassification, EvidenceBudget, EvidenceExpansionPolicy};
+use argus_policies::{
+    ArchitectureCandidateVerification, ArchitectureFindingKind, ArchitectureVerificationStatus,
+};
 use argus_provider::ProviderExecutor;
 use argus_storage::DurableQueue;
 use async_trait::async_trait;
@@ -112,7 +115,10 @@ pub fn architecture_actor_registry(
     register(
         &mut registry,
         "argus.schedule-finding-work",
-        Arc::new(RecordUnverifiedArchitectureCandidatesActor),
+        Arc::new(VerifyArchitectureCandidatesActor {
+            workflow_data: workflow_data.clone(),
+            contract: materialized.contract.clone(),
+        }),
     )?;
     register(
         &mut registry,
@@ -263,23 +269,114 @@ impl AgentActor for DecisionRelayActor {
 
 struct DisabledEvidenceExpansionActor;
 
-struct RecordUnverifiedArchitectureCandidatesActor;
+struct VerifyArchitectureCandidatesActor {
+    workflow_data: Arc<WorkflowDataStore>,
+    contract: Arc<ArchitectureAssessmentContract>,
+}
 
 #[async_trait]
-impl AgentActor for RecordUnverifiedArchitectureCandidatesActor {
+impl AgentActor for VerifyArchitectureCandidatesActor {
     async fn run(
         &self,
-        _invocation: AgentInvocation,
+        invocation: AgentInvocation,
         _envelope: CapabilityEnvelope,
         _broker: Arc<CapabilityBroker>,
     ) -> Result<AgentOutputEvent, AgentError> {
-        Ok(AgentOutputEvent {
-            event_type: "finding_work.scheduled".to_owned(),
-            payload: json!({
-                "work_ids": [],
-                "verification": "not_implemented",
-            }),
+        let store = self.workflow_data.clone();
+        let run_id = invocation.run_id.as_ref().to_owned();
+        let record = tokio::task::spawn_blocking(move || store.load(&run_id))
+            .await
+            .map_err(|error| AgentError::Internal(format!("workflow data task failed: {error}")))?
+            .map_err(|error| AgentError::Internal(error.to_string()))?
+            .ok_or_else(|| AgentError::Internal("workflow data record is missing".to_owned()))?;
+        if !record.data.verification_results.is_empty() {
+            return Ok(verification_event(&record.data.verification_results));
+        }
+        let decision = record
+            .data
+            .primary_decisions
+            .last()
+            .filter(|decision| decision.evidence_revision == record.data.evidence_revision)
+            .ok_or_else(|| {
+                AgentError::Internal("current primary decision is missing".to_owned())
+            })?;
+        let assessment = self
+            .contract
+            .bind_decision(decision)
+            .map_err(AgentError::Internal)?;
+        let complete = self.contract.verification_context_complete();
+        let results = assessment
+            .result
+            .candidates
+            .iter()
+            .map(|candidate| {
+                let (status, rationale) = verification_disposition(
+                    candidate.defect_kind,
+                    candidate.inferred_intent.is_some(),
+                    complete,
+                );
+                serde_json::to_string(&ArchitectureCandidateVerification {
+                    candidate_id: candidate.id.clone(),
+                    status,
+                    rationale: rationale.to_owned(),
+                })
+                .map_err(|error| AgentError::Internal(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut proposed = record.data;
+        proposed.verification_results = results;
+        let store = self.workflow_data.clone();
+        let run_id = invocation.run_id.as_ref().to_owned();
+        let write = tokio::task::spawn_blocking(move || {
+            store.compare_and_swap(&run_id, record.revision, proposed)
         })
+        .await
+        .map_err(|error| AgentError::Internal(format!("workflow data task failed: {error}")))?
+        .map_err(|error| AgentError::Internal(error.to_string()))?;
+        let effective = match write {
+            WorkflowDataWrite::Updated(record) | WorkflowDataWrite::Existing(record) => record,
+            WorkflowDataWrite::Inserted(_) => {
+                return Err(AgentError::Internal(
+                    "verification actor unexpectedly inserted workflow data".to_owned(),
+                ));
+            }
+        };
+        Ok(verification_event(&effective.data.verification_results))
+    }
+}
+
+const fn verification_disposition(
+    defect_kind: ArchitectureFindingKind,
+    has_inferred_intent: bool,
+    complete: bool,
+) -> (ArchitectureVerificationStatus, &'static str) {
+    if !complete {
+        (
+            ArchitectureVerificationStatus::UnableToVerify,
+            "Structural or constituent evidence is incomplete or truncated.",
+        )
+    } else if matches!(defect_kind, ArchitectureFindingKind::StructuralDefect)
+        && !has_inferred_intent
+    {
+        (
+            ArchitectureVerificationStatus::Corroborated,
+            "The candidate is a directly observed structural defect with complete cited evidence.",
+        )
+    } else {
+        (
+            ArchitectureVerificationStatus::Disputed,
+            "The candidate depends on architectural risk or inferred intent and requires adjudication.",
+        )
+    }
+}
+
+fn verification_event(results: &[String]) -> AgentOutputEvent {
+    AgentOutputEvent {
+        event_type: "finding_work.scheduled".to_owned(),
+        payload: json!({
+            "work_ids": [],
+            "verification_results": results,
+        }),
     }
 }
 
@@ -294,5 +391,26 @@ impl AgentActor for DisabledEvidenceExpansionActor {
         Err(AgentError::Internal(
             "architecture evidence expansion is disabled for this admission".to_owned(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verification_is_conservative_about_incomplete_or_inferred_claims() {
+        assert_eq!(
+            verification_disposition(ArchitectureFindingKind::StructuralDefect, false, true).0,
+            ArchitectureVerificationStatus::Corroborated
+        );
+        assert_eq!(
+            verification_disposition(ArchitectureFindingKind::ArchitecturalRisk, false, true).0,
+            ArchitectureVerificationStatus::Disputed
+        );
+        assert_eq!(
+            verification_disposition(ArchitectureFindingKind::StructuralDefect, false, false).0,
+            ArchitectureVerificationStatus::UnableToVerify
+        );
     }
 }

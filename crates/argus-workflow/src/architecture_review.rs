@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    PolicyAssessmentContract, PrimaryReviewActor, PrimaryReviewDecision, WorkflowDataStore,
-    review_decision_schema_for,
+    ArchitectureConstituentEvidence, PolicyAssessmentContract, PrimaryReviewActor,
+    PrimaryReviewDecision, WorkflowDataStore, review_decision_schema_for,
 };
 use argus_core::WorkItemId;
 use argus_evidence::ReviewContextFrame;
@@ -77,12 +77,16 @@ impl argus_provider::OutputValidator for ArchitectureReviewTransportValidator {
 #[derive(Clone, Debug)]
 pub struct ArchitectureAssessmentContract {
     binding: ArchitectureAssessmentBinding,
+    verification_complete: bool,
 }
 
 impl ArchitectureAssessmentContract {
     #[must_use]
     pub const fn new(binding: ArchitectureAssessmentBinding) -> Self {
-        Self { binding }
+        Self {
+            binding,
+            verification_complete: true,
+        }
     }
 
     pub fn from_context(
@@ -133,6 +137,47 @@ impl ArchitectureAssessmentContract {
                 "architecture scope evidence identity mismatch",
             ));
         }
+        let constituent_evidence = context
+            .untrusted_evidence
+            .iter()
+            .filter(|item| {
+                item.kind == argus_core::EvidenceKind::ArchitectureSummary
+                    && item.target.as_ref() == Some(&target.target)
+            })
+            .map(|item| {
+                item.detail
+                    .as_deref()
+                    .ok_or_else(|| {
+                        argus_core::ArgusError::invalid_input(
+                            "architecture constituent evidence detail is missing",
+                        )
+                    })
+                    .and_then(|detail| {
+                        serde_json::from_str::<ArchitectureConstituentEvidence>(detail).map_err(
+                            |error| {
+                                argus_core::ArgusError::invalid_input(
+                                    "architecture constituent evidence is invalid",
+                                )
+                                .with_source(error)
+                            },
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if constituent_evidence.len() > 1 {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture review accepts at most one constituent summary artifact",
+            ));
+        }
+        if constituent_evidence.iter().any(|evidence| {
+            evidence.schema_version != 1
+                || evidence.target != target.target
+                || evidence.scope != scope
+        }) {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture constituent evidence identity mismatch",
+            ));
+        }
         let allowed_targets = std::iter::once(scope_evidence.target.clone())
             .chain(
                 scope_evidence
@@ -142,6 +187,17 @@ impl ArchitectureAssessmentContract {
                     .map(|target| target.id.clone()),
             )
             .collect();
+        let constituent_health = constituent_evidence.first().map_or_else(
+            || scope_evidence.constituent_health.clone(),
+            |evidence| evidence.constituent_health.clone(),
+        );
+        let verification_complete = scope_evidence.omitted_constituents == 0
+            && scope_evidence.omitted_boundary_targets == 0
+            && scope_evidence.omitted_internal_relations == 0
+            && scope_evidence.omitted_boundary_relations == 0
+            && scope_evidence.omitted_dependency_cycles == 0
+            && constituent_health.failed_constituents == 0
+            && constituent_health.unable_to_verify_constituents == 0;
         let binding = ArchitectureAssessmentBinding {
             policy_id: context.trusted_control.policy.clone(),
             work_item_id: work_item,
@@ -163,9 +219,12 @@ impl ArchitectureAssessmentContract {
                 })
                 .collect(),
             allowed_targets,
-            constituent_health: scope_evidence.constituent_health,
+            constituent_health,
         };
-        Ok(Self { binding })
+        Ok(Self {
+            binding,
+            verification_complete,
+        })
     }
 
     pub fn bind_assessment(
@@ -221,6 +280,11 @@ impl ArchitectureAssessmentContract {
             .ok_or_else(|| "architecture decision is missing its assessment".to_owned())?;
         self.validate(&decision.event_type, assessment)?;
         self.bind_output(assessment)
+    }
+
+    #[must_use]
+    pub const fn verification_context_complete(&self) -> bool {
+        self.verification_complete
     }
 
     #[must_use]
@@ -281,7 +345,7 @@ impl PolicyAssessmentContract for ArchitectureAssessmentContract {
 }
 
 const ARCHITECTURE_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against architectural principles and constraints.
-The static-analysis scope artifact is the authoritative structural input. Use its constituents, internal relations, boundary relations, dependency cycles, and inventory health directly. Cite that artifact for graph-derived claims. Its omitted_* counters identify bounded truncation. Do not invent an edge that is absent from the artifact, and do not treat an absent edge as proof when inventory is incomplete or facts were omitted.
+The static-analysis scope artifact is the authoritative structural input. Use its constituents, internal relations, boundary relations, dependency cycles, and inventory health directly. For package and workspace scopes, the constituent-summary artifact contains terminal lower-scope assessments and is authoritative for reviewed constituent health. Cite the applicable artifact for graph-derived or roll-up claims. The graph fingerprint identifies its complete pre-truncation input, while omitted_* counters identify bounded truncation. Do not invent an edge that is absent from the artifact, and do not treat an absent edge as proof when inventory is incomplete or facts were omitted.
 Evaluate all 6 architectural dimensions:
 1. dependency_structure: Proper dependency direction, acyclic graphs, and absence of forbidden couplings.
 2. cycles: Absence of circular dependencies across modules, packages, or components.
@@ -438,7 +502,7 @@ mod tests {
             related_targets: Vec::new(),
         };
         let binding = ArchitectureAssessmentBinding {
-            policy_id: PolicyId::derive([b"architecture-code-derived@2".as_slice()]),
+            policy_id: PolicyId::derive([b"architecture-code-derived@1".as_slice()]),
             work_item_id: WorkItemId::derive([b"work-1".as_slice()]),
             target: TargetId::derive([b"crate::module".as_slice()]),
             scope: ArchitectureScope::Module,

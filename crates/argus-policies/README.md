@@ -8,7 +8,7 @@
 
 ## Core Responsibilities
 
-- **Policy Pipelines**: Implements policies for documentation (`documentation-public-api@1`), correctness (`correctness-conservative@1`), and architecture (`architecture-code-derived@2`).
+- **Policy Pipelines**: Implements policies for documentation (`documentation-public-api@1`), correctness (`correctness-conservative@1`), and architecture (`architecture-code-derived@1`).
 - **Applicability Evaluation**: Evaluates whether a discovered target in the inventory should be reviewed under a specific policy rule.
 - **Finding Definitions**: Defines candidate finding structures, rule identifiers, severity levels (`Critical`, `High`, `Medium`, `Low`, `Info`), and recommendation schemas.
 - **Evidence Bounding Rules**: Specifies evidence frame expansion parameters per policy type.
@@ -21,7 +21,7 @@
 | :--- | :--- | :--- | :--- |
 | `documentation-public-api@1` | Documentation | Public API items (fns, structs, enums, traits) | Missing or incomplete doc comments, broken example links, missing parameter/error descriptions. |
 | `correctness-conservative@1` | Correctness | All callables & types | Resource leaks, improper error handling, logic bugs, lock contention, unsafe assumptions. |
-| `architecture-code-derived@2` | Architecture | Modules, packages, and workspaces | Graph-grounded boundary violations, circular dependencies, modularity anti-patterns, and layer leaks. |
+| `architecture-code-derived@1` | Architecture | Modules, packages, and workspaces | Graph-grounded boundary violations, circular dependencies, modularity anti-patterns, and layer leaks. |
 
 ---
 

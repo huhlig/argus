@@ -23,11 +23,11 @@ pub use architecture::{
     ArchitectureApplicabilityDecision, ArchitectureApplicabilityPolicy,
     ArchitectureApplicabilityRule, ArchitectureAssessment, ArchitectureAssessmentBinding,
     ArchitectureAssessmentDraft, ArchitectureCandidate, ArchitectureCandidateDraft,
-    ArchitectureDimension, ArchitectureDimensionDraft, ArchitectureDimensionResult,
-    ArchitectureDimensionStatus, ArchitectureEvidenceCitation, ArchitectureFindingKind,
-    ArchitectureResult, ArchitectureResultDraft, ArchitectureResultStatus, ArchitectureScope,
-    ArchitectureTargetClass, ArchitectureTargetProfile, ArchitectureVisibility,
-    ConstituentHealthSummary,
+    ArchitectureCandidateVerification, ArchitectureDimension, ArchitectureDimensionDraft,
+    ArchitectureDimensionResult, ArchitectureDimensionStatus, ArchitectureEvidenceCitation,
+    ArchitectureFindingKind, ArchitectureResult, ArchitectureResultDraft, ArchitectureResultStatus,
+    ArchitectureScope, ArchitectureTargetClass, ArchitectureTargetProfile,
+    ArchitectureVerificationStatus, ArchitectureVisibility, ConstituentHealthSummary,
 };
 pub use correctness::{
     ALL_CORRECTNESS_DIMENSIONS, CORRECTNESS_ASSESSMENT_SCHEMA_VERSION,

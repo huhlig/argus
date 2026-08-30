@@ -96,7 +96,7 @@ Examples:
 
 const HELP_PRIME: &str = "Create a snapshot-backed audit run and discover language targets
 
-Usage: argus prime [--adapter <adapter>]
+Usage: argus prime [--adapter <adapter>] [--relationships <jsonl>]
 
 Description:
   Captures an immutable snapshot of the repository, executes language adapter
@@ -106,9 +106,11 @@ Description:
 
 Options:
   --adapter <adapter>   Language adapter to run (supported: rust). Default: none
+  --relationships <jsonl>  Captured Rust semantic relations to validate and merge
 
 Examples:
   argus prime --adapter rust
+  argus prime --adapter rust --relationships .argus/input/rust-relations.jsonl
   argus prime";
 
 const HELP_AUDIT: &str = "Plan and durably admit review work items for a policy pipeline
@@ -1614,8 +1616,8 @@ fn audit_command(
         let policy = argus_policies::ArchitectureApplicabilityPolicy::conservative()?;
         let planner = argus_workflow::ArchitectureReviewPlanner::new(
             &policy,
-            argus_core::PolicyId::derive([b"architecture-code-derived@2".as_slice()]),
-            "architecture-code-derived@2",
+            argus_core::PolicyId::derive([b"architecture-code-derived@1".as_slice()]),
+            "architecture-code-derived@1",
         )?;
         let plan = planner.plan(
             &run.snapshot,
@@ -2386,7 +2388,7 @@ async fn execute_architecture_work(
                 audit_snapshot: run.snapshot,
                 audit_run: run.id,
                 provenance: argus_workflow::OutcomeProvenance {
-                    prompt_version: "architecture-review@2".to_owned(),
+                    prompt_version: "architecture-review@1".to_owned(),
                     actor_id: "argus.review".to_owned(),
                     actor_version: "1.0.0".to_owned(),
                     workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),
@@ -2396,7 +2398,7 @@ async fn execute_architecture_work(
                 max_output_tokens,
             },
             adapter: "rust".to_owned(),
-            policy: "architecture-code-derived@2".to_owned(),
+            policy: "architecture-code-derived@1".to_owned(),
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
         },
@@ -2439,15 +2441,31 @@ fn prime_command(
         return Ok(HELP_PRIME.to_owned());
     }
     let mut iter = args.into_iter();
-    let adapter = match (iter.next().as_deref(), iter.next()) {
-        (None, None) => None,
-        (Some("--adapter"), Some(value)) if value == "rust" && iter.next().is_none() => Some(value),
-        _ => {
-            return Err(argus_core::ArgusError::invalid_input(
-                "usage: argus prime [--adapter rust]",
-            ));
+    let mut adapter = None;
+    let mut relationships = None;
+    while let Some(flag) = iter.next() {
+        let value = iter.next().ok_or_else(|| {
+            argus_core::ArgusError::invalid_input(
+                "usage: argus prime [--adapter rust] [--relationships <jsonl>]",
+            )
+        })?;
+        match flag.as_str() {
+            "--adapter" if value == "rust" && adapter.is_none() => adapter = Some(value),
+            "--relationships" if relationships.is_none() => {
+                relationships = Some(std::path::PathBuf::from(value));
+            }
+            _ => {
+                return Err(argus_core::ArgusError::invalid_input(
+                    "usage: argus prime [--adapter rust] [--relationships <jsonl>]",
+                ));
+            }
         }
-    };
+    }
+    if relationships.is_some() && adapter.is_none() {
+        return Err(argus_core::ArgusError::invalid_input(
+            "--relationships requires --adapter rust",
+        ));
+    }
     initialize(root)?;
     let metadata = adapter.as_ref().map(|_| cargo_metadata(root)).transpose()?;
     let snapshot = argus_snapshot::capture_snapshot(
@@ -2465,7 +2483,35 @@ fn prime_command(
             argus_rust::RustEdition::Edition2024,
         );
         let mut sink = JsonLinesInventorySink::new(root, &source)?;
-        rust.inventory_into(&source, &mut sink)?;
+        if let Some(path) = relationships {
+            let mut inventory = rust.inventory(&source)?;
+            let bytes = std::fs::read(&path)
+                .map_err(io_error("cannot read captured Rust semantic relationships"))?;
+            let semantic =
+                argus_rust::RustRelationshipProvider::new(snapshot.configuration.id.clone())
+                    .ingest(&bytes, &inventory.targets);
+            if !semantic.rejected.is_empty() {
+                let diagnostics = semantic
+                    .rejected
+                    .iter()
+                    .map(|rejected| format!("line {}: {}", rejected.line, rejected.reason))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(argus_core::ArgusError::invalid_input(format!(
+                    "captured Rust semantic relationships were rejected: {diagnostics}"
+                )));
+            }
+            inventory.relations.extend(semantic.relations);
+            inventory
+                .relations
+                .sort_by(|left, right| left.id.cmp(&right.id));
+            inventory
+                .relations
+                .dedup_by(|left, right| left.id == right.id);
+            persist_inventory(&mut sink, inventory)?;
+        } else {
+            rust.inventory_into(&source, &mut sink)?;
+        }
         sink.target_count()
     } else {
         0
@@ -2493,6 +2539,29 @@ fn prime_command(
         "Primed run {} for snapshot {}{suffix}\nNext step: Run 'argus audit --pipeline full' to plan and admit review work into the queue.",
         run.id, run.snapshot
     ))
+}
+
+fn persist_inventory(
+    sink: &mut dyn InventorySink,
+    inventory: argus_language::AdapterInventory,
+) -> Result<(), argus_core::ArgusError> {
+    sink.begin(inventory.adapter, inventory.snapshot)?;
+    for partition in inventory.partitions {
+        sink.partition(partition)?;
+    }
+    for target in inventory.targets {
+        sink.target(target)?;
+    }
+    for evidence in inventory.evidence {
+        sink.evidence(evidence)?;
+    }
+    for relation in inventory.relations {
+        sink.relation(relation)?;
+    }
+    for conflict in inventory.conflicts {
+        sink.conflict(conflict)?;
+    }
+    sink.finish()
 }
 
 fn coverage_command(
@@ -2623,7 +2692,7 @@ fn finalize_command(
         let report = argus_report::write_architecture_bundle_reports(
             &destination,
             id.clone(),
-            "architecture-code-derived@2",
+            "architecture-code-derived@1",
         )?;
         report_summaries.push(format!(
             "{} architecture assessments",
@@ -2712,12 +2781,101 @@ fn report_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("correctness"));
+    let is_documentation = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("documentation"));
+    let policy_count =
+        usize::from(is_architecture) + usize::from(is_correctness) + usize::from(is_documentation);
+
+    if policy_count > 1 {
+        if dimension_str.is_some() || severity_filter.is_some() {
+            return Err(argus_core::ArgusError::invalid_input(
+                "dimension and severity filters require a single-policy run",
+            ));
+        }
+        let documentation = is_documentation
+            .then(|| {
+                argus_report::documentation_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "documentation-public-api@1",
+                )
+            })
+            .transpose()?;
+        let correctness = is_correctness
+            .then(|| {
+                argus_report::correctness_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "correctness-conservative@1",
+                )
+            })
+            .transpose()?;
+        let architecture = is_architecture
+            .then(|| {
+                argus_report::architecture_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "architecture-code-derived@1",
+                )
+            })
+            .transpose()?;
+        return match format {
+            "json" => serde_json::to_string_pretty(&serde_json::json!({
+                "run_id": id,
+                "documentation": documentation,
+                "correctness": correctness,
+                "architecture": architecture,
+            }))
+            .map_err(|error| {
+                argus_core::ArgusError::invariant("cannot serialize mixed policy report")
+                    .with_source(error)
+            }),
+            "jsonl" => {
+                let mut lines = Vec::new();
+                if let Some(report) = &documentation {
+                    lines.extend(report.finding_clusters.iter().map(|finding| {
+                        serde_json::json!({"policy": "documentation", "finding": finding})
+                    }));
+                }
+                if let Some(report) = &correctness {
+                    lines.extend(report.finding_clusters.iter().map(
+                        |finding| serde_json::json!({"policy": "correctness", "finding": finding}),
+                    ));
+                }
+                if let Some(report) = &architecture {
+                    lines.extend(report.finding_clusters.iter().map(
+                        |finding| serde_json::json!({"policy": "architecture", "finding": finding}),
+                    ));
+                }
+                lines
+                    .into_iter()
+                    .map(|line| serde_json::to_string(&line))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|lines| lines.join("\n"))
+                    .map_err(|error| {
+                        argus_core::ArgusError::invariant("cannot serialize mixed policy findings")
+                            .with_source(error)
+                    })
+            }
+            _ => Ok([
+                documentation.map(|report| report.to_markdown()),
+                correctness.map(|report| report.to_markdown()),
+                architecture.map(|report| report.to_markdown()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n")),
+        };
+    }
 
     if is_architecture {
         let mut report = argus_report::architecture_report_from_queue(
             &queue,
             id,
-            "architecture-code-derived@2",
+            "architecture-code-derived@1",
         )?;
 
         if let Some(dim_name) = dimension_str {
@@ -2947,7 +3105,7 @@ fn adjudicate_command(
         let report = argus_report::architecture_report_from_queue(
             &queue,
             run_id.clone(),
-            "architecture-code-derived@2",
+            "architecture-code-derived@1",
         )?;
         report
             .finding_clusters
@@ -5236,7 +5394,7 @@ mod tests {
             .unwrap();
         let mut scopes = std::collections::BTreeSet::new();
         for work in &records.work {
-            if work.coverage.policy != "architecture-code-derived@2" {
+            if work.coverage.policy != "architecture-code-derived@1" {
                 continue;
             }
             let admission: argus_workflow::ArchitectureReviewAdmission =
@@ -5268,13 +5426,13 @@ mod tests {
         )
         .unwrap();
         assert!(report_out.contains("# Architecture audit"));
-        assert!(report_out.contains("architecture-code-derived@2"));
+        assert!(report_out.contains("architecture-code-derived@1"));
 
         let corpus = argus_report::ArchitectureEvaluationCorpus {
             schema_version: argus_report::ARCHITECTURE_CORPUS_SCHEMA_VERSION,
             name: "architecture-cli-eval".to_owned(),
             version: "1.0.0".to_owned(),
-            policy_version: "architecture-code-derived@2".to_owned(),
+            policy_version: "architecture-code-derived@1".to_owned(),
             expected_issues: vec![argus_report::ExpectedArchitectureIssue {
                 id: "cyclic-dependency".to_owned(),
                 target: argus_core::TargetId::derive([b"target".as_slice()]),
@@ -5340,6 +5498,42 @@ mod tests {
         assert!(audit_out.contains("Documentation plan for run"));
         assert!(audit_out.contains("Correctness plan for run"));
         assert!(audit_out.contains("Architecture plan for run"));
+
+        let report = run(["report".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(report.contains("# Documentation audit"));
+        assert!(report.contains("# Correctness audit"));
+        assert!(report.contains("# Architecture audit"));
+
+        let report_json = run(
+            [
+                "report".to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let report_json: serde_json::Value = serde_json::from_str(&report_json).unwrap();
+        assert!(report_json["documentation"].is_object());
+        assert!(report_json["correctness"].is_object());
+        assert!(report_json["architecture"].is_object());
+    }
+
+    #[test]
+    fn semantic_relationship_input_requires_rust_adapter() {
+        let temporary = tempfile::tempdir().unwrap();
+        let error = run(
+            [
+                "prime".to_owned(),
+                "--relationships".to_owned(),
+                "relations.jsonl".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("requires --adapter rust"));
     }
 
     #[test]

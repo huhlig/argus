@@ -15,7 +15,7 @@
 | [Phase 8](#13-phase-8--model-providers-and-langchart-review-workflow)          | Model Providers and Langchart Review Workflow          | **Complete**    | 6/6          | Provider transports, Langchart workflow, replay-safe recovery. Accepted 2026-08-24.                                |
 | [Phase 9](#14-phase-9--documentation-review-vertical-slice)                    | Documentation Review Vertical Slice                    | **In Progress** | 4/5          | Feature-complete: 14 rubrics, evaluator, reporting, adjudication CLI. Pending human threshold setting.             |
 | [Phase 10](#15-phase-10--correctness-review-vertical-slice)                    | Correctness Review Vertical Slice                      | **In Progress** | 4/5          | Feature-complete: 9 rubrics, defect kinds, evaluator, reporting, CLI dispatch. Pending human threshold setting.    |
-| [Phase 11](#16-phase-11--code-derived-architecture-review)                     | Code-Derived Architecture Review                       | **In Progress** | 2/5          | Graph-grounded v2 scopes are implemented; progressive roll-up, verification, and human threshold setting remain. |
+| [Phase 11](#16-phase-11--code-derived-architecture-review)                     | Code-Derived Architecture Review                       | **In Progress** | 4/5          | v1 engineering is complete: bounded graph evidence, progressive roll-up, terminal verification, and reports. Human qualification remains. |
 | [Phase 12](#17-phase-12--end-to-end-hardening-and-mvp-exit)                    | End-to-End Hardening and MVP Exit                      | **Not Started** | 0/9          | Full self-audit, CI non-interactive exit, soak testing, MVP exit criteria.                                         |
 | [Phase 13](#phase-13--second-source-language-adapter-not-started)              | Second Source-Language Adapter                         | **Not Started** | Post-MVP     | Python or TypeScript adapter.                                                                                      |
 | [Phase 14](#phase-14--design-documents-and-conformance-not-started)            | Design Documents and Conformance                       | **Not Started** | Post-MVP     | Index ADRs/PRDs, design-to-code conformance.                                                                       |
@@ -655,7 +655,7 @@ independently.
 
 ## 16. Phase 11 — Code-Derived Architecture Review
 
-**Status**: In Progress (Graph-Grounded v2 Implemented; Progressive Aggregation Pending)
+**Status**: In Progress (Engineering Complete; Live-Model Qualification Pending)
 
 ### Objective
 
@@ -665,9 +665,9 @@ Turn exhaustive lower-level review into repository-level architectural understan
 
 - [x] Module, crate, and workspace aggregate workflows (`argus-workflow::architecture_*`).
 - [x] Dependency structure, cycles, public surfaces, ownership, cohesion, and boundary analysis (`argus-policies::architecture`).
-- [ ] Cross-crate dependency evidence is available; deterministic cross-cutting pattern detection remains.
-- [ ] Add progressive module-to-package-to-workspace responsibility summaries.
-- [ ] Propagate lower-scope review failures and unable-to-verify results; v2 currently propagates inventory health only.
+- [x] Cross-crate Cargo dependencies and validated captured semantic relations are available to aggregate reviews.
+- [x] Progressive module-to-package-to-workspace responsibility summaries.
+- [x] Propagate lower-scope review failures and unable-to-verify results.
 - [x] Architecture report sections and navigable links to supporting targets and findings (`argus-report::architecture`).
 
 ### Deliverable
@@ -678,9 +678,9 @@ review results (documented in `docs/architecture-evaluation.md`, pending human r
 ### Acceptance Criteria
 
 - [x] Aggregate reviews do not require replaying every source file or lower-level transcript.
-- [ ] Architecture candidates identify supporting relations and evidence; constituent assessment roll-up remains.
+- [x] Architecture candidates identify supporting relations and evidence and receive terminal verification states.
 - [x] The report distinguishes observed structure from inferred intent.
-- [ ] Inventory failures are visible, but lower-scope execution failures are not yet reflected in aggregate confidence.
+- [x] Inventory and lower-scope execution failures are reflected in aggregate confidence.
 - [ ] Human evaluation confirms that the report explains meaningful cross-crate structure and at least the seeded
   architectural defects.
 
@@ -691,11 +691,14 @@ review results (documented in `docs/architecture-evaluation.md`, pending human r
   but formal human adjudication on seeded runs to set the policy quality threshold is pending operator review.
 - **Full Model Execution Dogfooding**: Core workflow simulations pass with simulated actors; running a full live model
   audit over Argus and Mnemosyne requires configured provider credentials and operator threshold sign-off.
-- **Progressive Aggregation**: `architecture-code-derived@2` supplies deterministic scoped containment, dependency,
-  boundary, cycle, and inventory-health evidence. Package and workspace work is still admitted alongside module work;
-  lower-scope assessments are not yet folded into higher-scope packages.
-- **Candidate Verification**: Architecture reports label model results as unverified candidates. The previous orphan
-  verification queue admission has been removed until a real verification worker and result contract exist.
+- **Progressive Aggregation**: `architecture-code-derived@1` leases module work first, then package work, then workspace
+  work. Terminal child summaries and failed/unable-to-verify health are deterministically folded into the parent context.
+- **Candidate Verification**: Every stored architecture candidate receives a terminal evidence-verification state.
+  Direct structural defects with complete evidence are corroborated; inferred risks are disputed; incomplete evidence
+  remains unable to verify. Invalid candidates fail closed before outcome storage.
+- **Qualification Gate**: CI thresholds can require minimum run and adjudication counts, maximum unadjudicated findings,
+  precision, recall, duplicate rate, unable-to-verify rate, and repeated-run stability. Selecting the actual thresholds
+  still requires live-model runs and human adjudication.
 
 ### Primary Risk
 

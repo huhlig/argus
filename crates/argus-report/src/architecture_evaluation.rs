@@ -41,6 +41,12 @@ pub struct ArchitectureEvaluationCorpus {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ArchitectureEvaluationThresholds {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_runs: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_adjudicated_findings: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_unadjudicated_findings: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_precision_basis_points: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_recall_basis_points: Option<u16>,
@@ -101,6 +107,50 @@ impl ArchitectureEvaluation {
         thresholds: &ArchitectureEvaluationThresholds,
     ) -> Result<(), Vec<String>> {
         let mut violations = Vec::new();
+        if let Some(min_runs) = thresholds.min_runs
+            && self.runs < min_runs
+        {
+            violations.push(format!(
+                "{} evaluated runs is below minimum {min_runs}",
+                self.runs
+            ));
+        }
+        let adjudicated = self.accepted_findings + self.rejected_findings;
+        if let Some(minimum) = thresholds.min_adjudicated_findings
+            && adjudicated < minimum
+        {
+            violations.push(format!(
+                "{adjudicated} adjudicated findings is below minimum {minimum}"
+            ));
+        }
+        if let Some(maximum) = thresholds.max_unadjudicated_findings
+            && self.unadjudicated_findings > maximum
+        {
+            violations.push(format!(
+                "{} unadjudicated findings exceeds maximum {maximum}",
+                self.unadjudicated_findings
+            ));
+        }
+        for (name, value) in [
+            ("minimum precision", thresholds.min_precision_basis_points),
+            ("minimum recall", thresholds.min_recall_basis_points),
+            (
+                "maximum duplicate rate",
+                thresholds.max_duplicate_rate_basis_points,
+            ),
+            (
+                "maximum unable-to-verify rate",
+                thresholds.max_unable_to_verify_rate_basis_points,
+            ),
+            (
+                "minimum repeated-run stability",
+                thresholds.min_repeated_run_stability_basis_points,
+            ),
+        ] {
+            if value.is_some_and(|basis_points| basis_points > 10_000) {
+                violations.push(format!("{name} must not exceed 10000 basis points"));
+            }
+        }
         if let Some(min_precision) = thresholds.min_precision_basis_points {
             match self.precision {
                 Some(precision) if precision.basis_points < min_precision => {

@@ -18,7 +18,9 @@ use crate::{
     WorkflowDataStore,
 };
 use argus_core::{RunId, SnapshotId, WorkItemId};
-use argus_policies::{ArchitectureAssessment, ArchitectureResultStatus};
+use argus_policies::{
+    ArchitectureAssessment, ArchitectureCandidateVerification, ArchitectureResultStatus,
+};
 use argus_storage::DurableQueue;
 use async_trait::async_trait;
 use langchart_runtime::{
@@ -89,7 +91,7 @@ impl DurableArchitectureOutcomeActor {
             .ok_or_else(|| "current primary review decision is missing".to_owned())?;
         let mut provenance = self.provenance.clone();
         provenance.provider = decision.provider.clone();
-        ArchitectureOutcomeActor::from_decision(
+        let mut actor = ArchitectureOutcomeActor::from_decision(
             self.inbox.clone(),
             self.contract.as_ref(),
             decision,
@@ -103,8 +105,24 @@ impl DurableArchitectureOutcomeActor {
             },
             provenance,
         )
-        .map_err(|error| error.to_string())?
-        .record()
+        .map_err(|error| error.to_string())?;
+        actor.assessment.verifications = record
+            .data
+            .verification_results
+            .iter()
+            .map(|result| serde_json::from_str::<ArchitectureCandidateVerification>(result))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("invalid architecture verification result: {error}"))?;
+        if !actor.assessment.result.candidates.is_empty()
+            && actor.assessment.verifications.is_empty()
+        {
+            return Err("architecture candidates require terminal verification results".to_owned());
+        }
+        actor
+            .assessment
+            .validate()
+            .map_err(|error| error.to_string())?;
+        actor.record()
     }
 }
 
@@ -144,6 +162,13 @@ impl ArchitectureOutcomeActor {
     }
 
     pub fn record(&self) -> Result<OutcomeReceipt, String> {
+        if !self.assessment.result.candidates.is_empty() && self.assessment.verifications.is_empty()
+        {
+            return Err("architecture candidates require terminal verification results".to_owned());
+        }
+        self.assessment
+            .validate()
+            .map_err(|error| error.to_string())?;
         let assessment_bytes =
             serde_json::to_vec(&self.assessment).map_err(|error| error.to_string())?;
         let stored = self

@@ -16,7 +16,7 @@ use crate::{read_jsonl, write_reconciled};
 use argus_core::{Confidence, FindingId, RunId, Severity, TargetId, WorkItemId};
 use argus_policies::{
     ArchitectureAssessment, ArchitectureCandidate, ArchitectureDimension, ArchitectureFindingKind,
-    ArchitectureResultStatus, ArchitectureScope,
+    ArchitectureResultStatus, ArchitectureScope, ArchitectureVerificationStatus,
 };
 use argus_storage::{OutcomeRecord, QueueState, QueueWork, StoredArtifact};
 use argus_workflow::EffectiveOutcome;
@@ -27,7 +27,7 @@ use std::{
     path::Path,
 };
 
-pub const ARCHITECTURE_REPORT_SCHEMA_VERSION: u32 = 2;
+pub const ARCHITECTURE_REPORT_SCHEMA_VERSION: u32 = 1;
 pub const ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND: &str = "architecture-assessment.v1";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -36,7 +36,11 @@ pub struct ArchitectureReportSummary {
     pub pending: usize,
     pub leased: usize,
     pub passed: usize,
-    pub unverified_candidates: usize,
+    pub candidate_assessments: usize,
+    pub corroborated_candidates: usize,
+    pub disputed_candidates: usize,
+    pub rejected_candidates: usize,
+    pub unverifiable_candidates: usize,
     pub unable_to_verify: usize,
     pub failed: usize,
     pub cancelled: usize,
@@ -69,6 +73,7 @@ pub struct ArchitectureFindingOccurrence {
 pub struct ArchitectureFindingCluster {
     pub id: FindingId,
     pub representative: ArchitectureCandidate,
+    pub verification: ArchitectureVerificationStatus,
     pub occurrences: usize,
 }
 
@@ -132,7 +137,10 @@ impl ArchitectureReport {
         }
 
         let mut assessments = Vec::new();
-        let mut clusters: BTreeMap<FindingId, (ArchitectureCandidate, usize)> = BTreeMap::new();
+        let mut clusters: BTreeMap<
+            FindingId,
+            (ArchitectureCandidate, ArchitectureVerificationStatus, usize),
+        > = BTreeMap::new();
 
         for item in work {
             if item.coverage.policy != policy_version {
@@ -159,7 +167,7 @@ impl ArchitectureReport {
                                 "pass"
                             }
                             ArchitectureResultStatus::Deficient => {
-                                summary.unverified_candidates += 1;
+                                summary.candidate_assessments += 1;
                                 "deficient"
                             }
                             ArchitectureResultStatus::UnableToVerify => {
@@ -175,6 +183,29 @@ impl ArchitectureReport {
                         });
 
                         for candidate in &assessment.result.candidates {
+                            let verification = assessment
+                                .verifications
+                                .iter()
+                                .find(|verification| verification.candidate_id == candidate.id)
+                                .ok_or_else(|| {
+                                    argus_core::ArgusError::invariant(
+                                        "architecture candidate is missing terminal verification",
+                                    )
+                                })?;
+                            match verification.status {
+                                ArchitectureVerificationStatus::Corroborated => {
+                                    summary.corroborated_candidates += 1;
+                                }
+                                ArchitectureVerificationStatus::Disputed => {
+                                    summary.disputed_candidates += 1;
+                                }
+                                ArchitectureVerificationStatus::Rejected => {
+                                    summary.rejected_candidates += 1;
+                                }
+                                ArchitectureVerificationStatus::UnableToVerify => {
+                                    summary.unverifiable_candidates += 1;
+                                }
+                            }
                             summary.finding_occurrences += 1;
                             let key = CanonicalArchitectureFindingKey {
                                 id: candidate.id.clone(),
@@ -190,8 +221,11 @@ impl ArchitectureReport {
 
                             let entry = clusters
                                 .entry(finding_id)
-                                .or_insert_with(|| (candidate.clone(), 0));
-                            entry.1 += 1;
+                                .or_insert_with(|| (candidate.clone(), verification.status, 0));
+                            if entry.1 != verification.status {
+                                entry.1 = ArchitectureVerificationStatus::Disputed;
+                            }
+                            entry.2 += 1;
                         }
                     } else {
                         return Err(argus_core::ArgusError::invariant(format!(
@@ -204,13 +238,14 @@ impl ArchitectureReport {
         }
 
         let mut finding_clusters = Vec::new();
-        for (id, (representative, occurrences)) in clusters {
+        for (id, (representative, verification, occurrences)) in clusters {
             if occurrences > 1 {
                 summary.duplicate_findings += occurrences - 1;
             }
             finding_clusters.push(ArchitectureFindingCluster {
                 id,
                 representative,
+                verification,
                 occurrences,
             });
         }
@@ -233,13 +268,17 @@ impl ArchitectureReport {
         writeln!(out, "\nPolicy: `{}`", self.policy_version).unwrap();
         writeln!(
             out,
-            "Summary: {} total, {} passed, {} unverified candidates, {} unable-to-verify, {} failed, {} cancelled ({} workspace, {} package, {} module scopes)",
+            "Summary: {} total, {} passed, {} candidate assessments, {} unable-to-verify, {} failed, {} cancelled ({} corroborated, {} disputed, {} rejected, {} candidate unable-to-verify; {} workspace, {} package, {} module scopes)",
             self.summary.total,
             self.summary.passed,
-            self.summary.unverified_candidates,
+            self.summary.candidate_assessments,
             self.summary.unable_to_verify,
             self.summary.failed,
             self.summary.cancelled,
+            self.summary.corroborated_candidates,
+            self.summary.disputed_candidates,
+            self.summary.rejected_candidates,
+            self.summary.unverifiable_candidates,
             self.summary.workspace_scopes,
             self.summary.package_scopes,
             self.summary.module_scopes,
@@ -247,7 +286,7 @@ impl ArchitectureReport {
         .unwrap();
 
         if !self.finding_clusters.is_empty() {
-            writeln!(out, "\n## Unverified Structural Candidates\n").unwrap();
+            writeln!(out, "\n## Structural Candidates\n").unwrap();
             for cluster in &self.finding_clusters {
                 let rep = &cluster.representative;
                 let dims = rep
@@ -265,6 +304,7 @@ impl ArchitectureReport {
                 writeln!(out, "- **Scope**: {:?}", rep.scope).unwrap();
                 writeln!(out, "- **Target**: `{}`", rep.target).unwrap();
                 writeln!(out, "- **Confidence**: {:?}", rep.confidence).unwrap();
+                writeln!(out, "- **Verification**: {:?}", cluster.verification).unwrap();
                 writeln!(out, "- **Occurrences**: {}", cluster.occurrences).unwrap();
                 writeln!(out, "- **Explanation**: {}", rep.explanation).unwrap();
                 if !rep.observed_facts.is_empty() {
@@ -356,13 +396,13 @@ mod tests {
                 configuration: "configuration".to_owned(),
                 adapter: "rust".to_owned(),
                 target_kind: "module".to_owned(),
-                policy: "architecture-code-derived@2".to_owned(),
+                policy: "architecture-code-derived@1".to_owned(),
             },
         );
         work.state = QueueState::Succeeded;
 
         let error =
-            ArchitectureReport::build(run, "architecture-code-derived@2", &[work], &[], &[])
+            ArchitectureReport::build(run, "architecture-code-derived@1", &[work], &[], &[])
                 .unwrap_err();
         assert!(error.to_string().contains("missing a valid assessment"));
     }

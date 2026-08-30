@@ -807,6 +807,32 @@ impl DurableQueue {
         })
     }
 
+    /// Atomically leases the next available item in a partition that also satisfies `eligible`.
+    ///
+    /// Callers use this for policy-specific dependency gates. The predicate must only inspect
+    /// state captured before this call; it runs while the queue write transaction is open.
+    pub fn lease_next_for_partition_matching(
+        &self,
+        now_millis: u64,
+        lease_duration_millis: u64,
+        run: &RunId,
+        adapter: &str,
+        policy: &str,
+        eligible: impl Fn(&QueueWork) -> bool,
+    ) -> Result<Option<LeasedWork>, argus_core::ArgusError> {
+        if adapter.is_empty() || policy.is_empty() {
+            return Err(argus_core::ArgusError::invalid_input(
+                "queue lease partition adapter and policy must not be empty",
+            ));
+        }
+        self.lease_next_matching(now_millis, lease_duration_millis, |work| {
+            work.run == *run
+                && work.coverage.adapter == adapter
+                && work.coverage.policy == policy
+                && eligible(work)
+        })
+    }
+
     fn lease_next_matching(
         &self,
         now_millis: u64,

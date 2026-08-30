@@ -252,6 +252,22 @@ pub struct ArchitectureCandidate {
     pub inferred_intent: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchitectureVerificationStatus {
+    Corroborated,
+    Disputed,
+    Rejected,
+    UnableToVerify,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureCandidateVerification {
+    pub candidate_id: String,
+    pub status: ArchitectureVerificationStatus,
+    pub rationale: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ArchitectureDimensionResult {
     pub status: ArchitectureDimensionStatus,
@@ -292,6 +308,7 @@ pub struct ArchitectureAssessment {
     pub target: TargetId,
     pub scope: ArchitectureScope,
     pub result: ArchitectureResult,
+    pub verifications: Vec<ArchitectureCandidateVerification>,
 }
 
 impl ArchitectureAssessment {
@@ -437,6 +454,7 @@ impl ArchitectureAssessmentBinding {
                 candidates,
                 constituent_health: self.constituent_health,
             },
+            verifications: Vec::new(),
         };
         assessment.validate()?;
         Ok(assessment)
@@ -541,6 +559,27 @@ impl ArchitectureAssessment {
                 validate_architecture_text("inferred architecture intent", intent)?;
             }
         }
+        if !self.verifications.is_empty() {
+            let mut verified = BTreeSet::new();
+            for verification in &self.verifications {
+                validate_architecture_text(
+                    "architecture verification rationale",
+                    &verification.rationale,
+                )?;
+                if !candidate_ids.contains(&verification.candidate_id)
+                    || !verified.insert(&verification.candidate_id)
+                {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "architecture verifications must uniquely reference assessment candidates",
+                    ));
+                }
+            }
+            if verified != candidate_ids {
+                return Err(argus_core::ArgusError::invalid_input(
+                    "architecture verification must account for every candidate",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -614,7 +653,7 @@ mod tests {
             related_targets: Vec::new(),
         };
         let binding = ArchitectureAssessmentBinding {
-            policy_id: PolicyId::derive([b"architecture-code-derived@2".as_slice()]),
+            policy_id: PolicyId::derive([b"architecture-code-derived@1".as_slice()]),
             work_item_id: WorkItemId::derive([b"work-1".as_slice()]),
             target: TargetId::derive([b"crate::module".as_slice()]),
             scope: ArchitectureScope::Module,

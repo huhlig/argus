@@ -30,15 +30,17 @@ use argus_policies::{
 use argus_storage::{CoverageKey, DurableQueue, QueueWork};
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 
-pub const ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION: u32 = 2;
+pub const ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION: u32 = 1;
 pub const ARCHITECTURE_SCOPE_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 const MAX_SCOPE_CONSTITUENTS: usize = 2_048;
 const MAX_SCOPE_INTERNAL_RELATIONS: usize = 4_096;
 const MAX_SCOPE_BOUNDARY_RELATIONS: usize = 2_048;
+const MAX_SCOPE_EVIDENCE_BYTES: usize = 512 * 1_024;
 pub const ARCHITECTURE_EVIDENCE_PACKAGE_ARTIFACT_KIND: &str = "evidence-package";
 pub const ARCHITECTURE_REVIEW_CONTEXT_ARTIFACT_KIND: &str = "review-context";
 
@@ -52,6 +54,7 @@ pub struct ArchitectureReviewUnit {
     pub policy_version: String,
     pub applicability: ArchitectureApplicabilityDecision,
     pub evidence: Vec<EvidenceId>,
+    pub prerequisite_work: Vec<WorkItemId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,17 +66,49 @@ pub struct ArchitectureReviewPlan {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ArchitectureScopeEvidence {
     pub schema_version: u32,
+    pub fingerprint: ContentHash,
     pub target: TargetId,
     pub scope: ArchitectureScope,
     pub constituents: Vec<ArchitectureTargetFact>,
     pub omitted_constituents: usize,
     pub boundary_targets: Vec<ArchitectureTargetFact>,
+    pub omitted_boundary_targets: usize,
     pub internal_relations: Vec<ArchitectureRelationFact>,
     pub omitted_internal_relations: usize,
     pub boundary_relations: Vec<ArchitectureRelationFact>,
     pub omitted_boundary_relations: usize,
     pub dependency_cycles: Vec<Vec<TargetId>>,
+    pub omitted_dependency_cycles: usize,
     pub constituent_health: ConstituentHealthSummary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureConstituentEvidence {
+    pub schema_version: u32,
+    pub target: TargetId,
+    pub scope: ArchitectureScope,
+    pub constituents: Vec<ArchitectureConstituentAssessmentFact>,
+    pub constituent_health: ConstituentHealthSummary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureConstituentAssessmentFact {
+    pub work_item: WorkItemId,
+    pub target: TargetId,
+    pub scope: ArchitectureScope,
+    pub status: ArchitectureConstituentStatus,
+    pub summary: String,
+    pub candidate_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchitectureConstituentStatus {
+    Passed,
+    Deficient,
+    UnableToVerify,
+    Failed,
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -280,6 +315,7 @@ impl ArchitectureReviewUnit {
                 EvidenceKind::Source,
                 EvidenceKind::Documentation,
                 EvidenceKind::ArchitectureGraph,
+                EvidenceKind::ArchitectureSummary,
             ]),
             required_kinds: BTreeSet::from([EvidenceKind::ArchitectureGraph]),
             maximum_classification,
@@ -407,6 +443,7 @@ pub struct ArchitectureReviewPlanner<'a> {
     policy: &'a ArchitectureApplicabilityPolicy,
     policy_id: PolicyId,
     policy_version: String,
+    scope_cache: RefCell<BTreeMap<(String, String, String), EvidenceRecord>>,
 }
 
 impl<'a> ArchitectureReviewPlanner<'a> {
@@ -425,6 +462,7 @@ impl<'a> ArchitectureReviewPlanner<'a> {
             policy,
             policy_id,
             policy_version,
+            scope_cache: RefCell::new(BTreeMap::new()),
         })
     }
 
@@ -518,6 +556,7 @@ impl<'a> ArchitectureReviewPlanner<'a> {
                     &targets_by_id,
                     &normalized_relations,
                     configuration,
+                    &self.scope_cache,
                 )?;
                 unit_evidence.push(structural.id.clone());
                 plan_evidence.push(structural);
@@ -533,8 +572,10 @@ impl<'a> ArchitectureReviewPlanner<'a> {
                 policy_version: self.policy_version.clone(),
                 applicability,
                 evidence: unit_evidence,
+                prerequisite_work: Vec::new(),
             });
         }
+        assign_progressive_prerequisites(&mut units, &targets_by_id, &normalized_relations);
         plan_evidence.sort_by(|left, right| left.id.cmp(&right.id));
         if plan_evidence
             .windows(2)
@@ -548,6 +589,54 @@ impl<'a> ArchitectureReviewPlanner<'a> {
             units,
             evidence: plan_evidence,
         })
+    }
+}
+
+fn assign_progressive_prerequisites(
+    units: &mut [ArchitectureReviewUnit],
+    targets: &BTreeMap<TargetId, &Target>,
+    relations: &[Relation],
+) {
+    let applicable = units
+        .iter()
+        .filter(|unit| unit.applicability.state == ApplicabilityState::Applicable)
+        .map(|unit| {
+            (
+                unit.target.target.clone(),
+                (unit.scope, unit.work_item.clone()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for unit in units {
+        let scope_targets = scope_target_ids(&unit.target.target, targets, relations);
+        let preferred_scope = match unit.scope {
+            ArchitectureScope::Module => continue,
+            ArchitectureScope::Package => ArchitectureScope::Module,
+            ArchitectureScope::Workspace => ArchitectureScope::Package,
+        };
+        let mut prerequisites = applicable
+            .iter()
+            .filter(|(target, (scope, _))| {
+                **target != unit.target.target
+                    && *scope == preferred_scope
+                    && scope_targets.contains(*target)
+            })
+            .map(|(_, (_, work_item))| work_item.clone())
+            .collect::<Vec<_>>();
+        if prerequisites.is_empty() && unit.scope == ArchitectureScope::Workspace {
+            prerequisites = applicable
+                .iter()
+                .filter(|(target, (scope, _))| {
+                    **target != unit.target.target
+                        && *scope == ArchitectureScope::Module
+                        && scope_targets.contains(*target)
+                })
+                .map(|(_, (_, work_item))| work_item.clone())
+                .collect();
+        }
+        prerequisites.sort();
+        prerequisites.dedup();
+        unit.prerequisite_work = prerequisites;
     }
 }
 
@@ -611,6 +700,7 @@ fn synthesize_scope_evidence(
     targets: &BTreeMap<TargetId, &Target>,
     relations: &[Relation],
     configuration: &ConfigurationId,
+    cache: &RefCell<BTreeMap<(String, String, String), EvidenceRecord>>,
 ) -> Result<EvidenceRecord, argus_core::ArgusError> {
     let scope_targets = scope_target_ids(&target.id, targets, relations);
     let constituent_targets = scope_targets
@@ -662,11 +752,51 @@ fn synthesize_scope_evidence(
             })
             .count(),
     };
+    let dependency_cycles = dependency_cycles(&scope_targets, relations);
+    let fingerprint_bytes = serde_json::to_vec(&(
+        &target.id,
+        scope,
+        constituent_targets
+            .iter()
+            .copied()
+            .map(target_fact)
+            .collect::<Vec<_>>(),
+        boundary_target_records
+            .iter()
+            .copied()
+            .map(target_fact)
+            .collect::<Vec<_>>(),
+        internal_relation_records
+            .iter()
+            .copied()
+            .map(relation_fact)
+            .collect::<Vec<_>>(),
+        boundary_relation_records
+            .iter()
+            .copied()
+            .map(relation_fact)
+            .collect::<Vec<_>>(),
+        &dependency_cycles,
+        &constituent_health,
+    ))
+    .map_err(|error| {
+        argus_core::ArgusError::invariant("cannot fingerprint architecture scope evidence")
+            .with_source(error)
+    })?;
+    let fingerprint = ContentHash::digest(&fingerprint_bytes);
+    let cache_key = (
+        target.id.to_string(),
+        configuration.to_string(),
+        fingerprint.as_str().to_owned(),
+    );
+    if let Some(cached) = cache.borrow().get(&cache_key) {
+        return Ok(cached.clone());
+    }
     let (constituents, omitted_constituents) = bounded(
         constituent_targets.into_iter().map(target_fact).collect(),
         MAX_SCOPE_CONSTITUENTS,
     );
-    let (boundary_targets, _) = bounded(
+    let (boundary_targets, omitted_boundary_targets) = bounded(
         boundary_target_records
             .into_iter()
             .map(target_fact)
@@ -687,24 +817,24 @@ fn synthesize_scope_evidence(
             .collect(),
         MAX_SCOPE_BOUNDARY_RELATIONS,
     );
-    let scope_evidence = ArchitectureScopeEvidence {
+    let mut scope_evidence = ArchitectureScopeEvidence {
         schema_version: ARCHITECTURE_SCOPE_EVIDENCE_SCHEMA_VERSION,
+        fingerprint,
         target: target.id.clone(),
         scope,
         constituents,
         omitted_constituents,
         boundary_targets,
+        omitted_boundary_targets,
         internal_relations,
         omitted_internal_relations,
         boundary_relations,
         omitted_boundary_relations,
-        dependency_cycles: dependency_cycles(&scope_targets, relations),
+        dependency_cycles,
+        omitted_dependency_cycles: 0,
         constituent_health,
     };
-    let bytes = serde_json::to_vec(&scope_evidence).map_err(|error| {
-        argus_core::ArgusError::invariant("cannot serialize architecture scope evidence")
-            .with_source(error)
-    })?;
+    let bytes = enforce_scope_byte_budget(&mut scope_evidence)?;
     let id = EvidenceId::derive([
         b"architecture-scope-evidence-v1".as_slice(),
         target.id.as_str().as_bytes(),
@@ -714,7 +844,7 @@ fn synthesize_scope_evidence(
         argus_core::ArgusError::invariant("architecture scope evidence is not UTF-8")
             .with_source(error)
     })?;
-    Ok(EvidenceRecord {
+    let record = EvidenceRecord {
         id,
         kind: EvidenceKind::ArchitectureGraph,
         origin: EvidenceOrigin::Inference,
@@ -732,7 +862,38 @@ fn synthesize_scope_evidence(
             ingest_only: true,
             resolution: ResolutionQuality::Exact,
         },
-    })
+    };
+    cache.borrow_mut().insert(cache_key, record.clone());
+    Ok(record)
+}
+
+fn enforce_scope_byte_budget(
+    evidence: &mut ArchitectureScopeEvidence,
+) -> Result<Vec<u8>, argus_core::ArgusError> {
+    loop {
+        let bytes = serde_json::to_vec(evidence).map_err(|error| {
+            argus_core::ArgusError::invariant("cannot serialize architecture scope evidence")
+                .with_source(error)
+        })?;
+        if bytes.len() <= MAX_SCOPE_EVIDENCE_BYTES {
+            return Ok(bytes);
+        }
+        if evidence.boundary_targets.pop().is_some() {
+            evidence.omitted_boundary_targets += 1;
+        } else if evidence.boundary_relations.pop().is_some() {
+            evidence.omitted_boundary_relations += 1;
+        } else if evidence.internal_relations.pop().is_some() {
+            evidence.omitted_internal_relations += 1;
+        } else if evidence.constituents.pop().is_some() {
+            evidence.omitted_constituents += 1;
+        } else if evidence.dependency_cycles.pop().is_some() {
+            evidence.omitted_dependency_cycles += 1;
+        } else {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture scope metadata exceeds its serialized byte budget",
+            ));
+        }
+    }
 }
 
 fn target_fact(target: &Target) -> ArchitectureTargetFact {
@@ -977,11 +1138,11 @@ mod tests {
     #[test]
     fn planner_creates_units_for_modules_packages_and_workspace() {
         let applicability = ArchitectureApplicabilityPolicy::conservative().unwrap();
-        let policy_id = PolicyId::derive([b"architecture-code-derived@2".as_slice()]);
+        let policy_id = PolicyId::derive([b"architecture-code-derived@1".as_slice()]);
         let planner = ArchitectureReviewPlanner::new(
             &applicability,
             policy_id,
-            "architecture-code-derived@2",
+            "architecture-code-derived@1",
         )
         .unwrap();
 
@@ -1099,5 +1260,78 @@ mod tests {
         assert_eq!(scope.constituents.len(), 3);
         assert_eq!(scope.internal_relations.len(), 2);
         assert_eq!(scope.dependency_cycles.len(), 1);
+        assert!(package_evidence.detail.as_ref().unwrap().len() <= MAX_SCOPE_EVIDENCE_BYTES);
+        let package_unit = plan
+            .units
+            .iter()
+            .find(|unit| unit.target.target == package_id)
+            .unwrap();
+        assert_eq!(package_unit.prerequisite_work.len(), 2);
+        let workspace_unit = plan
+            .units
+            .iter()
+            .find(|unit| unit.scope == ArchitectureScope::Workspace)
+            .unwrap();
+        assert_eq!(
+            workspace_unit.prerequisite_work,
+            vec![package_unit.work_item.clone()]
+        );
+        assert!(
+            plan.units
+                .iter()
+                .filter(|unit| unit.scope == ArchitectureScope::Module)
+                .all(|unit| unit.prerequisite_work.is_empty())
+        );
+        let repeated = planner
+            .plan(&snapshot, &configuration, &targets, &[], &relations)
+            .unwrap();
+        let repeated_scope: ArchitectureScopeEvidence = serde_json::from_str(
+            repeated
+                .evidence
+                .iter()
+                .find(|record| record.target.as_ref() == Some(&package_id))
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scope.fingerprint, repeated_scope.fingerprint);
+    }
+
+    #[test]
+    fn serialized_scope_evidence_is_trimmed_to_the_hard_byte_budget() {
+        let target = TargetId::derive([b"large-scope".as_slice()]);
+        let mut evidence = ArchitectureScopeEvidence {
+            schema_version: 1,
+            fingerprint: ContentHash::digest(b"large-scope"),
+            target: target.clone(),
+            scope: ArchitectureScope::Workspace,
+            constituents: Vec::new(),
+            omitted_constituents: 0,
+            boundary_targets: (0..400)
+                .map(|index| ArchitectureTargetFact {
+                    id: TargetId::derive([format!("target-{index}").as_bytes()]),
+                    name: "x".repeat(4_096),
+                    class: ArchitectureTargetClass::Module,
+                    visibility: TargetVisibility::Private,
+                    inventory: InventoryState::Represented,
+                    parent: Some(target.clone()),
+                    capabilities: BTreeMap::new(),
+                })
+                .collect(),
+            omitted_boundary_targets: 0,
+            internal_relations: Vec::new(),
+            omitted_internal_relations: 0,
+            boundary_relations: Vec::new(),
+            omitted_boundary_relations: 0,
+            dependency_cycles: Vec::new(),
+            omitted_dependency_cycles: 0,
+            constituent_health: ConstituentHealthSummary::default(),
+        };
+
+        let bytes = enforce_scope_byte_budget(&mut evidence).unwrap();
+        assert!(bytes.len() <= MAX_SCOPE_EVIDENCE_BYTES);
+        assert!(evidence.omitted_boundary_targets > 0);
     }
 }

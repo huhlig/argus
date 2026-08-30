@@ -1,8 +1,8 @@
 # Code-derived architecture policy evaluation
 
-The active policy is `architecture-code-derived@2`. It adds deterministic scoped `architecture_graph` evidence and strict assessment
-validation. Findings emitted by the model are reported as unverified candidates until a dedicated verification workflow
-is implemented.
+The active policy is `architecture-code-derived@1`. It includes deterministic, fingerprinted, byte-bounded scoped
+`architecture_graph` evidence, progressive constituent summaries, strict assessment validation, and durable terminal
+candidate verification.
 
 Phase 11 quality evaluation is separate from an ordinary repository audit. The seeded corpus is
 provided by `argus_test_support::seeded_architecture_fixture` and comprehensively tests all 6
@@ -30,6 +30,11 @@ intent (`inferred_intent`). Reviews operate across hierarchical scopes:
 - `Package`: Inter-module cycles, boundary encapsulation, and constituent health roll-up.
 - `Workspace`: Inter-package topology, layering, and workspace-level constituent health propagation.
 
+Architecture work is leased progressively: modules must become terminal before their package, and packages before the
+workspace. Parent contexts contain compact child status, responsibility summary, and candidate counts rather than lower
+review transcripts. Captured semantic relationships can be merged during priming with
+`argus prime --adapter rust --relationships <jsonl>`; malformed, weakly resolved, or unknown-target relations fail closed.
+
 Human decisions use the generic `HumanAdjudication` record and existing `AdjudicationState` rather
 than an architecture-specific verdict. Records are append-only per run and finding. Revision writes
 use compare-and-swap semantics so stale reviewers cannot overwrite a newer decision. An accepted
@@ -50,7 +55,9 @@ the exact numerator, denominator, and integer basis-point result; Markdown rende
 
 These measurements do not declare the policy usable. A reviewer must adjudicate the seeded runs and
 record an initial policy-specific threshold before Phase 11 acceptance can be claimed. Threshold
-selection can be enforced automatically in CI via `--thresholds <path>`.
+selection can be enforced automatically in CI via `--thresholds <path>`. Architecture thresholds may additionally
+require `min_runs`, `min_adjudicated_findings`, and `max_unadjudicated_findings`, preventing a nominal rate from passing
+without enough reviewed evidence.
 
 ## Commands
 
@@ -68,6 +75,9 @@ argus report <run-id> --format jsonl
 argus report <run-id> --dimension cycles
 argus report <run-id> --severity high
 ```
+
+Full-pipeline runs render all three policy reports together. Dimension and severity filters intentionally require a
+single-policy run because policy dimension enums are not interchangeable.
 
 Record an initial decision only after obtaining the canonical finding ID from `argus report`:
 

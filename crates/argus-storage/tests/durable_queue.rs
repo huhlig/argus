@@ -238,6 +238,54 @@ fn partitioned_lease_does_not_consume_unrelated_work() {
 }
 
 #[test]
+fn matching_partitioned_lease_skips_ineligible_work_without_consuming_it() {
+    let temporary = tempfile::tempdir().unwrap();
+    let queue = DurableQueue::open(&temporary.path().join("state.redb")).unwrap();
+    let audit_run = run("dependency-gated-run", 0);
+    queue.create_run(&audit_run).unwrap();
+    let coverage = CoverageKey {
+        snapshot: audit_run.snapshot.to_string(),
+        configuration: audit_run.configuration.to_string(),
+        adapter: "rust".to_owned(),
+        target_kind: "module".to_owned(),
+        policy: "architecture-code-derived@1".to_owned(),
+    };
+    let blocked = QueueWork::pending_for(
+        WorkItemId::derive([b"blocked-architecture-work".as_slice()]),
+        b"blocked".to_vec(),
+        audit_run.id.clone(),
+        coverage.clone(),
+    );
+    let ready = QueueWork::pending_for(
+        WorkItemId::derive([b"ready-architecture-work".as_slice()]),
+        b"ready".to_vec(),
+        audit_run.id.clone(),
+        coverage,
+    );
+    queue
+        .admit_batch(&[blocked.clone(), ready.clone()], 0)
+        .unwrap();
+
+    let leased = queue
+        .lease_next_for_partition_matching(
+            0,
+            100,
+            &audit_run.id,
+            "rust",
+            "architecture-code-derived@1",
+            |work| work.payload == b"ready",
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(leased.id, ready.id);
+    assert_eq!(
+        queue.get(&blocked.id).unwrap().unwrap().state,
+        QueueState::Pending
+    );
+}
+
+#[test]
 fn run_records_are_scoped_and_include_referenced_artifacts() {
     let temporary = tempfile::tempdir().unwrap();
     let queue = DurableQueue::open(&temporary.path().join("state.redb")).unwrap();
