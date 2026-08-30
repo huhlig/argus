@@ -263,7 +263,7 @@ pub use langchart_llm_watsonx::{WatsonxConfig, WatsonxCredentials, WatsonxScope}
 pub use runtime_profile::{
     BuiltProviderRuntime, PROVIDER_CONFIG_SCHEMA_VERSION, PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION,
     ProviderConfig, ProviderModelConfig, ProviderRuntimeProfile, ProviderTransportProfile,
-    WatsonxCredentialProfile, WatsonxScopeProfile,
+    WatsonxCredentialProfile, WatsonxScopeProfile, substitute_optional_value, substitute_value,
 };
 pub use transport::{LangchartModelProvider, StructuredOutputStrategy};
 
