@@ -32,6 +32,9 @@ use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -444,6 +447,16 @@ pub struct ArchitectureReviewPlanner<'a> {
     policy_id: PolicyId,
     policy_version: String,
     scope_cache: RefCell<BTreeMap<(String, String, String), EvidenceRecord>>,
+    persistent_cache: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ArchitectureScopeCacheEntry {
+    schema_version: u32,
+    target: String,
+    configuration: String,
+    fingerprint: String,
+    record: EvidenceRecord,
 }
 
 impl<'a> ArchitectureReviewPlanner<'a> {
@@ -463,7 +476,21 @@ impl<'a> ArchitectureReviewPlanner<'a> {
             policy_id,
             policy_version,
             scope_cache: RefCell::new(BTreeMap::new()),
+            persistent_cache: None,
         })
+    }
+
+    pub fn with_persistent_cache(
+        mut self,
+        directory: impl Into<PathBuf>,
+    ) -> Result<Self, argus_core::ArgusError> {
+        let directory = directory.into();
+        fs::create_dir_all(&directory).map_err(|error| {
+            argus_core::ArgusError::invariant("cannot create architecture scope cache")
+                .with_source(error)
+        })?;
+        self.persistent_cache = Some(directory);
+        Ok(self)
     }
 
     pub fn plan(
@@ -557,6 +584,7 @@ impl<'a> ArchitectureReviewPlanner<'a> {
                     &normalized_relations,
                     configuration,
                     &self.scope_cache,
+                    self.persistent_cache.as_deref(),
                 )?;
                 unit_evidence.push(structural.id.clone());
                 plan_evidence.push(structural);
@@ -701,6 +729,7 @@ fn synthesize_scope_evidence(
     relations: &[Relation],
     configuration: &ConfigurationId,
     cache: &RefCell<BTreeMap<(String, String, String), EvidenceRecord>>,
+    persistent_cache: Option<&Path>,
 ) -> Result<EvidenceRecord, argus_core::ArgusError> {
     let scope_targets = scope_target_ids(&target.id, targets, relations);
     let constituent_targets = scope_targets
@@ -792,6 +821,12 @@ fn synthesize_scope_evidence(
     if let Some(cached) = cache.borrow().get(&cache_key) {
         return Ok(cached.clone());
     }
+    if let Some(directory) = persistent_cache
+        && let Some(cached) = load_persistent_scope_cache(directory, &cache_key)?
+    {
+        cache.borrow_mut().insert(cache_key, cached.clone());
+        return Ok(cached);
+    }
     let (constituents, omitted_constituents) = bounded(
         constituent_targets.into_iter().map(target_fact).collect(),
         MAX_SCOPE_CONSTITUENTS,
@@ -863,8 +898,122 @@ fn synthesize_scope_evidence(
             resolution: ResolutionQuality::Exact,
         },
     };
+    if let Some(directory) = persistent_cache {
+        store_persistent_scope_cache(directory, &cache_key, &record)?;
+    }
     cache.borrow_mut().insert(cache_key, record.clone());
     Ok(record)
+}
+
+fn persistent_scope_cache_path(
+    directory: &Path,
+    key: &(String, String, String),
+) -> Result<PathBuf, argus_core::ArgusError> {
+    let bytes = serde_json::to_vec(key).map_err(|error| {
+        argus_core::ArgusError::invariant("cannot serialize architecture cache key")
+            .with_source(error)
+    })?;
+    let hash = ContentHash::digest(&bytes);
+    Ok(directory.join(format!("{}.json", hash.as_str())))
+}
+
+fn load_persistent_scope_cache(
+    directory: &Path,
+    key: &(String, String, String),
+) -> Result<Option<EvidenceRecord>, argus_core::ArgusError> {
+    let path = persistent_scope_cache_path(directory, key)?;
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(
+                argus_core::ArgusError::invariant("cannot read architecture scope cache")
+                    .with_source(error),
+            );
+        }
+    };
+    let entry: ArchitectureScopeCacheEntry = serde_json::from_slice(&bytes).map_err(|error| {
+        argus_core::ArgusError::invalid_input("invalid architecture scope cache entry")
+            .with_source(error)
+    })?;
+    if entry.schema_version != 1
+        || entry.target != key.0
+        || entry.configuration != key.1
+        || entry.fingerprint != key.2
+    {
+        return Err(argus_core::ArgusError::invalid_input(
+            "architecture scope cache identity mismatch",
+        ));
+    }
+    entry.record.validate()?;
+    let scope: ArchitectureScopeEvidence =
+        serde_json::from_str(entry.record.detail.as_deref().ok_or_else(|| {
+            argus_core::ArgusError::invalid_input(
+                "architecture scope cache record has no structural detail",
+            )
+        })?)
+        .map_err(|error| {
+            argus_core::ArgusError::invalid_input("invalid cached architecture scope evidence")
+                .with_source(error)
+        })?;
+    if scope.target.to_string() != key.0 || scope.fingerprint.as_str() != key.2 {
+        return Err(argus_core::ArgusError::invalid_input(
+            "cached architecture scope evidence fingerprint mismatch",
+        ));
+    }
+    Ok(Some(entry.record))
+}
+
+fn store_persistent_scope_cache(
+    directory: &Path,
+    key: &(String, String, String),
+    record: &EvidenceRecord,
+) -> Result<(), argus_core::ArgusError> {
+    let path = persistent_scope_cache_path(directory, key)?;
+    if path.exists() {
+        load_persistent_scope_cache(directory, key)?;
+        return Ok(());
+    }
+    let entry = ArchitectureScopeCacheEntry {
+        schema_version: 1,
+        target: key.0.clone(),
+        configuration: key.1.clone(),
+        fingerprint: key.2.clone(),
+        record: record.clone(),
+    };
+    let bytes = serde_json::to_vec(&entry).map_err(|error| {
+        argus_core::ArgusError::invariant("cannot serialize architecture scope cache entry")
+            .with_source(error)
+    })?;
+    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| {
+                argus_core::ArgusError::invariant("cannot create architecture scope cache entry")
+                    .with_source(error)
+            })?;
+        file.write_all(&bytes).map_err(|error| {
+            argus_core::ArgusError::invariant("cannot write architecture scope cache entry")
+                .with_source(error)
+        })?;
+        file.sync_all().map_err(|error| {
+            argus_core::ArgusError::invariant("cannot sync architecture scope cache entry")
+                .with_source(error)
+        })?;
+        drop(file);
+        fs::rename(&temporary, &path).map_err(|error| {
+            argus_core::ArgusError::invariant("cannot publish architecture scope cache entry")
+                .with_source(error)
+        })?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn enforce_scope_byte_budget(
@@ -1137,13 +1286,17 @@ mod tests {
 
     #[test]
     fn planner_creates_units_for_modules_packages_and_workspace() {
+        let temporary = tempfile::tempdir().unwrap();
+        let cache_directory = temporary.path().join("architecture-cache");
         let applicability = ArchitectureApplicabilityPolicy::conservative().unwrap();
         let policy_id = PolicyId::derive([b"architecture-code-derived@1".as_slice()]);
         let planner = ArchitectureReviewPlanner::new(
             &applicability,
-            policy_id,
+            policy_id.clone(),
             "architecture-code-derived@1",
         )
+        .unwrap()
+        .with_persistent_cache(&cache_directory)
         .unwrap();
 
         let package_id = TargetId::derive([b"crate".as_slice()]);
@@ -1282,7 +1435,17 @@ mod tests {
                 .filter(|unit| unit.scope == ArchitectureScope::Module)
                 .all(|unit| unit.prerequisite_work.is_empty())
         );
-        let repeated = planner
+        let cache_entries = fs::read_dir(&cache_directory).unwrap().count();
+        assert_eq!(cache_entries, 4);
+        let repeated_planner = ArchitectureReviewPlanner::new(
+            &applicability,
+            policy_id,
+            "architecture-code-derived@1",
+        )
+        .unwrap()
+        .with_persistent_cache(&cache_directory)
+        .unwrap();
+        let repeated = repeated_planner
             .plan(&snapshot, &configuration, &targets, &[], &relations)
             .unwrap();
         let repeated_scope: ArchitectureScopeEvidence = serde_json::from_str(
@@ -1297,6 +1460,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(scope.fingerprint, repeated_scope.fingerprint);
+        assert_eq!(
+            fs::read_dir(&cache_directory).unwrap().count(),
+            cache_entries
+        );
+
+        let mut changed_relations = relations;
+        changed_relations.pop();
+        repeated_planner
+            .plan(&snapshot, &configuration, &targets, &[], &changed_relations)
+            .unwrap();
+        assert!(fs::read_dir(&cache_directory).unwrap().count() > cache_entries);
     }
 
     #[test]

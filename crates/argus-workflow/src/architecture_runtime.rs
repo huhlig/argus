@@ -19,9 +19,6 @@ use crate::{
 };
 use argus_core::{EvidenceKind, RunId, SnapshotId};
 use argus_evidence::{DataClassification, EvidenceBudget, EvidenceExpansionPolicy};
-use argus_policies::{
-    ArchitectureCandidateVerification, ArchitectureFindingKind, ArchitectureVerificationStatus,
-};
 use argus_provider::ProviderExecutor;
 use argus_storage::DurableQueue;
 use async_trait::async_trait;
@@ -304,23 +301,13 @@ impl AgentActor for VerifyArchitectureCandidatesActor {
             .contract
             .bind_decision(decision)
             .map_err(AgentError::Internal)?;
-        let complete = self.contract.verification_context_complete();
         let results = assessment
             .result
             .candidates
             .iter()
             .map(|candidate| {
-                let (status, rationale) = verification_disposition(
-                    candidate.defect_kind,
-                    candidate.inferred_intent.is_some(),
-                    complete,
-                );
-                serde_json::to_string(&ArchitectureCandidateVerification {
-                    candidate_id: candidate.id.clone(),
-                    status,
-                    rationale: rationale.to_owned(),
-                })
-                .map_err(|error| AgentError::Internal(error.to_string()))
+                serde_json::to_string(&self.contract.verify_candidate(candidate))
+                    .map_err(|error| AgentError::Internal(error.to_string()))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut proposed = record.data;
@@ -345,31 +332,6 @@ impl AgentActor for VerifyArchitectureCandidatesActor {
     }
 }
 
-const fn verification_disposition(
-    defect_kind: ArchitectureFindingKind,
-    has_inferred_intent: bool,
-    complete: bool,
-) -> (ArchitectureVerificationStatus, &'static str) {
-    if !complete {
-        (
-            ArchitectureVerificationStatus::UnableToVerify,
-            "Structural or constituent evidence is incomplete or truncated.",
-        )
-    } else if matches!(defect_kind, ArchitectureFindingKind::StructuralDefect)
-        && !has_inferred_intent
-    {
-        (
-            ArchitectureVerificationStatus::Corroborated,
-            "The candidate is a directly observed structural defect with complete cited evidence.",
-        )
-    } else {
-        (
-            ArchitectureVerificationStatus::Disputed,
-            "The candidate depends on architectural risk or inferred intent and requires adjudication.",
-        )
-    }
-}
-
 fn verification_event(results: &[String]) -> AgentOutputEvent {
     AgentOutputEvent {
         event_type: "finding_work.scheduled".to_owned(),
@@ -391,26 +353,5 @@ impl AgentActor for DisabledEvidenceExpansionActor {
         Err(AgentError::Internal(
             "architecture evidence expansion is disabled for this admission".to_owned(),
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn verification_is_conservative_about_incomplete_or_inferred_claims() {
-        assert_eq!(
-            verification_disposition(ArchitectureFindingKind::StructuralDefect, false, true).0,
-            ArchitectureVerificationStatus::Corroborated
-        );
-        assert_eq!(
-            verification_disposition(ArchitectureFindingKind::ArchitecturalRisk, false, true).0,
-            ArchitectureVerificationStatus::Disputed
-        );
-        assert_eq!(
-            verification_disposition(ArchitectureFindingKind::StructuralDefect, false, false).0,
-            ArchitectureVerificationStatus::UnableToVerify
-        );
     }
 }

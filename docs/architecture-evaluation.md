@@ -33,7 +33,15 @@ intent (`inferred_intent`). Reviews operate across hierarchical scopes:
 Architecture work is leased progressively: modules must become terminal before their package, and packages before the
 workspace. Parent contexts contain compact child status, responsibility summary, and candidate counts rather than lower
 review transcripts. Captured semantic relationships can be merged during priming with
-`argus prime --adapter rust --relationships <jsonl>`; malformed, weakly resolved, or unknown-target relations fail closed.
+`argus prime --adapter rust --relationships <jsonl>`. The Rust adapter also discovers
+`.argus/input/rust-relations.jsonl` automatically. Malformed, weakly resolved, or unknown-target relations fail closed.
+Scoped graph evidence is cached durably under `.argus/state/architecture-cache`; cache identity includes the target,
+configuration, and complete pre-truncation fingerprint, so changed structural input cannot reuse a stale entry.
+
+Terminal verification independently resolves each candidate citation's claimed targets against the stored graph or
+constituent-summary artifact. Unsupported claims are rejected, incomplete evidence remains unable to verify, and only
+fully resolved direct structural defects are corroborated. `argus status` reports architecture scopes, immediately ready
+work, prerequisite-blocked work, truncated scopes, and omitted fact counts.
 
 Human decisions use the generic `HumanAdjudication` record and existing `AdjudicationState` rather
 than an architecture-specific verdict. Records are append-only per run and finding. Revision writes

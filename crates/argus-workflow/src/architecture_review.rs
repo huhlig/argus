@@ -20,12 +20,16 @@ use argus_core::WorkItemId;
 use argus_evidence::ReviewContextFrame;
 use argus_policies::{
     ALL_ARCHITECTURE_DIMENSIONS, ArchitectureAssessment, ArchitectureAssessmentBinding,
-    ArchitectureAssessmentDraft, ArchitectureDimensionDraft, ArchitectureDimensionStatus,
+    ArchitectureAssessmentDraft, ArchitectureCandidate, ArchitectureCandidateVerification,
+    ArchitectureDimensionDraft, ArchitectureDimensionStatus, ArchitectureFindingKind,
     ArchitectureResultDraft, ArchitectureResultStatus, ArchitectureScope,
-    ArchitectureTargetProfile, ConstituentHealthSummary,
+    ArchitectureTargetProfile, ArchitectureVerificationStatus, ConstituentHealthSummary,
 };
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ArchitectureReviewTransportValidator;
@@ -78,14 +82,26 @@ impl argus_provider::OutputValidator for ArchitectureReviewTransportValidator {
 pub struct ArchitectureAssessmentContract {
     binding: ArchitectureAssessmentBinding,
     verification_complete: bool,
+    verification_targets: BTreeMap<argus_core::EvidenceId, BTreeSet<argus_core::TargetId>>,
 }
 
 impl ArchitectureAssessmentContract {
     #[must_use]
-    pub const fn new(binding: ArchitectureAssessmentBinding) -> Self {
+    pub fn new(binding: ArchitectureAssessmentBinding) -> Self {
+        let verification_targets = binding
+            .evidence
+            .iter()
+            .map(|(id, citation)| {
+                (
+                    id.clone(),
+                    citation.related_targets.iter().cloned().collect(),
+                )
+            })
+            .collect();
         Self {
             binding,
             verification_complete: true,
+            verification_targets,
         }
     }
 
@@ -198,6 +214,43 @@ impl ArchitectureAssessmentContract {
             && scope_evidence.omitted_dependency_cycles == 0
             && constituent_health.failed_constituents == 0
             && constituent_health.unable_to_verify_constituents == 0;
+        let graph_targets = std::iter::once(scope_evidence.target.clone())
+            .chain(
+                scope_evidence
+                    .constituents
+                    .iter()
+                    .chain(&scope_evidence.boundary_targets)
+                    .map(|target| target.id.clone()),
+            )
+            .chain(
+                scope_evidence
+                    .internal_relations
+                    .iter()
+                    .chain(&scope_evidence.boundary_relations)
+                    .flat_map(|relation| [relation.source.clone(), relation.target.clone()]),
+            )
+            .chain(scope_evidence.dependency_cycles.iter().flatten().cloned())
+            .collect::<BTreeSet<_>>();
+        let summary_targets = constituent_evidence
+            .first()
+            .map(|evidence| {
+                std::iter::once(evidence.target.clone())
+                    .chain(evidence.constituents.iter().map(|fact| fact.target.clone()))
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let verification_targets = context
+            .untrusted_evidence
+            .iter()
+            .map(|item| {
+                let targets = match item.kind {
+                    argus_core::EvidenceKind::ArchitectureGraph => graph_targets.clone(),
+                    argus_core::EvidenceKind::ArchitectureSummary => summary_targets.clone(),
+                    _ => item.target.iter().cloned().collect(),
+                };
+                (item.id.clone(), targets)
+            })
+            .collect();
         let binding = ArchitectureAssessmentBinding {
             policy_id: context.trusted_control.policy.clone(),
             work_item_id: work_item,
@@ -224,6 +277,7 @@ impl ArchitectureAssessmentContract {
         Ok(Self {
             binding,
             verification_complete,
+            verification_targets,
         })
     }
 
@@ -285,6 +339,57 @@ impl ArchitectureAssessmentContract {
     #[must_use]
     pub const fn verification_context_complete(&self) -> bool {
         self.verification_complete
+    }
+
+    #[must_use]
+    pub fn verify_candidate(
+        &self,
+        candidate: &ArchitectureCandidate,
+    ) -> ArchitectureCandidateVerification {
+        let (status, rationale) = if !self.verification_complete {
+            (
+                ArchitectureVerificationStatus::UnableToVerify,
+                "Structural or constituent evidence is incomplete or truncated.".to_owned(),
+            )
+        } else if let Some(citation) = candidate.citations.iter().find(|citation| {
+            let Some(known_targets) = self.verification_targets.get(&citation.evidence) else {
+                return true;
+            };
+            citation.related_targets.is_empty()
+                || citation
+                    .related_targets
+                    .iter()
+                    .any(|target| !known_targets.contains(target))
+        }) {
+            (
+                ArchitectureVerificationStatus::Rejected,
+                format!(
+                    "Citation {} does not resolve every claimed target against its stored evidence artifact.",
+                    citation.evidence
+                ),
+            )
+        } else if matches!(
+            candidate.defect_kind,
+            ArchitectureFindingKind::StructuralDefect
+        ) && candidate.inferred_intent.is_none()
+        {
+            (
+                ArchitectureVerificationStatus::Corroborated,
+                "Every cited target resolves against complete stored evidence for this directly observed structural defect."
+                    .to_owned(),
+            )
+        } else {
+            (
+                ArchitectureVerificationStatus::Disputed,
+                "The citations resolve, but the candidate depends on architectural risk or inferred intent and requires adjudication."
+                    .to_owned(),
+            )
+        };
+        ArchitectureCandidateVerification {
+            candidate_id: candidate.id.clone(),
+            status,
+            rationale,
+        }
     }
 
     #[must_use]
@@ -495,19 +600,20 @@ mod tests {
 
     fn fixture() -> (ArchitectureAssessmentBinding, ArchitectureAssessmentDraft) {
         let evidence_id = EvidenceId::derive([b"architecture-graph".as_slice()]);
+        let target = TargetId::derive([b"crate::module".as_slice()]);
         let citation = ArchitectureEvidenceCitation {
             evidence: evidence_id.clone(),
             kind: EvidenceKind::ArchitectureGraph,
             location: None,
-            related_targets: Vec::new(),
+            related_targets: vec![target.clone()],
         };
         let binding = ArchitectureAssessmentBinding {
             policy_id: PolicyId::derive([b"architecture-code-derived@1".as_slice()]),
             work_item_id: WorkItemId::derive([b"work-1".as_slice()]),
-            target: TargetId::derive([b"crate::module".as_slice()]),
+            target: target.clone(),
             scope: ArchitectureScope::Module,
             evidence: BTreeMap::from([(evidence_id, citation.clone())]),
-            allowed_targets: BTreeSet::new(),
+            allowed_targets: BTreeSet::from([target]),
             constituent_health: ConstituentHealthSummary::default(),
         };
         let draft = ArchitectureAssessmentDraft {
@@ -609,5 +715,31 @@ mod tests {
                 "schema contains forbidden key: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn verifier_resolves_claimed_targets_against_stored_evidence() {
+        let (mut binding, mut draft) = fixture();
+        draft.result.candidates[0].inferred_intent = None;
+        let contract = ArchitectureAssessmentContract::new(binding.clone());
+        let assessment = contract.bind_assessment(draft.clone()).unwrap();
+        assert_eq!(
+            contract
+                .verify_candidate(&assessment.result.candidates[0])
+                .status,
+            ArchitectureVerificationStatus::Corroborated
+        );
+
+        let unsupported = TargetId::derive([b"crate::unrelated".as_slice()]);
+        binding.allowed_targets.insert(unsupported.clone());
+        draft.result.candidates[0].citations[0].related_targets = vec![unsupported];
+        let contract = ArchitectureAssessmentContract::new(binding);
+        let assessment = contract.bind_assessment(draft).unwrap();
+        assert_eq!(
+            contract
+                .verify_candidate(&assessment.result.candidates[0])
+                .status,
+            ArchitectureVerificationStatus::Rejected
+        );
     }
 }

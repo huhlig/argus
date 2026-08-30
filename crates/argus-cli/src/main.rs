@@ -108,6 +108,9 @@ Options:
   --adapter <adapter>   Language adapter to run (supported: rust). Default: none
   --relationships <jsonl>  Captured Rust semantic relations to validate and merge
 
+  With the Rust adapter, `.argus/input/rust-relations.jsonl` is discovered
+  automatically when --relationships is omitted.
+
 Examples:
   argus prime --adapter rust
   argus prime --adapter rust --relationships .argus/input/rust-relations.jsonl
@@ -1618,7 +1621,8 @@ fn audit_command(
             &policy,
             argus_core::PolicyId::derive([b"architecture-code-derived@1".as_slice()]),
             "architecture-code-derived@1",
-        )?;
+        )?
+        .with_persistent_cache(root.join(".argus/state/architecture-cache"))?;
         let plan = planner.plan(
             &run.snapshot,
             &run.configuration,
@@ -2467,6 +2471,12 @@ fn prime_command(
         ));
     }
     initialize(root)?;
+    if adapter.as_deref() == Some("rust") && relationships.is_none() {
+        let discovered = root.join(".argus/input/rust-relations.jsonl");
+        if discovered.is_file() {
+            relationships = Some(discovered);
+        }
+    }
     let metadata = adapter.as_ref().map(|_| cargo_metadata(root)).transpose()?;
     let snapshot = argus_snapshot::capture_snapshot(
         root,
@@ -3488,8 +3498,115 @@ fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusErr
         )
         .expect("writing to a String cannot fail");
     }
+    append_architecture_status(root, &queue, &mut output)?;
     append_work_errors(root, &queue, &mut output)?;
     Ok(output.trim_end().to_owned())
+}
+
+fn append_architecture_status(
+    root: &std::path::Path,
+    queue: &argus_storage::DurableQueue,
+    output: &mut String,
+) -> Result<(), argus_core::ArgusError> {
+    let Ok(run_id) = current_run(root) else {
+        return Ok(());
+    };
+    let records = queue.run_records(&run_id)?;
+    let states = records
+        .work
+        .iter()
+        .map(|work| (work.id.clone(), work.state))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut total = 0usize;
+    let mut modules = 0usize;
+    let mut packages = 0usize;
+    let mut workspaces = 0usize;
+    let mut ready = 0usize;
+    let mut blocked = 0usize;
+    let mut truncated_scopes = 0usize;
+    let mut omitted_facts = 0usize;
+
+    for work in records
+        .work
+        .iter()
+        .filter(|work| work.coverage.policy == "architecture-code-derived@1")
+    {
+        let admission: argus_workflow::ArchitectureReviewAdmission =
+            serde_json::from_slice(&work.payload).map_err(|error| {
+                argus_core::ArgusError::invalid_input("invalid architecture status admission")
+                    .with_source(error)
+            })?;
+        total += 1;
+        match admission.unit.scope {
+            argus_policies::ArchitectureScope::Module => modules += 1,
+            argus_policies::ArchitectureScope::Package => packages += 1,
+            argus_policies::ArchitectureScope::Workspace => workspaces += 1,
+        }
+        if work.state == argus_storage::QueueState::Pending {
+            let is_blocked = admission.unit.prerequisite_work.iter().any(|prerequisite| {
+                states.get(prerequisite).is_none_or(|state| {
+                    !matches!(
+                        state,
+                        argus_storage::QueueState::Succeeded
+                            | argus_storage::QueueState::Failed
+                            | argus_storage::QueueState::Cancelled
+                    )
+                })
+            });
+            if is_blocked {
+                blocked += 1;
+            } else {
+                ready += 1;
+            }
+        }
+        let context = queue
+            .artifact(&admission.review_context_ref)?
+            .ok_or_else(|| {
+                argus_core::ArgusError::invariant(
+                    "architecture status context artifact is missing",
+                )
+            })?;
+        let frame: argus_evidence::ReviewContextFrame = serde_json::from_slice(&context.payload)
+            .map_err(|error| {
+                argus_core::ArgusError::invalid_input("invalid architecture status context")
+                    .with_source(error)
+            })?;
+        for evidence in frame.untrusted_evidence.iter().filter(|evidence| {
+            evidence.kind == argus_core::EvidenceKind::ArchitectureGraph
+                && evidence.target.as_ref() == Some(&admission.unit.target.target)
+        }) {
+            let detail = evidence.detail.as_deref().ok_or_else(|| {
+                argus_core::ArgusError::invariant(
+                    "architecture status graph evidence detail is missing",
+                )
+            })?;
+            let graph: argus_workflow::ArchitectureScopeEvidence = serde_json::from_str(detail)
+                .map_err(|error| {
+                    argus_core::ArgusError::invalid_input(
+                        "invalid architecture status graph evidence",
+                    )
+                    .with_source(error)
+                })?;
+            let omitted = graph
+                .omitted_constituents
+                .saturating_add(graph.omitted_boundary_targets)
+                .saturating_add(graph.omitted_internal_relations)
+                .saturating_add(graph.omitted_boundary_relations)
+                .saturating_add(graph.omitted_dependency_cycles);
+            if omitted > 0 {
+                truncated_scopes += 1;
+                omitted_facts = omitted_facts.saturating_add(omitted);
+            }
+        }
+    }
+    if total > 0 {
+        writeln!(
+            output,
+            "\nArchitecture workflow: total={total} modules={modules} packages={packages} workspaces={workspaces} pending_ready={ready} blocked_on_prerequisites={blocked} truncated_scopes={truncated_scopes} omitted_facts={omitted_facts}"
+        )
+        .expect("writing to a String cannot fail");
+    }
+    Ok(())
 }
 
 fn append_work_errors(
@@ -5387,6 +5504,10 @@ mod tests {
         .unwrap();
         assert!(audit_out.contains("Architecture plan for run"));
         assert!(audit_out.contains("newly admitted"));
+        let status = status_command(temporary.path()).unwrap();
+        assert!(status.contains("Architecture workflow:"));
+        assert!(status.contains("blocked_on_prerequisites="));
+        assert!(status.contains("truncated_scopes="));
 
         let queue = working_queue(temporary.path()).unwrap();
         let records = queue
@@ -5534,6 +5655,39 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("requires --adapter rust"));
+    }
+
+    #[test]
+    fn rust_prime_discovers_captured_semantic_relationships() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(
+            temporary.path().join("Cargo.toml"),
+            b"[package]\nname = \"relationship_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(temporary.path().join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        initialize(temporary.path()).unwrap();
+        let input = temporary.path().join(".argus/input");
+        std::fs::create_dir_all(&input).unwrap();
+        std::fs::write(
+            input.join("rust-relations.jsonl"),
+            b"{\"invalid\":\"captured relationship\"}\n",
+        )
+        .unwrap();
+
+        let error = run(
+            ["prime", "--adapter", "rust"]
+                .map(str::to_owned)
+                .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("captured Rust semantic relationships were rejected")
+        );
     }
 
     #[test]
