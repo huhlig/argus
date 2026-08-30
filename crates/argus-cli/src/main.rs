@@ -3883,50 +3883,76 @@ fn provider_discover_command(
     let mut overwrite = false;
 
     let mut iter = args.iter().peekable();
-    while let Some(flag) = iter.next() {
-        match flag.as_str() {
+    while let Some(arg) = iter.next() {
+        let (flag, inline_val) = match arg.split_once('=') {
+            Some((f, v)) => (f, Some(v.to_owned())),
+            None => (arg.as_str(), None),
+        };
+        match flag {
             "--type" | "-t" => {
-                provider_type = Some(
-                    iter.next()
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
                         .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
                         .clone(),
-                );
+                };
+                provider_type = Some(val);
             }
             "--endpoint" | "-e" => {
-                endpoint = Some(
-                    iter.next()
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
                         .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
                         .clone(),
-                );
+                };
+                endpoint = Some(val);
             }
             "--api-key" | "-k" => {
-                api_key = Some(
-                    iter.next()
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
                         .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
                         .clone(),
-                );
+                };
+                api_key = Some(val);
             }
             "--api-key-env" => {
-                api_key_env = Some(
-                    iter.next()
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
                         .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
                         .clone(),
-                );
+                };
+                api_key_env = Some(val);
             }
             "--output-dir" | "-o" => {
-                output_dir_arg = Some(
-                    iter.next()
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
                         .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
                         .clone(),
-                );
+                };
+                output_dir_arg = Some(val);
             }
             "--prefix" => {
-                let _ = iter.next();
+                let _ = match inline_val {
+                    Some(v) => v,
+                    None => iter.next().map(Clone::clone).unwrap_or_default(),
+                };
             }
             "--timeout" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                };
                 let secs = val.parse::<u64>().map_err(|e| {
                     argus_core::ArgusError::invalid_input(format!(
                         "invalid timeout value `{val}`: {e}"
@@ -4162,18 +4188,25 @@ fn provider_list_command(
 
     let mut explicit_dir = None;
     let mut iter = args.iter().peekable();
-    while let Some(flag) = iter.next() {
-        match flag.as_str() {
+    while let Some(arg) = iter.next() {
+        let (flag, inline_val) = match arg.split_once('=') {
+            Some((f, v)) => (f, Some(v.to_owned())),
+            None => (arg.as_str(), None),
+        };
+        match flag {
             "--dir" | "-d" => {
-                explicit_dir = Some(
-                    iter.next()
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
                         .ok_or_else(|| {
                             argus_core::ArgusError::invalid_input(
                                 "usage: argus provider list [--dir <path>]",
                             )
                         })?
                         .clone(),
-                );
+                };
+                explicit_dir = Some(val);
             }
             _ => {
                 return Err(argus_core::ArgusError::invalid_input(
@@ -4189,14 +4222,11 @@ fn provider_list_command(
     } else {
         if let Some(env_dir) = env_config_dir {
             search_dirs.push(env_dir.join("providers"));
-            search_dirs.push(env_dir.join("profiles"));
         }
         if let Some(sys_dir) = system_config_dir() {
             search_dirs.push(sys_dir.join("providers"));
-            search_dirs.push(sys_dir.join("profiles"));
         }
         search_dirs.push(root.join(".argus/config/providers"));
-        search_dirs.push(root.join(".argus/config/profiles"));
         search_dirs.push(root.join(".argus/config"));
     }
 
