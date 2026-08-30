@@ -705,14 +705,15 @@ fn resolve_provider_profile_with_env(
                 ))
                 .with_source(error)
             })?;
-            let substituted = substitute_env_vars(raw_text).map_err(|error| {
-                argus_core::ArgusError::invalid_input(format!(
-                    "failed environment substitution in provider configuration `{}`: {error}",
-                    provider_path.display()
-                ))
-            })?;
-            let config: argus_provider::ProviderConfig =
-                serde_json::from_str(&substituted).map_err(|error| {
+            let config: argus_provider::ProviderConfig = serde_json::from_str(raw_text)
+                .or_else(|_| {
+                    if let Ok(substituted) = substitute_env_vars(raw_text) {
+                        serde_json::from_str(&substituted)
+                    } else {
+                        serde_json::from_str(raw_text)
+                    }
+                })
+                .map_err(|error| {
                     argus_core::ArgusError::invalid_input(format!(
                         "provider configuration `{}` is invalid JSON: {error}",
                         provider_path.display()
@@ -746,13 +747,21 @@ fn resolve_provider_profile_with_env(
                 ))
                 .with_source(error)
             })?;
-            let substituted = substitute_env_vars(raw_text).map_err(|error| {
-                argus_core::ArgusError::invalid_input(format!(
-                    "failed environment substitution in provider profile `{}`: {error}",
-                    path.display()
-                ))
-            })?;
-            if let Ok(config) = serde_json::from_str::<argus_provider::ProviderConfig>(&substituted) {
+            if let Ok(substituted) = substitute_env_vars(raw_text) {
+                if let Ok(config) = serde_json::from_str::<argus_provider::ProviderConfig>(&substituted) {
+                    let profile = config.resolve_runtime_profile(model_selector).map_err(|error| {
+                        argus_core::ArgusError::invalid_input(format!(
+                            "cannot resolve model in provider configuration `{}`: {error}",
+                            path.display()
+                        ))
+                    })?;
+                    return Ok((path.clone(), profile));
+                }
+                if let Ok(profile) = serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted) {
+                    return Ok((path.clone(), profile));
+                }
+            }
+            if let Ok(config) = serde_json::from_str::<argus_provider::ProviderConfig>(raw_text) {
                 let profile = config.resolve_runtime_profile(model_selector).map_err(|error| {
                     argus_core::ArgusError::invalid_input(format!(
                         "cannot resolve model in provider configuration `{}`: {error}",
@@ -761,7 +770,7 @@ fn resolve_provider_profile_with_env(
                 })?;
                 return Ok((path.clone(), profile));
             }
-            if let Ok(profile) = serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted) {
+            if let Ok(profile) = serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(raw_text) {
                 return Ok((path.clone(), profile));
             }
         }
@@ -3913,10 +3922,10 @@ fn provider_discover_command(
 
     let config = argus_provider::generate_provider_config(
         kind,
-        effective_endpoint,
-        &models,
+        Some(effective_endpoint),
         config_api_key_env,
         timeout_seconds,
+        &models,
     )
     .map_err(|error| {
         argus_core::ArgusError::invalid_input(format!("cannot generate provider config: {error}"))
@@ -5727,10 +5736,10 @@ mod tests {
 
         let sample_config = argus_provider::generate_provider_config(
             argus_provider::DiscoveredProviderKind::Lemonade,
-            "http://10.0.0.51:13305/v1",
-            &["Qwen3.6-35B-A3B-GGUF".to_owned()],
+            Some("http://10.0.0.51:13305/v1"),
             None,
             Some(1800),
+            &["Qwen3.6-35B-A3B-GGUF".to_owned()],
         )
         .unwrap();
 

@@ -433,21 +433,25 @@ pub fn generate_runtime_profile(
     let transport = match kind {
         DiscoveredProviderKind::Lemonade => ProviderTransportProfile::Lemonade {
             base_url: Some(endpoint.to_owned()),
-            api_key_env,
+            api_key: api_key_env,
             request_timeout_seconds: request_timeout_seconds.or(Some(1800)),
         },
         DiscoveredProviderKind::Ollama => ProviderTransportProfile::Ollama {
             base_url: Some(endpoint.to_owned()),
         },
         DiscoveredProviderKind::Openai => ProviderTransportProfile::Openai {
-            api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".to_owned()),
+            api_key: api_key_env
+                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .unwrap_or_else(|| "${OPENAI_API_KEY}".to_owned()),
         },
         DiscoveredProviderKind::Anthropic => ProviderTransportProfile::Anthropic {
-            api_key_env: api_key_env.unwrap_or_else(|| "ANTHROPIC_API_KEY".to_owned()),
+            api_key: api_key_env
+                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .unwrap_or_else(|| "${ANTHROPIC_API_KEY}".to_owned()),
         },
         DiscoveredProviderKind::LmStudio => ProviderTransportProfile::LmStudio {
             base_url: Some(endpoint.to_owned()),
-            api_key_env,
+            api_key: api_key_env,
         },
         DiscoveredProviderKind::Bedrock => {
             let region = if endpoint.contains("bedrock-runtime.") {
@@ -458,14 +462,17 @@ pub fn generate_runtime_profile(
                     .unwrap_or("us-east-1")
                     .to_owned()
             } else {
-                "us-east-1".to_owned()
+                "${AWS_REGION:-us-east-1}".to_owned()
             };
+            let bearer_token = api_key_env
+                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .or_else(|| Some("${AWS_BEARER_TOKEN_BEDROCK}".to_owned()));
             ProviderTransportProfile::Bedrock {
                 region,
-                access_key_id_env: None,
-                secret_access_key_env: None,
-                session_token_env: None,
-                bearer_token_env: api_key_env.or_else(|| Some("AWS_BEARER_TOKEN_BEDROCK".to_owned())),
+                access_key_id: None,
+                secret_access_key: None,
+                session_token: None,
+                bearer_token,
                 endpoint_url: if endpoint == DiscoveredProviderKind::Bedrock.default_endpoint() {
                     None
                 } else {
@@ -499,6 +506,12 @@ pub fn slugify_model_alias(model_id: &str) -> String {
         stripped
     } else if let Some(stripped) = model_id.strip_prefix("meta.") {
         stripped
+    } else if let Some(stripped) = model_id.strip_prefix("google.") {
+        stripped
+    } else if let Some(stripped) = model_id.strip_prefix("mistral.") {
+        stripped
+    } else if let Some(stripped) = model_id.strip_prefix("cohere.") {
+        stripped
     } else if let Some(stripped) = model_id.strip_prefix("ibm/") {
         stripped
     } else {
@@ -515,35 +528,45 @@ pub fn slugify_model_alias(model_id: &str) -> String {
         trimmed
     };
 
-    without_version.to_ascii_lowercase()
+    slugify_profile_name(DiscoveredProviderKind::Openai, without_version)
+        .replace("openai-", "")
 }
 
-/// Builds a complete `ProviderConfig` for a discovered provider and its models.
+/// Generates a complete ProviderConfig containing all discovered models with aliases.
 pub fn generate_provider_config(
     kind: DiscoveredProviderKind,
-    endpoint: &str,
-    model_ids: &[String],
+    endpoint: Option<&str>,
     api_key_env: Option<String>,
     request_timeout_seconds: Option<u64>,
+    model_ids: &[String],
 ) -> Result<ProviderConfig, ProviderError> {
+    let endpoint = endpoint
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| kind.default_endpoint());
+
     let transport = match kind {
         DiscoveredProviderKind::Lemonade => ProviderTransportProfile::Lemonade {
             base_url: Some(endpoint.to_owned()),
-            api_key_env,
+            api_key: api_key_env,
             request_timeout_seconds: request_timeout_seconds.or(Some(1800)),
         },
         DiscoveredProviderKind::Ollama => ProviderTransportProfile::Ollama {
             base_url: Some(endpoint.to_owned()),
         },
         DiscoveredProviderKind::Openai => ProviderTransportProfile::Openai {
-            api_key_env: api_key_env.unwrap_or_else(|| "OPENAI_API_KEY".to_owned()),
+            api_key: api_key_env
+                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .unwrap_or_else(|| "${OPENAI_API_KEY}".to_owned()),
         },
         DiscoveredProviderKind::Anthropic => ProviderTransportProfile::Anthropic {
-            api_key_env: api_key_env.unwrap_or_else(|| "ANTHROPIC_API_KEY".to_owned()),
+            api_key: api_key_env
+                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .unwrap_or_else(|| "${ANTHROPIC_API_KEY}".to_owned()),
         },
         DiscoveredProviderKind::LmStudio => ProviderTransportProfile::LmStudio {
             base_url: Some(endpoint.to_owned()),
-            api_key_env,
+            api_key: api_key_env,
         },
         DiscoveredProviderKind::Bedrock => {
             let region = if endpoint.contains("bedrock-runtime.") {
@@ -554,14 +577,17 @@ pub fn generate_provider_config(
                     .unwrap_or("us-east-1")
                     .to_owned()
             } else {
-                "us-east-1".to_owned()
+                "${AWS_REGION:-us-east-1}".to_owned()
             };
+            let bearer_token = api_key_env
+                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .or_else(|| Some("${AWS_BEARER_TOKEN_BEDROCK}".to_owned()));
             ProviderTransportProfile::Bedrock {
                 region,
-                access_key_id_env: None,
-                secret_access_key_env: None,
-                session_token_env: None,
-                bearer_token_env: api_key_env.or_else(|| Some("AWS_BEARER_TOKEN_BEDROCK".to_owned())),
+                access_key_id: None,
+                secret_access_key: None,
+                session_token: None,
+                bearer_token,
                 endpoint_url: if endpoint == DiscoveredProviderKind::Bedrock.default_endpoint() {
                     None
                 } else {
@@ -763,10 +789,10 @@ mod tests {
         ];
         let config = generate_provider_config(
             DiscoveredProviderKind::Bedrock,
-            "https://bedrock-runtime.us-east-1.amazonaws.com",
+            Some("https://bedrock-runtime.us-east-1.amazonaws.com"),
+            None,
+            None,
             &models,
-            None,
-            None,
         )
         .unwrap();
 

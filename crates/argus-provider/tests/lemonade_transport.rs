@@ -25,10 +25,10 @@ fn lemonade_provider_config_resolves_and_builds_runtime_profile() {
     ];
     let config = generate_provider_config(
         DiscoveredProviderKind::Lemonade,
-        "http://10.0.0.51:13305/v1",
-        &models,
+        Some("http://10.0.0.51:13305/v1"),
         None,
         Some(1800),
+        &models,
     )
     .unwrap();
 

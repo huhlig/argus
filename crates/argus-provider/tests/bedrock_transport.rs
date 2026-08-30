@@ -95,11 +95,11 @@ fn bedrock_runtime_profile_roundtrip_and_build() {
             max_repair_attempts: 1,
         },
         transport: ProviderTransportProfile::Bedrock {
-            region: "us-east-1".to_owned(),
-            access_key_id_env: Some("MY_AWS_KEY".to_owned()),
-            secret_access_key_env: Some("MY_AWS_SECRET".to_owned()),
-            session_token_env: None,
-            bearer_token_env: None,
+            region: "${AWS_REGION:-us-east-1}".to_owned(),
+            access_key_id: Some("${MY_AWS_KEY}".to_owned()),
+            secret_access_key: Some("${MY_AWS_SECRET}".to_owned()),
+            session_token: None,
+            bearer_token: None,
             endpoint_url: None,
             profile_name: None,
         },
@@ -132,10 +132,10 @@ fn bedrock_runtime_profile_roundtrip_and_build() {
         },
         transport: ProviderTransportProfile::Bedrock {
             region: "us-east-1".to_owned(),
-            access_key_id_env: None,
-            secret_access_key_env: None,
-            session_token_env: None,
-            bearer_token_env: Some("AWS_BEARER_TOKEN_BEDROCK".to_owned()),
+            access_key_id: None,
+            secret_access_key: None,
+            session_token: None,
+            bearer_token: Some("${AWS_BEARER_TOKEN_BEDROCK}".to_owned()),
             endpoint_url: None,
             profile_name: None,
         },
@@ -186,10 +186,10 @@ fn bedrock_provider_config_resolves_and_builds_runtime_profile() {
     ];
     let config = argus_provider::generate_provider_config(
         DiscoveredProviderKind::Bedrock,
-        "https://bedrock-runtime.us-east-1.amazonaws.com",
+        Some("https://bedrock-runtime.us-east-1.amazonaws.com"),
+        None,
+        None,
         &models,
-        None,
-        None,
     )
     .unwrap();
 

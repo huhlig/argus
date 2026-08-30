@@ -61,6 +61,7 @@ clap = { version = "4.5", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 aws-config = { version = "1", features = ["behavior-version-latest", "sso", "credentials-process"] }
 json5 = "0.4"
+subst = "0.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

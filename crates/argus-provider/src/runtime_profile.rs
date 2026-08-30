@@ -193,23 +193,27 @@ pub struct ProviderRuntimeProfile {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderTransportProfile {
     Anthropic {
-        api_key_env: String,
+        #[serde(alias = "api_key_env")]
+        api_key: String,
     },
     Openai {
-        api_key_env: String,
+        #[serde(alias = "api_key_env")]
+        api_key: String,
     },
     Ollama {
         base_url: Option<String>,
     },
     Lemonade {
         base_url: Option<String>,
-        api_key_env: Option<String>,
+        #[serde(default, alias = "api_key_env")]
+        api_key: Option<String>,
         #[serde(default)]
         request_timeout_seconds: Option<u64>,
     },
     LmStudio {
         base_url: Option<String>,
-        api_key_env: Option<String>,
+        #[serde(default, alias = "api_key_env")]
+        api_key: Option<String>,
     },
     Watsonx {
         service_url: String,
@@ -218,20 +222,25 @@ pub enum ProviderTransportProfile {
         credential: WatsonxCredentialProfile,
     },
     Bedrock {
+        #[serde(default = "default_bedrock_region")]
         region: String,
-        #[serde(default)]
-        access_key_id_env: Option<String>,
-        #[serde(default)]
-        secret_access_key_env: Option<String>,
-        #[serde(default)]
-        session_token_env: Option<String>,
-        #[serde(default)]
-        bearer_token_env: Option<String>,
+        #[serde(default, alias = "access_key_id_env")]
+        access_key_id: Option<String>,
+        #[serde(default, alias = "secret_access_key_env")]
+        secret_access_key: Option<String>,
+        #[serde(default, alias = "session_token_env")]
+        session_token: Option<String>,
+        #[serde(default, alias = "bearer_token_env")]
+        bearer_token: Option<String>,
         #[serde(default)]
         endpoint_url: Option<String>,
         #[serde(default)]
         profile_name: Option<String>,
     },
+}
+
+fn default_bedrock_region() -> String {
+    "${AWS_REGION:-us-east-1}".to_owned()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -242,7 +251,7 @@ pub enum WatsonxScopeProfile {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "env", rename_all = "snake_case")]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum WatsonxCredentialProfile {
     ApiKey(String),
     BearerToken(String),
@@ -278,26 +287,25 @@ impl ProviderRuntimeProfile {
             )));
         }
         let provider = match &self.transport {
-            ProviderTransportProfile::Anthropic { api_key_env } => {
-                LangchartModelProvider::anthropic(
-                    self.capabilities.clone(),
-                    resolve_secret(api_key_env, &mut read_secret)?,
-                )
+            ProviderTransportProfile::Anthropic { api_key } => {
+                let key = substitute_value(api_key, &mut read_secret)?;
+                LangchartModelProvider::anthropic(self.capabilities.clone(), key)
             }
-            ProviderTransportProfile::Openai { api_key_env } => LangchartModelProvider::openai(
-                self.capabilities.clone(),
-                resolve_secret(api_key_env, &mut read_secret)?,
-            ),
+            ProviderTransportProfile::Openai { api_key } => {
+                let key = substitute_value(api_key, &mut read_secret)?;
+                LangchartModelProvider::openai(self.capabilities.clone(), key)
+            }
             ProviderTransportProfile::Ollama { base_url } => {
+                let base_url = substitute_optional_value(base_url.as_deref(), &mut read_secret)?;
                 LangchartModelProvider::ollama(self.capabilities.clone(), base_url.as_deref())
             }
             ProviderTransportProfile::Lemonade {
                 base_url,
-                api_key_env,
+                api_key,
                 request_timeout_seconds,
             } => {
-                let api_key =
-                    resolve_optional_secret(api_key_env.as_deref(), &mut read_secret)?;
+                let base_url = substitute_optional_value(base_url.as_deref(), &mut read_secret)?;
+                let api_key = substitute_optional_value(api_key.as_deref(), &mut read_secret)?;
                 LangchartModelProvider::lemonade_with_timeout(
                     self.capabilities.clone(),
                     base_url.as_deref(),
@@ -305,12 +313,9 @@ impl ProviderRuntimeProfile {
                     *request_timeout_seconds,
                 )
             }
-            ProviderTransportProfile::LmStudio {
-                base_url,
-                api_key_env,
-            } => {
-                let api_key =
-                    resolve_optional_secret(api_key_env.as_deref(), &mut read_secret)?;
+            ProviderTransportProfile::LmStudio { base_url, api_key } => {
+                let base_url = substitute_optional_value(base_url.as_deref(), &mut read_secret)?;
+                let api_key = substitute_optional_value(api_key.as_deref(), &mut read_secret)?;
                 LangchartModelProvider::lm_studio(
                     self.capabilities.clone(),
                     base_url.as_deref(),
@@ -322,34 +327,43 @@ impl ProviderRuntimeProfile {
                 api_version,
                 scope,
                 credential,
-            } => LangchartModelProvider::watsonx(
-                self.capabilities.clone(),
-                WatsonxConfig {
-                    service_url: service_url.clone(),
-                    api_version: api_version.clone(),
-                    scope: scope.resolve(),
-                },
-                credential.resolve(&mut read_secret)?,
-            ),
+            } => {
+                let service_url = substitute_value(service_url, &mut read_secret)?;
+                let api_version = substitute_value(api_version, &mut read_secret)?;
+                LangchartModelProvider::watsonx(
+                    self.capabilities.clone(),
+                    WatsonxConfig {
+                        service_url,
+                        api_version,
+                        scope: scope.resolve(),
+                    },
+                    credential.resolve(&mut read_secret)?,
+                )
+            }
             ProviderTransportProfile::Bedrock {
                 region,
-                access_key_id_env,
-                secret_access_key_env,
-                session_token_env,
-                bearer_token_env,
+                access_key_id,
+                secret_access_key,
+                session_token,
+                bearer_token,
                 endpoint_url,
                 profile_name,
             } => {
-                let bearer_token = bearer_token_env
-                    .as_deref()
-                    .and_then(&mut read_secret)
-                    .or_else(|| read_secret("AWS_BEARER_TOKEN_BEDROCK"));
+                let region = substitute_value(region, &mut read_secret)?;
+                let endpoint_url =
+                    substitute_optional_value(endpoint_url.as_deref(), &mut read_secret)?;
+                let profile_name =
+                    substitute_optional_value(profile_name.as_deref(), &mut read_secret)?;
+
+                let bearer_token =
+                    substitute_optional_value(bearer_token.as_deref(), &mut read_secret)?
+                        .or_else(|| read_secret("AWS_BEARER_TOKEN_BEDROCK"));
                 let access_key =
-                    resolve_optional_secret(access_key_id_env.as_deref(), &mut read_secret)?;
+                    substitute_optional_value(access_key_id.as_deref(), &mut read_secret)?;
                 let secret_key =
-                    resolve_optional_secret(secret_access_key_env.as_deref(), &mut read_secret)?;
+                    substitute_optional_value(secret_access_key.as_deref(), &mut read_secret)?;
                 let session_token =
-                    resolve_optional_secret(session_token_env.as_deref(), &mut read_secret)?;
+                    substitute_optional_value(session_token.as_deref(), &mut read_secret)?;
 
                 let credentials = if let Some(token) = bearer_token {
                     crate::BedrockCredentials::BearerToken(token)
@@ -373,9 +387,9 @@ impl ProviderRuntimeProfile {
                 LangchartModelProvider::bedrock(
                     self.capabilities.clone(),
                     crate::BedrockConfig {
-                        region: region.clone(),
-                        endpoint_url: endpoint_url.clone(),
-                        profile_name: profile_name.clone(),
+                        region,
+                        endpoint_url,
+                        profile_name,
                     },
                     credentials,
                 )
@@ -434,39 +448,95 @@ impl WatsonxScopeProfile {
 impl WatsonxCredentialProfile {
     fn resolve(
         &self,
-        read_secret: &mut impl FnMut(&str) -> Option<String>,
+        mut read_secret: impl FnMut(&str) -> Option<String>,
     ) -> Result<WatsonxCredentials, ProviderError> {
         match self {
-            Self::ApiKey(name) => resolve_secret(name, read_secret).map(WatsonxCredentials::ApiKey),
-            Self::BearerToken(name) => {
-                resolve_secret(name, read_secret).map(WatsonxCredentials::BearerToken)
+            Self::ApiKey(raw) => {
+                substitute_value(raw, &mut read_secret).map(WatsonxCredentials::ApiKey)
+            }
+            Self::BearerToken(raw) => {
+                substitute_value(raw, &mut read_secret).map(WatsonxCredentials::BearerToken)
             }
         }
     }
 }
 
-fn resolve_optional_secret(
-    name: Option<&str>,
-    read_secret: &mut impl FnMut(&str) -> Option<String>,
-) -> Result<Option<String>, ProviderError> {
-    name.map(|name| resolve_secret(name, read_secret))
-        .transpose()
+struct FnVariableMap<'a, F>(&'a std::cell::RefCell<&'a mut F>);
+
+impl<'a, F> subst::VariableMap<'_> for FnVariableMap<'a, F>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    type Value = String;
+
+    fn get(&self, key: &str) -> Option<Self::Value> {
+        (self.0.borrow_mut())(key)
+    }
 }
 
-fn resolve_secret(
-    name: &str,
+pub fn substitute_value(
+    raw: &str,
     read_secret: &mut impl FnMut(&str) -> Option<String>,
 ) -> Result<String, ProviderError> {
-    if name.trim().is_empty() || name.trim() != name {
+    if raw.trim().is_empty() {
         return Err(ProviderError::InvalidProfile(
-            "secret environment variable name must be normalized".to_owned(),
+            "configuration value cannot be empty".to_owned(),
         ));
     }
-    read_secret(name).ok_or_else(|| {
-        ProviderError::InvalidProfile(format!(
-            "required secret environment variable `{name}` is unavailable"
-        ))
-    })
+
+    if raw.contains('$') {
+        // Normalize bash-style `${VAR:-default}` to subst-style `${VAR:default}`
+        let normalized = if raw.contains(":-") {
+            raw.replace(":-", ":")
+        } else {
+            raw.to_owned()
+        };
+        let cell = std::cell::RefCell::new(read_secret);
+        let map = FnVariableMap(&cell);
+        let substituted = subst::substitute(&normalized, &map).map_err(|err| {
+            ProviderError::InvalidProfile(format!(
+                "variable substitution failed for `{raw}`: {err}"
+            ))
+        })?;
+        if substituted.trim().is_empty() {
+            return Err(ProviderError::InvalidProfile(format!(
+                "variable substitution for `{raw}` resulted in an empty value"
+            )));
+        }
+        Ok(substituted)
+    } else if looks_like_env_var_name(raw) {
+        if let Some(val) = read_secret(raw) {
+            if val.trim().is_empty() {
+                return Err(ProviderError::InvalidProfile(format!(
+                    "environment variable `{raw}` contains an empty value"
+                )));
+            }
+            Ok(val)
+        } else {
+            Ok(raw.to_owned())
+        }
+    } else {
+        // Literal value
+        Ok(raw.to_owned())
+    }
+}
+
+fn looks_like_env_var_name(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() || s.starts_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+pub fn substitute_optional_value(
+    raw: Option<&str>,
+    read_secret: &mut impl FnMut(&str) -> Option<String>,
+) -> Result<Option<String>, ProviderError> {
+    match raw {
+        Some(s) if !s.trim().is_empty() => substitute_value(s, read_secret).map(Some),
+        _ => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -539,33 +609,33 @@ mod tests {
     fn all_supported_transports_build_without_persisting_secrets() {
         let profiles = [
             profile(ProviderTransportProfile::Anthropic {
-                api_key_env: "ANTHROPIC_API_KEY".to_owned(),
+                api_key: "${ANTHROPIC_API_KEY}".to_owned(),
             }),
             profile(ProviderTransportProfile::Openai {
-                api_key_env: "OPENAI_API_KEY".to_owned(),
+                api_key: "${OPENAI_API_KEY}".to_owned(),
             }),
             profile(ProviderTransportProfile::Ollama { base_url: None }),
             profile(ProviderTransportProfile::Lemonade {
                 base_url: None,
-                api_key_env: Some("LEMONADE_API_KEY".to_owned()),
+                api_key: Some("${LEMONADE_API_KEY}".to_owned()),
                 request_timeout_seconds: None,
             }),
             profile(ProviderTransportProfile::LmStudio {
                 base_url: None,
-                api_key_env: None,
+                api_key: None,
             }),
             profile(ProviderTransportProfile::Watsonx {
                 service_url: "https://us-south.ml.cloud.ibm.com".to_owned(),
                 api_version: "2024-05-31".to_owned(),
                 scope: WatsonxScopeProfile::Project("project-1".to_owned()),
-                credential: WatsonxCredentialProfile::ApiKey("WATSONX_API_KEY".to_owned()),
+                credential: WatsonxCredentialProfile::ApiKey("${WATSONX_API_KEY}".to_owned()),
             }),
             profile(ProviderTransportProfile::Bedrock {
-                region: "us-east-1".to_owned(),
-                access_key_id_env: Some("AWS_ACCESS_KEY_ID".to_owned()),
-                secret_access_key_env: Some("AWS_SECRET_ACCESS_KEY".to_owned()),
-                session_token_env: None,
-                bearer_token_env: None,
+                region: "${AWS_REGION:-us-east-1}".to_owned(),
+                access_key_id: Some("${AWS_ACCESS_KEY_ID}".to_owned()),
+                secret_access_key: Some("${AWS_SECRET_ACCESS_KEY}".to_owned()),
+                session_token: None,
+                bearer_token: None,
                 endpoint_url: None,
                 profile_name: None,
             }),
@@ -586,7 +656,7 @@ mod tests {
     #[test]
     fn missing_secrets_and_transport_identity_mismatches_fail_closed() {
         let missing = profile(ProviderTransportProfile::Openai {
-            api_key_env: "OPENAI_API_KEY".to_owned(),
+            api_key: "${OPENAI_API_KEY}".to_owned(),
         });
         assert!(missing.build_with_secrets(|_| None).is_err());
 
@@ -596,6 +666,32 @@ mod tests {
             mismatch
                 .build_with_secrets(|_| Some("unused".to_owned()))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn subst_variable_substitution_handles_defaults_and_literals() {
+        let mut mock_env = |var: &str| match var {
+            "MY_TOKEN" => Some("secret-token-123".to_owned()),
+            "CUSTOM_REGION" => Some("eu-west-1".to_owned()),
+            _ => None,
+        };
+
+        assert_eq!(
+            substitute_value("${MY_TOKEN}", &mut mock_env).unwrap(),
+            "secret-token-123"
+        );
+        assert_eq!(
+            substitute_value("${CUSTOM_REGION:-us-east-1}", &mut mock_env).unwrap(),
+            "eu-west-1"
+        );
+        assert_eq!(
+            substitute_value("${FALLBACK_REGION:-us-east-1}", &mut mock_env).unwrap(),
+            "us-east-1"
+        );
+        assert_eq!(
+            substitute_value("literal-api-key-999", &mut mock_env).unwrap(),
+            "literal-api-key-999"
         );
     }
 
@@ -627,11 +723,11 @@ mod tests {
             schema_version: PROVIDER_CONFIG_SCHEMA_VERSION,
             provider: "bedrock".to_owned(),
             transport: ProviderTransportProfile::Bedrock {
-                region: "us-east-1".to_owned(),
-                access_key_id_env: None,
-                secret_access_key_env: None,
-                session_token_env: None,
-                bearer_token_env: None,
+                region: "${AWS_REGION:-us-east-1}".to_owned(),
+                access_key_id: None,
+                secret_access_key: None,
+                session_token: None,
+                bearer_token: None,
                 endpoint_url: None,
                 profile_name: None,
             },

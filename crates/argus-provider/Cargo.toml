@@ -36,6 +36,7 @@ metrics.workspace = true
 reqwest.workspace = true
 aws-config.workspace = true
 json5.workspace = true
+subst.workspace = true
 
 [dev-dependencies]
 
