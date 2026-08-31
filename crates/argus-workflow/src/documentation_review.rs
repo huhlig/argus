@@ -261,11 +261,12 @@ For each dimension:
 - Set `comparison` and `status` strictly following the required truth table:
   * "consistent" (status: "satisfied"): Stated + MaterialBehavior, Stated + NoMaterialBehavior, or Omitted + NoMaterialBehavior.
   * "contradictory" (status: "deficient"): Stated or Partial documentation claim conflicts with MaterialBehavior in source.
-  * "material_omission" (status: "deficient"): Omitted or Partial documentation when source exhibits MaterialBehavior beyond what was stated.
+  * "material_omission" (status: "deficient"): Omitted documentation when source exhibits MaterialBehavior, OR Partial documentation regardless of source materiality (the partial disclosure is itself the defect — e.g. a vague or incomplete claim, even against a target with no complex source behavior).
   * "unable_to_verify" (status: "unable_to_verify"): Insufficient evidence.
   * "not_applicable" (status: "not_applicable"): Dimension is not applicable to this target.
 
 Evidence Citation Rules:
+- Every citation MUST be copied verbatim from an evidence record's `id` field. Every evidence record also carries a `content_hash` field for internal integrity tracking only — it is a different 64-character hex value that looks identical in shape to `id` but is NEVER a valid citation. Citing `content_hash` produces a citation that resolves to nothing and fails validation.
 - In `claims[].evidence`: Cite strictly documentation evidence IDs (records with kind="documentation").
 - In `dimensions[].evidence`:
   * For dimension "presence": Cite at least one documentation evidence ID (kind="documentation").
@@ -302,13 +303,13 @@ pub fn documentation_assessment_draft_schema() -> Value {
     ];
     let comparison_evidence = json!({
         "type": "array",
-        "description": "Exact evidence IDs copied from untrusted_evidence[].id. For every satisfied or deficient comparison, cite both the documentation record (kind=documentation) and the source record (kind=source); presence requires at least documentation evidence.",
+        "description": "Exact evidence IDs copied from untrusted_evidence[].id (never .content_hash, a different-looking-but-similar field that is not a valid citation). For every satisfied or deficient comparison, cite both the documentation record (kind=documentation) and the source record (kind=source); presence requires at least documentation evidence.",
         "items": {"type": "string"},
         "uniqueItems": true
     });
     let documentation_evidence = json!({
         "type": "array",
-        "description": "Exact IDs of kind=documentation only. These citations prove what the documentation literally states; never cite source evidence as a documentation claim.",
+        "description": "Exact IDs of kind=documentation only, copied from untrusted_evidence[].id (never .content_hash). These citations prove what the documentation literally states; never cite source evidence as a documentation claim.",
         "items": {"type": "string"},
         "uniqueItems": true,
         "minItems": 1
@@ -356,7 +357,7 @@ pub fn documentation_assessment_draft_schema() -> Value {
                             "enum": ["material_behavior", "no_material_behavior", "unable_to_verify", "not_applicable"]
                         },
                         "comparison": {
-                            "description": "The explicit comparison. Use material_omission for omitted or partial documentation with material source behavior beyond what was stated, and contradictory when a stated or partial claim conflicts with material source behavior.",
+                            "description": "The explicit comparison. Use material_omission for omitted documentation with material source behavior, or for partial documentation regardless of source materiality (partial coverage is itself the defect). Use contradictory when a stated or partial claim conflicts with material source behavior.",
                             "enum": ["consistent", "contradictory", "material_omission", "unable_to_verify", "not_applicable"]
                         },
                         "status": {
@@ -597,6 +598,35 @@ mod tests {
                 severity: argus_core::Severity::Medium,
                 confidence_basis_points: 9000,
                 dimensions: BTreeSet::from([DocumentationDimension::Behavior]),
+                evidence: draft.dimensions[0].evidence.clone(),
+            }],
+        };
+
+        DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn validator_accepts_a_material_omission_over_partial_coverage_with_no_material_source_behavior()
+     {
+        let (binding, mut draft) = fixture();
+        let value = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Value)
+            .unwrap();
+        value.documentation_coverage = DocumentationCoverage::Partial;
+        value.source_materiality = SourceMateriality::NoMaterialBehavior;
+        value.comparison = DocumentationComparison::MaterialOmission;
+        value.status = DocumentationDimensionStatus::Deficient;
+        draft.result = DocumentationResultDraft::CandidateFindings {
+            findings: vec![DocumentationCandidateDraft {
+                title: "Low informational value".to_owned(),
+                description: "Documentation is too vague to be useful, independent of source complexity.".to_owned(),
+                severity: argus_core::Severity::Low,
+                confidence_basis_points: 7000,
+                dimensions: BTreeSet::from([DocumentationDimension::Value]),
                 evidence: draft.dimensions[0].evidence.clone(),
             }],
         };

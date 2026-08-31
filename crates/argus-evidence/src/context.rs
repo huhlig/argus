@@ -34,9 +34,14 @@ pub struct TrustedControl {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FramedEvidence {
-    pub hash: ContentHash,
     pub id: EvidenceId,
     pub kind: EvidenceKind,
+    /// Content hash for internal integrity tracking only, not a citation target. Deliberately
+    /// named `content_hash` (not `hash`) and ordered after `id`/`kind`: it is a same-shaped
+    /// 64-character hex string as `id`, and models under load have been observed citing this
+    /// field instead of `id`, producing citations that resolve to nothing.
+    #[serde(rename = "content_hash")]
+    pub hash: ContentHash,
     pub origin: EvidenceOrigin,
     pub target: Option<TargetId>,
     pub location: Option<SourceLocation>,
