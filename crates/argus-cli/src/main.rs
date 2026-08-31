@@ -2143,6 +2143,13 @@ enum WorkerStepResult {
     },
 }
 
+/// Number of consecutive terminal (retry-exhausted) work item failures from one provider/model
+/// before the worker pool stops dispatching further work rather than grinding through the
+/// remaining queue. Each terminal failure already reflects the work item's own retry budget
+/// being exhausted, so a run of these indicates the provider or model itself is not producing
+/// usable output, not ordinary per-item flakiness.
+const CIRCUIT_BREAKER_CONSECUTIVE_FAILURES: usize = 5;
+
 async fn execute_concurrent_worker_pool<W, F, Fut>(
     category: &'static str,
     category_title: &'static str,
@@ -2167,6 +2174,8 @@ where
     let retries = std::sync::Arc::new(AtomicUsize::new(0));
     let failed = std::sync::Arc::new(AtomicUsize::new(0));
     let is_idle = std::sync::Arc::new(AtomicBool::new(false));
+    let consecutive_failures = std::sync::Arc::new(AtomicUsize::new(0));
+    let breaker_tripped = std::sync::Arc::new(AtomicBool::new(false));
 
     let pool_size = concurrency.max(1);
     let mut join_set = tokio::task::JoinSet::new();
@@ -2177,6 +2186,8 @@ where
         let retries = retries.clone();
         let failed = failed.clone();
         let is_idle = is_idle.clone();
+        let consecutive_failures = consecutive_failures.clone();
+        let breaker_tripped = breaker_tripped.clone();
         let queue = queue.clone();
         let run_id = run_id.clone();
         let worker = worker.clone();
@@ -2186,7 +2197,7 @@ where
 
         join_set.spawn(async move {
             loop {
-                if is_idle.load(Ordering::Relaxed) {
+                if is_idle.load(Ordering::Relaxed) || breaker_tripped.load(Ordering::Relaxed) {
                     break;
                 }
                 let item_index = dispatched.fetch_add(1, Ordering::SeqCst);
@@ -2228,6 +2239,7 @@ where
                     }
                     WorkerStepResult::Succeeded { work_id } => {
                         succeeded.fetch_add(1, Ordering::SeqCst);
+                        consecutive_failures.store(0, Ordering::SeqCst);
                         metrics::counter!("argus.worker.succeeded", "policy" => category)
                             .increment(1);
                         tracing::info!(
@@ -2261,6 +2273,23 @@ where
                             "[{category}] Item {item_label} ({work_id}) Failed in {:.1}s: {error}",
                             duration.as_secs_f64()
                         );
+                        let consecutive =
+                            consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
+                        if consecutive >= CIRCUIT_BREAKER_CONSECUTIVE_FAILURES {
+                            breaker_tripped.store(true, Ordering::SeqCst);
+                            tracing::error!(
+                                policy = category,
+                                provider = %provider_id,
+                                model = %model_id,
+                                consecutive_failures = consecutive,
+                                "[{category}] Aborting: {consecutive} consecutive work items failed \
+                                 with provider `{provider_id}` model `{model_id}` after exhausting \
+                                 their retry budgets. This provider/model combination is not \
+                                 producing usable output; stopping instead of continuing through \
+                                 the remaining queue. Run 'argus status' for failure details."
+                            );
+                            break;
+                        }
                     }
                 }
             }
@@ -2280,13 +2309,25 @@ where
         }
     }
 
-    Ok(format_work_summary(
+    let summary = format_work_summary(
         category_title,
         succeeded.load(Ordering::SeqCst),
         retries.load(Ordering::SeqCst),
         failed.load(Ordering::SeqCst),
         limit,
-    ))
+    );
+
+    if breaker_tripped.load(Ordering::SeqCst) {
+        return Err(argus_core::ArgusError::invariant(format!(
+            "{category_title} work aborted after {CIRCUIT_BREAKER_CONSECUTIVE_FAILURES} \
+             consecutive failures from provider `{provider_id}` model `{model_id}`; \
+             stopped instead of continuing through the remaining queue. {summary}. \
+             Run 'argus status' for failure details, then resume once the provider or \
+             model selection is fixed."
+        )));
+    }
+
+    Ok(summary)
 }
 
 async fn execute_all_work(
@@ -5238,6 +5279,69 @@ mod tests {
             "Documentation work: 0 succeeded, 0 retries scheduled, 0 failed (limit 2)"
         );
         assert!(temporary.path().join(".argus/state/workflow").is_dir());
+    }
+
+    #[tokio::test]
+    async fn worker_pool_trips_circuit_breaker_after_consecutive_failures_instead_of_draining_queue()
+     {
+        let temporary = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            argus_storage::DurableQueue::open(&temporary.path().join("state.redb")).unwrap(),
+        );
+        let snapshot = argus_core::SnapshotId::derive([b"breaker-snapshot".as_slice()]);
+        let configuration = argus_core::ConfigurationId::derive([b"breaker-configuration".as_slice()]);
+        let run_id = argus_core::RunId::derive([b"breaker-run".as_slice()]);
+        queue
+            .create_run(&argus_storage::RunRecord {
+                id: run_id.clone(),
+                snapshot,
+                configuration,
+                state: argus_storage::RunState::Active,
+                created_at_millis: 0,
+                updated_at_millis: 0,
+                finalized_at_millis: None,
+            })
+            .unwrap();
+
+        let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let step_dispatched = dispatched.clone();
+
+        let result = execute_concurrent_worker_pool(
+            "documentation",
+            "Documentation",
+            1,
+            None,
+            "broken-provider",
+            "broken-model",
+            queue,
+            &run_id,
+            std::sync::Arc::new(()),
+            move |_worker| {
+                let step_dispatched = step_dispatched.clone();
+                async move {
+                    let index = step_dispatched.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(WorkerStepResult::Failed {
+                        work_id: argus_core::WorkItemId::derive([
+                            b"breaker-work".as_slice(),
+                            index.to_le_bytes().as_slice(),
+                        ]),
+                        error: "simulated provider failure".to_owned(),
+                    })
+                }
+            },
+        )
+        .await;
+
+        let error = result.expect_err("consecutive failures should trip the circuit breaker");
+        let message = error.to_string();
+        assert!(
+            message.contains("aborted after 5 consecutive failures"),
+            "unexpected error message: {message}"
+        );
+        assert!(message.contains("broken-provider"));
+        assert!(message.contains("broken-model"));
+        // The breaker must stop dispatch at the threshold rather than draining an unbounded queue.
+        assert_eq!(dispatched.load(std::sync::atomic::Ordering::SeqCst), 5);
     }
 
     #[test]
