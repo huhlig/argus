@@ -432,14 +432,25 @@ pub enum StructuredOutputStrategy {
 impl StructuredOutputStrategy {
     #[must_use]
     pub fn for_provider(provider: &str, support: StructuredOutputSupport) -> Self {
+        // langchart-llm-watsonx supports ResponseFormat::JsonObject but explicitly rejects
+        // ResponseFormat::JsonSchema (LlmError::UnsupportedResponseFormat), so watsonx is
+        // capped at NativeJsonObject regardless of the configured support level.
+        if provider == "watsonx" {
+            return match support {
+                StructuredOutputSupport::None => Self::PromptGuidedText,
+                StructuredOutputSupport::BestEffort | StructuredOutputSupport::SchemaConstrained => {
+                    Self::NativeJsonObject
+                }
+            };
+        }
         match support {
             StructuredOutputSupport::None => Self::PromptGuidedText,
             StructuredOutputSupport::BestEffort => match provider {
-                "bedrock" | "anthropic" | "watsonx" => Self::PromptGuidedText,
+                "bedrock" | "anthropic" => Self::PromptGuidedText,
                 _ => Self::NativeJsonObject,
             },
             StructuredOutputSupport::SchemaConstrained => match provider {
-                "bedrock" | "anthropic" | "watsonx" => Self::PromptGuidedText,
+                "bedrock" | "anthropic" => Self::PromptGuidedText,
                 _ => Self::NativeJsonSchema,
             },
         }
@@ -1091,6 +1102,24 @@ mod tests {
                 StructuredOutputSupport::SchemaConstrained
             ),
             StructuredOutputStrategy::NativeJsonSchema
+        );
+        // langchart-llm-watsonx supports ResponseFormat::JsonObject but explicitly rejects
+        // ResponseFormat::JsonSchema, so watsonx is capped at NativeJsonObject even when the
+        // profile declares SchemaConstrained support.
+        assert_eq!(
+            StructuredOutputStrategy::for_provider("watsonx", StructuredOutputSupport::BestEffort),
+            StructuredOutputStrategy::NativeJsonObject
+        );
+        assert_eq!(
+            StructuredOutputStrategy::for_provider(
+                "watsonx",
+                StructuredOutputSupport::SchemaConstrained
+            ),
+            StructuredOutputStrategy::NativeJsonObject
+        );
+        assert_eq!(
+            StructuredOutputStrategy::for_provider("watsonx", StructuredOutputSupport::None),
+            StructuredOutputStrategy::PromptGuidedText
         );
     }
 
