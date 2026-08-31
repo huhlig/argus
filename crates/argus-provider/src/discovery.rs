@@ -511,12 +511,13 @@ pub fn generate_runtime_profile(
     };
 
     let structured_output = match kind {
-        DiscoveredProviderKind::Openai => StructuredOutputSupport::SchemaConstrained,
+        DiscoveredProviderKind::Openai | DiscoveredProviderKind::LmStudio => {
+            StructuredOutputSupport::SchemaConstrained
+        }
         DiscoveredProviderKind::Bedrock
         | DiscoveredProviderKind::Anthropic
         | DiscoveredProviderKind::Ollama
         | DiscoveredProviderKind::Lemonade
-        | DiscoveredProviderKind::LmStudio
         | DiscoveredProviderKind::Watsonx => StructuredOutputSupport::BestEffort,
     };
 
@@ -774,7 +775,9 @@ pub fn generate_provider_config(
 
     let deployment = transport.infer_deployment_mode();
     let default_structured_output = match kind {
-        DiscoveredProviderKind::Openai => StructuredOutputSupport::SchemaConstrained,
+        DiscoveredProviderKind::Openai | DiscoveredProviderKind::LmStudio => {
+            StructuredOutputSupport::SchemaConstrained
+        }
         _ => StructuredOutputSupport::BestEffort,
     };
 

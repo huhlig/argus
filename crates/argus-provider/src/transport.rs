@@ -324,16 +324,20 @@ impl ModelProvider for LangchartModelProvider {
                 strict: true,
             },
         };
-        let system_content = structured_system_content(
-            strategy,
-            &request.structured_output_schema,
+        let system_content = structured_system_content(strategy, &request.structured_output_schema);
+        let user_content =
+            structured_user_content(request.prompt, &self.capabilities.identity.model);
+        let messages = structured_messages(
+            system_content.clone(),
+            user_content.clone(),
+            &self.capabilities.identity.provider,
             &self.capabilities.identity.model,
         );
         tracing::debug!(
             provider = %self.capabilities.identity.provider,
             model = %self.capabilities.identity.model,
             system_prompt = %system_content,
-            prompt = %request.prompt,
+            prompt = %user_content,
             "Sending prompt to LLM provider"
         );
         let response = self
@@ -343,16 +347,13 @@ impl ModelProvider for LangchartModelProvider {
                     profile: None,
                     model: Some(self.capabilities.identity.model.clone()),
                     temperature: Some(0.0),
-                    max_tokens: Some(request.max_output_tokens.min(self.capabilities.max_output_tokens)),
+                    max_tokens: Some(
+                        request
+                            .max_output_tokens
+                            .min(self.capabilities.max_output_tokens),
+                    ),
                 },
-                messages: vec![
-                    Message::System {
-                        content: system_content,
-                    },
-                    Message::User {
-                        content: request.prompt,
-                    },
-                ],
+                messages,
                 tools: Vec::new(),
                 response_format,
             })
@@ -448,33 +449,58 @@ impl StructuredOutputStrategy {
 fn structured_system_content(
     strategy: StructuredOutputStrategy,
     schema: &serde_json::Value,
-    model: &str,
 ) -> String {
-    let mut content = match strategy {
+    match strategy {
         StructuredOutputStrategy::NativeJsonSchema => {
             "Return only JSON matching the supplied response schema.".to_owned()
         }
         StructuredOutputStrategy::NativeJsonObject | StructuredOutputStrategy::PromptGuidedText => {
             format!("Return only JSON matching this schema: {schema}")
         }
-    };
-    if model.to_ascii_lowercase().starts_with("qwen3") {
-        content.push_str("\n/no_think");
     }
-    content
+}
+
+fn structured_user_content(mut prompt: String, model: &str) -> String {
+    if model.to_ascii_lowercase().starts_with("qwen3") {
+        prompt.insert_str(0, "/no_think\n");
+    }
+    prompt
+}
+
+fn structured_messages(
+    system_content: String,
+    user_content: String,
+    provider: &str,
+    model: &str,
+) -> Vec<Message> {
+    let mut messages = vec![
+        Message::System {
+            content: system_content,
+        },
+        Message::User {
+            content: user_content,
+        },
+    ];
+    if provider == "lemonade" && model.to_ascii_lowercase().starts_with("qwen3") {
+        messages.push(Message::Assistant {
+            content: "<think>\n\n</think>\n\n".to_owned(),
+        });
+    }
+    messages
 }
 
 fn sanitize_and_parse_model_output(content: &str) -> Result<serde_json::Value, serde_json::Error> {
     let trimmed = content.trim();
 
     // 1. Strip reasoning / thinking blocks: <think>...</think>
-    let unthought = if let (Some(start), Some(end)) = (trimmed.find("<think>"), trimmed.find("</think>")) {
-        let before = &trimmed[..start];
-        let after = &trimmed[end + "</think>".len()..];
-        format!("{}{}", before.trim(), after.trim())
-    } else {
-        trimmed.to_owned()
-    };
+    let unthought =
+        if let (Some(start), Some(end)) = (trimmed.find("<think>"), trimmed.find("</think>")) {
+            let before = &trimmed[..start];
+            let after = &trimmed[end + "</think>".len()..];
+            format!("{}{}", before.trim(), after.trim())
+        } else {
+            trimmed.to_owned()
+        };
 
     let text = unthought.trim();
 
@@ -1049,7 +1075,10 @@ mod tests {
             StructuredOutputStrategy::PromptGuidedText
         );
         assert_eq!(
-            StructuredOutputStrategy::for_provider("anthropic", StructuredOutputSupport::BestEffort),
+            StructuredOutputStrategy::for_provider(
+                "anthropic",
+                StructuredOutputSupport::BestEffort
+            ),
             StructuredOutputStrategy::PromptGuidedText
         );
         assert_eq!(
@@ -1057,7 +1086,10 @@ mod tests {
             StructuredOutputStrategy::NativeJsonObject
         );
         assert_eq!(
-            StructuredOutputStrategy::for_provider("openai", StructuredOutputSupport::SchemaConstrained),
+            StructuredOutputStrategy::for_provider(
+                "openai",
+                StructuredOutputSupport::SchemaConstrained
+            ),
             StructuredOutputStrategy::NativeJsonSchema
         );
     }
@@ -1065,17 +1097,26 @@ mod tests {
     #[test]
     fn qwen3_structured_requests_disable_thinking() {
         let schema = serde_json::json!({"type": "object"});
-        let qwen = structured_system_content(
-            StructuredOutputStrategy::NativeJsonObject,
-            &schema,
+        let system = structured_system_content(StructuredOutputStrategy::NativeJsonObject, &schema);
+        let qwen = structured_user_content(
+            "Review the supplied evidence.".to_owned(),
             "Qwen3.6-35B-A3B-GGUF",
         );
-        let other = structured_system_content(
-            StructuredOutputStrategy::NativeJsonObject,
-            &schema,
-            "Bonsai-8B-gguf",
-        );
-        assert!(qwen.ends_with("/no_think"));
+        let other =
+            structured_user_content("Review the supplied evidence.".to_owned(), "Bonsai-8B-gguf");
+        assert!(!system.contains("/no_think"));
+        assert!(qwen.starts_with("/no_think\n"));
         assert!(!other.contains("/no_think"));
+        let messages = structured_messages(
+            system,
+            qwen,
+            "lemonade",
+            "Qwen3.6-35B-A3B-GGUF",
+        );
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(
+            messages.last(),
+            Some(Message::Assistant { content }) if content == "<think>\n\n</think>\n\n"
+        ));
     }
 }

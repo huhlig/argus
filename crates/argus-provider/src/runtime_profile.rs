@@ -412,7 +412,7 @@ impl ProviderTransportProfile {
             Self::Openai { .. } => "openai",
             Self::Ollama { .. } => "ollama",
             Self::Lemonade { .. } => "lemonade",
-            Self::LmStudio { .. } => "lmstudio",
+            Self::LmStudio { .. } => "lm_studio",
             Self::Watsonx { .. } => "watsonx",
             Self::Bedrock { .. } => "bedrock",
         }

@@ -560,6 +560,69 @@ impl DurableQueue {
         Ok(u64::try_from(recovered_ids.len()).unwrap_or(u64::MAX))
     }
 
+    pub fn retry_failed_run(
+        &self,
+        id: &RunId,
+        now_millis: u64,
+    ) -> Result<u64, argus_core::ArgusError> {
+        let run = self
+            .get_run(id)?
+            .ok_or_else(|| argus_core::ArgusError::invalid_input("unknown run"))?;
+        if run.state != RunState::Active || run.finalized_at_millis.is_some() {
+            return Err(argus_core::ArgusError::invariant(
+                "only active runs can retry failed work",
+            ));
+        }
+        let write = self
+            .database
+            .begin_write()
+            .map_err(database_error("cannot retry failed run work"))?;
+        let retried_ids = {
+            let mut table = write
+                .open_table(WORK)
+                .map_err(database_error("cannot open work table"))?;
+            let mut updates = Vec::new();
+            for entry in table
+                .iter()
+                .map_err(database_error("cannot scan run work"))?
+            {
+                let (key, value) = entry.map_err(database_error("cannot read run work"))?;
+                let mut work: QueueWork = decode(value.value())?;
+                if work.run == *id && work.state == QueueState::Failed {
+                    work.state = QueueState::Pending;
+                    work.attempt_count = 0;
+                    work.lease_until_millis = None;
+                    work.last_error = None;
+                    updates.push((key.value().to_owned(), work));
+                }
+            }
+            let ids = updates
+                .iter()
+                .map(|(_, work)| work.id.clone())
+                .collect::<Vec<_>>();
+            for (key, work) in updates {
+                let bytes = encode(&work)?;
+                table
+                    .insert(key.as_str(), bytes.as_slice())
+                    .map_err(database_error("cannot retry failed work"))?;
+            }
+            ids
+        };
+        for work_id in &retried_ids {
+            append_event(
+                &write,
+                work_id,
+                QueueEventKind::RetryScheduled,
+                now_millis,
+                Some("failed work explicitly retried during run resume".to_owned()),
+            )?;
+        }
+        write
+            .commit()
+            .map_err(database_error("cannot commit failed work retry"))?;
+        Ok(u64::try_from(retried_ids.len()).unwrap_or(u64::MAX))
+    }
+
     pub fn cancel_run(&self, id: &RunId, at_millis: u64) -> Result<u64, argus_core::ArgusError> {
         let write = self
             .database

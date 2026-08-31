@@ -452,6 +452,7 @@ impl PolicyAssessmentContract for ArchitectureAssessmentContract {
 const ARCHITECTURE_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against architectural principles and constraints.
 Return only the final JSON decision. Do not emit analysis, chain-of-thought, or commentary outside the schema. Keep every rationale, observation, explanation, and summary concise: one sentence per string, no more than two observations per dimension, and no repeated evidence narrative. In each citation, copy `evidence` exactly from a supplied evidence item's `id` field (never its hash or location), and include only related target IDs present in that evidence.
 The static-analysis scope artifact is the authoritative structural input. Use its constituents, internal relations, boundary relations, dependency cycles, and inventory health directly. For package and workspace scopes, the constituent-summary artifact contains terminal lower-scope assessments and is authoritative for reviewed constituent health. Cite the applicable artifact for graph-derived or roll-up claims. The graph fingerprint identifies its complete pre-truncation input, while omitted_* counters identify bounded truncation. Do not invent an edge that is absent from the artifact, and do not treat an absent edge as proof when inventory is incomplete or facts were omitted.
+For package and workspace scopes, lower-scope findings are already durable: do not reproduce or paraphrase them as candidates. Emit at most 3 candidates, only for new cross-constituent defects or patterns established by aggregate evidence. Summarize constituent health without restating individual findings.
 Evaluate all 6 architectural dimensions:
 1. dependency_structure: Proper dependency direction, acyclic graphs, and absence of forbidden couplings.
 2. cycles: Absence of circular dependencies across modules, packages, or components.
@@ -468,7 +469,7 @@ Decision Rules:
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn architecture_assessment_draft_schema() -> Value {
-    json!({
+    let mut schema = json!({
         "type": "object",
         "required": ["result"],
         "additionalProperties": false,
@@ -584,7 +585,98 @@ pub fn architecture_assessment_draft_schema() -> Value {
                 }
             }
         }
-    })
+    });
+    for (pointer, maximum) in [
+        (
+            "/properties/result/properties/dimensions/additionalProperties/properties/observations",
+            2,
+        ),
+        ("/properties/result/properties/candidates", 3),
+        (
+            "/properties/result/properties/candidates/items/properties/citations",
+            2,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/citations/items/properties/related_targets",
+            8,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/observed_facts",
+            3,
+        ),
+    ] {
+        schema
+            .pointer_mut(pointer)
+            .and_then(Value::as_object_mut)
+            .expect("architecture schema array path must exist")
+            .insert("maxItems".to_owned(), json!(maximum));
+    }
+    for (pointer, maximum) in [
+        (
+            "/properties/result/properties/dimensions/additionalProperties/properties/observations/items",
+            240,
+        ),
+        (
+            "/properties/result/properties/dimensions/additionalProperties/properties/rationale",
+            320,
+        ),
+        ("/properties/result/properties/summary", 480),
+        (
+            "/properties/result/properties/candidates/items/properties/id",
+            120,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/explanation",
+            480,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/citations/items/properties/evidence",
+            128,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/citations/items/properties/related_targets/items",
+            128,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/observed_facts/items",
+            240,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/inferred_intent",
+            320,
+        ),
+    ] {
+        schema
+            .pointer_mut(pointer)
+            .and_then(Value::as_object_mut)
+            .expect("architecture schema string path must exist")
+            .insert("maxLength".to_owned(), json!(maximum));
+    }
+    let dimensions = schema
+        .pointer_mut("/properties/result/properties/dimensions")
+        .and_then(Value::as_object_mut)
+        .expect("architecture dimensions schema must exist");
+    dimensions.insert("minProperties".to_owned(), json!(6));
+    dimensions.insert("maxProperties".to_owned(), json!(6));
+    dimensions.insert(
+        "propertyNames".to_owned(),
+        json!({
+            "enum": [
+                "dependency_structure",
+                "cycles",
+                "public_surface",
+                "ownership_and_cohesion",
+                "boundary_analysis",
+                "pattern_consistency"
+            ]
+        }),
+    );
+    schema
+        .pointer_mut("/properties/result/properties/candidates/items/properties/dimensions")
+        .and_then(Value::as_object_mut)
+        .expect("architecture candidate dimensions schema must exist")
+        .insert("maxItems".to_owned(), json!(6));
+    schema
 }
 
 #[cfg(test)]
@@ -724,6 +816,22 @@ mod tests {
     fn architecture_instructions_bound_the_final_response() {
         assert!(ARCHITECTURE_INSTRUCTIONS.contains("Return only the final JSON decision"));
         assert!(ARCHITECTURE_INSTRUCTIONS.contains("no more than two observations per dimension"));
+        assert!(
+            ARCHITECTURE_INSTRUCTIONS.contains("do not reproduce or paraphrase them as candidates")
+        );
+        let schema = architecture_assessment_draft_schema();
+        assert_eq!(
+            schema["properties"]["result"]["properties"]["candidates"]["maxItems"],
+            3
+        );
+        assert_eq!(
+            schema["properties"]["result"]["properties"]["dimensions"]["maxProperties"],
+            6
+        );
+        assert_eq!(
+            schema["properties"]["result"]["properties"]["summary"]["maxLength"],
+            480
+        );
     }
 
     #[test]

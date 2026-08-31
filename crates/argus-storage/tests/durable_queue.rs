@@ -538,6 +538,35 @@ fn run_resume_and_cancellation_only_change_owned_work() {
 }
 
 #[test]
+fn failed_run_work_is_retried_only_when_explicitly_requested() {
+    let temporary = tempfile::tempdir().unwrap();
+    let queue = DurableQueue::open(&temporary.path().join("state.redb")).unwrap();
+    let active_run = run("retry-run", 1);
+    queue.create_run(&active_run).unwrap();
+    let failed = QueueWork::pending_for(
+        WorkItemId::derive([b"failed-run-work".as_slice()]),
+        vec![],
+        active_run.id.clone(),
+        CoverageKey::unspecified(),
+    );
+    queue.admit(&failed).unwrap();
+    let leased = queue.lease_next(10, 5).unwrap().unwrap();
+    assert_eq!(
+        queue
+            .fail_attempt(&leased.id, 11, "fixed later", 1)
+            .unwrap(),
+        QueueState::Failed
+    );
+
+    assert_eq!(queue.resume_run(&active_run.id, 20).unwrap(), 0);
+    assert_eq!(queue.retry_failed_run(&active_run.id, 20).unwrap(), 1);
+    let retried = queue.get(&failed.id).unwrap().unwrap();
+    assert_eq!(retried.state, QueueState::Pending);
+    assert_eq!(retried.attempt_count, 0);
+    assert!(retried.last_error.is_none());
+}
+
+#[test]
 fn work_admission_requires_an_active_owning_run() {
     let temporary = tempfile::tempdir().unwrap();
     let queue = DurableQueue::open(&temporary.path().join("state.redb")).unwrap();

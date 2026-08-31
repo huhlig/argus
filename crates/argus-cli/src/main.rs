@@ -215,9 +215,10 @@ Examples:
   argus coverage
   argus coverage --dimension adapter";
 
-const HELP_RESUME: &str = "Recover expired work item leases for an active audit run
+const HELP_RESUME: &str =
+    "Recover interrupted or explicitly retry failed work for an active audit run
 
-Usage: argus resume [run-id]
+Usage: argus resume [--failed] [run-id]
 
 Description:
   Scans the durable queue for leased work items whose heartbeat/lease timestamp has
@@ -227,9 +228,13 @@ Description:
 Arguments:
   [run-id]   Run identifier to recover (default: current run)
 
+Options:
+  --failed   Requeue failed work and reset its attempt count
+
 Examples:
   argus resume
-  argus resume 5c82a1...";
+  argus resume 5c82a1...
+  argus resume --failed 5c82a1...";
 
 const HELP_CANCEL: &str = "Cancel an active audit run
 
@@ -683,9 +688,7 @@ fn explicit_provider_path_candidates(
     candidates
 }
 
-fn format_available_providers_and_models(
-    env_config_dir: Option<&std::path::Path>,
-) -> String {
+fn format_available_providers_and_models(env_config_dir: Option<&std::path::Path>) -> String {
     let mut search_dirs = provider_catalog_dirs(env_config_dir);
 
     let mut seen_dirs = std::collections::HashSet::new();
@@ -704,17 +707,23 @@ fn format_available_providers_and_models(
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+            if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+            {
                 if let Ok(bytes) = std::fs::read(&path) {
                     if let Ok(text) = std::str::from_utf8(&bytes) {
-                        let parsed_config = serde_json::from_str::<argus_provider::ProviderConfig>(text)
-                            .or_else(|_| {
-                                if let Ok(sub) = substitute_env_vars(text) {
-                                    serde_json::from_str(&sub)
-                                } else {
-                                    serde_json::from_str(text)
-                                }
-                            });
+                        let parsed_config = serde_json::from_str::<argus_provider::ProviderConfig>(
+                            text,
+                        )
+                        .or_else(|_| {
+                            if let Ok(sub) = substitute_env_vars(text) {
+                                serde_json::from_str(&sub)
+                            } else {
+                                serde_json::from_str(text)
+                            }
+                        });
                         if let Ok(cfg) = parsed_config {
                             found_any = true;
                             writeln!(output, "  * {} ({})", cfg.provider, path.display()).unwrap();
@@ -734,9 +743,13 @@ fn format_available_providers_and_models(
     }
 
     if found_any {
-        format!("\n\nAvailable providers and configured models:\n{output}\nNext step: Run 'argus work --provider <provider>:<model_or_alias>' to execute reviews.")
+        format!(
+            "\n\nAvailable providers and configured models:\n{output}\nNext step: Run 'argus work --provider <provider>:<model_or_alias>' to execute reviews."
+        )
     } else {
-        String::from("\n\nNo provider configurations found. Run 'argus provider discover --type <type>' to configure a provider.")
+        String::from(
+            "\n\nNo provider configurations found. Run 'argus provider discover --type <type>' to configure a provider.",
+        )
     }
 }
 
@@ -764,7 +777,9 @@ fn resolve_provider_profile_with_env(
                 if let Ok(bytes) = std::fs::read(path) {
                     if let Ok(raw_text) = std::str::from_utf8(&bytes) {
                         if let Ok(substituted) = substitute_env_vars(raw_text) {
-                            if let Ok(config) = serde_json::from_str::<argus_provider::ProviderConfig>(&substituted) {
+                            if let Ok(config) =
+                                serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
+                            {
                                 let profile = config.resolve_runtime_profile(None).map_err(|error| {
                                     argus_core::ArgusError::invalid_input(format!(
                                         "cannot resolve model in provider configuration `{}`: {error}",
@@ -773,11 +788,16 @@ fn resolve_provider_profile_with_env(
                                 })?;
                                 return Ok((path.clone(), profile));
                             }
-                            if let Ok(profile) = serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted) {
+                            if let Ok(profile) = serde_json::from_str::<
+                                argus_provider::ProviderRuntimeProfile,
+                            >(&substituted)
+                            {
                                 return Ok((path.clone(), profile));
                             }
                         }
-                        if let Ok(config) = serde_json::from_str::<argus_provider::ProviderConfig>(raw_text) {
+                        if let Ok(config) =
+                            serde_json::from_str::<argus_provider::ProviderConfig>(raw_text)
+                        {
                             let profile = config.resolve_runtime_profile(None).map_err(|error| {
                                 argus_core::ArgusError::invalid_input(format!(
                                     "cannot resolve model in provider configuration `{}`: {error}",
@@ -786,7 +806,9 @@ fn resolve_provider_profile_with_env(
                             })?;
                             return Ok((path.clone(), profile));
                         }
-                        if let Ok(profile) = serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(raw_text) {
+                        if let Ok(profile) =
+                            serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(raw_text)
+                        {
                             return Ok((path.clone(), profile));
                         }
                     }
@@ -805,7 +827,10 @@ fn resolve_provider_profile_with_env(
                 let bytes = std::fs::read(&provider_path).map_err(|error| {
                     argus_core::ArgusError::new(
                         argus_core::ErrorCode::Io,
-                        format!("cannot read provider configuration `{}`", provider_path.display()),
+                        format!(
+                            "cannot read provider configuration `{}`",
+                            provider_path.display()
+                        ),
                     )
                     .with_source(error)
                 })?;
@@ -830,12 +855,14 @@ fn resolve_provider_profile_with_env(
                             provider_path.display()
                         ))
                     })?;
-                let profile = config.resolve_runtime_profile(model_selector).map_err(|error| {
-                    argus_core::ArgusError::invalid_input(format!(
-                        "cannot resolve model in provider configuration `{}`: {error}",
-                        provider_path.display()
-                    ))
-                })?;
+                let profile = config
+                    .resolve_runtime_profile(model_selector)
+                    .map_err(|error| {
+                        argus_core::ArgusError::invalid_input(format!(
+                            "cannot resolve model in provider configuration `{}`: {error}",
+                            provider_path.display()
+                        ))
+                    })?;
                 return Ok((provider_path, profile));
             }
         }
@@ -849,14 +876,15 @@ fn resolve_provider_profile_with_env(
             if provider_path.is_file() {
                 if let Ok(bytes) = std::fs::read(&provider_path) {
                     if let Ok(raw_text) = std::str::from_utf8(&bytes) {
-                        let parsed = serde_json::from_str::<argus_provider::ProviderConfig>(raw_text)
-                            .or_else(|_| {
-                                if let Ok(sub) = substitute_env_vars(raw_text) {
-                                    serde_json::from_str(&sub)
-                                } else {
-                                    serde_json::from_str(raw_text)
-                                }
-                            });
+                        let parsed =
+                            serde_json::from_str::<argus_provider::ProviderConfig>(raw_text)
+                                .or_else(|_| {
+                                    if let Ok(sub) = substitute_env_vars(raw_text) {
+                                        serde_json::from_str(&sub)
+                                    } else {
+                                        serde_json::from_str(raw_text)
+                                    }
+                                });
                         if let Ok(config) = parsed {
                             let profile = config.resolve_runtime_profile(None).map_err(|error| {
                                 argus_core::ArgusError::invalid_input(format!(
@@ -867,11 +895,16 @@ fn resolve_provider_profile_with_env(
                             return Ok((provider_path, profile));
                         }
                         if let Ok(substituted) = substitute_env_vars(raw_text) {
-                            if let Ok(profile) = serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted) {
+                            if let Ok(profile) = serde_json::from_str::<
+                                argus_provider::ProviderRuntimeProfile,
+                            >(&substituted)
+                            {
                                 return Ok((provider_path, profile));
                             }
                         }
-                        if let Ok(profile) = serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(raw_text) {
+                        if let Ok(profile) =
+                            serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(raw_text)
+                        {
                             return Ok((provider_path, profile));
                         }
                     }
@@ -887,23 +920,31 @@ fn resolve_provider_profile_with_env(
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+                    if path.is_file()
+                        && path
+                            .extension()
+                            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+                    {
                         let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                         let prefix = format!("{file_stem}-");
                         if provider_spec.starts_with(&prefix) {
                             let model_candidate = &provider_spec[prefix.len()..];
                             if let Ok(bytes) = std::fs::read(&path) {
                                 if let Ok(raw_text) = std::str::from_utf8(&bytes) {
-                                    let parsed = serde_json::from_str::<argus_provider::ProviderConfig>(raw_text)
-                                        .or_else(|_| {
-                                            if let Ok(sub) = substitute_env_vars(raw_text) {
-                                                serde_json::from_str(&sub)
-                                            } else {
-                                                serde_json::from_str(raw_text)
-                                            }
-                                        });
+                                    let parsed = serde_json::from_str::<
+                                        argus_provider::ProviderConfig,
+                                    >(raw_text)
+                                    .or_else(|_| {
+                                        if let Ok(sub) = substitute_env_vars(raw_text) {
+                                            serde_json::from_str(&sub)
+                                        } else {
+                                            serde_json::from_str(raw_text)
+                                        }
+                                    });
                                     if let Ok(config) = parsed {
-                                        if let Ok(profile) = config.resolve_runtime_profile(Some(model_candidate)) {
+                                        if let Ok(profile) =
+                                            config.resolve_runtime_profile(Some(model_candidate))
+                                        {
                                             return Ok((path, profile));
                                         }
                                     }
@@ -996,7 +1037,8 @@ pub enum CliCommand {
         args: Vec<String>,
     },
     Resume {
-        run_id: Option<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     Cancel {
         run_id: Option<String>,
@@ -1088,7 +1130,7 @@ fn run(
         CliCommand::Targets { args } => targets_command(root, append_config(args).into_iter()),
         CliCommand::Status => status_command(root),
         CliCommand::Coverage { args } => coverage_command(root, append_config(args).into_iter()),
-        CliCommand::Resume { run_id } => resume_command(root, run_id),
+        CliCommand::Resume { args } => resume_command(root, args.into_iter()),
         CliCommand::Cancel { run_id } => cancel_command(root, run_id),
         CliCommand::Finalize { run_id } => finalize_command(root, run_id),
         CliCommand::Report { args } => report_command(root, append_config(args).into_iter()),
@@ -1896,8 +1938,10 @@ fn work_command_with_env(
                     .next()
                     .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
                 let parsed = value.parse::<usize>().map_err(|error| {
-                    argus_core::ArgusError::invalid_input("work limit must be an integer (0 for no limit)")
-                        .with_source(error)
+                    argus_core::ArgusError::invalid_input(
+                        "work limit must be an integer (0 for no limit)",
+                    )
+                    .with_source(error)
                 })?;
                 if parsed > 0 && no_limit_explicit {
                     return Err(argus_core::ArgusError::invalid_input(
@@ -1959,9 +2003,18 @@ fn work_command_with_env(
         .build()
         .map_err(io_error("cannot start worker runtime"))?;
     match policy_name {
-        "documentation" => runtime.block_on(execute_documentation_work(root, profile, limit, concurrency)),
-        "correctness" => runtime.block_on(execute_correctness_work(root, profile, limit, concurrency)),
-        "architecture" => runtime.block_on(execute_architecture_work(root, profile, limit, concurrency)),
+        "documentation" => runtime.block_on(execute_documentation_work(
+            root,
+            profile,
+            limit,
+            concurrency,
+        )),
+        "correctness" => {
+            runtime.block_on(execute_correctness_work(root, profile, limit, concurrency))
+        }
+        "architecture" => {
+            runtime.block_on(execute_architecture_work(root, profile, limit, concurrency))
+        }
         "all" => runtime.block_on(execute_all_work(root, profile, limit, concurrency)),
         _ => unreachable!(),
     }
@@ -1974,11 +2027,10 @@ fn format_work_summary(
     failed: usize,
     limit: Option<usize>,
 ) -> String {
-    let limit_str = limit.map_or_else(
-        || "no limit".to_owned(),
-        |l| format!("limit {l}"),
-    );
-    format!("{category} work: {succeeded} succeeded, {retries} retries scheduled, {failed} failed ({limit_str})")
+    let limit_str = limit.map_or_else(|| "no limit".to_owned(), |l| format!("limit {l}"));
+    format!(
+        "{category} work: {succeeded} succeeded, {retries} retries scheduled, {failed} failed ({limit_str})"
+    )
 }
 
 async fn run_worker_step<F, Fut, R>(
@@ -2758,15 +2810,33 @@ fn coverage_command(
 
 fn resume_command(
     root: &std::path::Path,
-    value: Option<String>,
+    args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    if is_help_flag(value.as_deref()) {
-        return Ok(HELP_RESUME.to_owned());
+    let mut run_id = None;
+    let mut retry_failed = false;
+    for argument in args {
+        if is_help_flag(Some(&argument)) {
+            return Ok(HELP_RESUME.to_owned());
+        }
+        if argument == "--failed" {
+            retry_failed = true;
+        } else if run_id.replace(argument).is_some() {
+            return Err(argus_core::ArgusError::invalid_input(
+                "usage: argus resume [--failed] [run-id]",
+            ));
+        }
     }
-    let id = parse_run_id(root, value)?;
-    let recovered = working_queue(root)?.resume_run(&id, now_millis()?)?;
+    let id = parse_run_id(root, run_id)?;
+    let queue = working_queue(root)?;
+    let now = now_millis()?;
+    let recovered = queue.resume_run(&id, now)?;
+    let retried = if retry_failed {
+        queue.retry_failed_run(&id, now)?
+    } else {
+        0
+    };
     Ok(format!(
-        "Resumed run {id}; recovered {recovered} expired leases"
+        "Resumed run {id}; recovered {recovered} expired leases; retried {retried} failed work items"
     ))
 }
 
@@ -3697,9 +3767,7 @@ fn append_architecture_status(
         let context = queue
             .artifact(&admission.review_context_ref)?
             .ok_or_else(|| {
-                argus_core::ArgusError::invariant(
-                    "architecture status context artifact is missing",
-                )
+                argus_core::ArgusError::invariant("architecture status context artifact is missing")
             })?;
         let frame: argus_evidence::ReviewContextFrame = serde_json::from_slice(&context.payload)
             .map_err(|error| {
@@ -4062,14 +4130,20 @@ fn provider_discover_command(
     };
 
     // Extract endpoint fallback from existing transport
-    let existing_endpoint = existing_config.as_ref().and_then(|cfg| match &cfg.transport {
-        argus_provider::ProviderTransportProfile::Lemonade { base_url, .. }
-        | argus_provider::ProviderTransportProfile::LmStudio { base_url, .. }
-        | argus_provider::ProviderTransportProfile::Ollama { base_url } => base_url.clone(),
-        argus_provider::ProviderTransportProfile::Bedrock { endpoint_url, .. } => endpoint_url.clone(),
-        argus_provider::ProviderTransportProfile::Watsonx { service_url, .. } => Some(service_url.clone()),
-        _ => None,
-    });
+    let existing_endpoint = existing_config
+        .as_ref()
+        .and_then(|cfg| match &cfg.transport {
+            argus_provider::ProviderTransportProfile::Lemonade { base_url, .. }
+            | argus_provider::ProviderTransportProfile::LmStudio { base_url, .. }
+            | argus_provider::ProviderTransportProfile::Ollama { base_url } => base_url.clone(),
+            argus_provider::ProviderTransportProfile::Bedrock { endpoint_url, .. } => {
+                endpoint_url.clone()
+            }
+            argus_provider::ProviderTransportProfile::Watsonx { service_url, .. } => {
+                Some(service_url.clone())
+            }
+            _ => None,
+        });
 
     let effective_endpoint = endpoint
         .as_deref()
@@ -4077,31 +4151,49 @@ fn provider_discover_command(
         .unwrap_or_else(|| kind.default_endpoint());
 
     // Extract API key fallback from existing transport
-    let existing_key = existing_config.as_ref().and_then(|cfg| match &cfg.transport {
-        argus_provider::ProviderTransportProfile::Lemonade { api_key, .. }
-        | argus_provider::ProviderTransportProfile::LmStudio { api_key, .. } => api_key.clone(),
-        argus_provider::ProviderTransportProfile::Openai { api_key }
-        | argus_provider::ProviderTransportProfile::Anthropic { api_key } => Some(api_key.clone()),
-        argus_provider::ProviderTransportProfile::Bedrock { bearer_token, .. } => bearer_token.clone(),
-        argus_provider::ProviderTransportProfile::Watsonx { credential, .. } => match credential {
-            argus_provider::WatsonxCredentialProfile::ApiKey(k)
-            | argus_provider::WatsonxCredentialProfile::BearerToken(k) => Some(k.clone()),
-        },
-        _ => None,
-    });
+    let existing_key = existing_config
+        .as_ref()
+        .and_then(|cfg| match &cfg.transport {
+            argus_provider::ProviderTransportProfile::Lemonade { api_key, .. }
+            | argus_provider::ProviderTransportProfile::LmStudio { api_key, .. } => api_key.clone(),
+            argus_provider::ProviderTransportProfile::Openai { api_key }
+            | argus_provider::ProviderTransportProfile::Anthropic { api_key } => {
+                Some(api_key.clone())
+            }
+            argus_provider::ProviderTransportProfile::Bedrock { bearer_token, .. } => {
+                bearer_token.clone()
+            }
+            argus_provider::ProviderTransportProfile::Watsonx { credential, .. } => {
+                match credential {
+                    argus_provider::WatsonxCredentialProfile::ApiKey(k)
+                    | argus_provider::WatsonxCredentialProfile::BearerToken(k) => Some(k.clone()),
+                }
+            }
+            _ => None,
+        });
 
     // Extract project fallback from existing transport
-    let existing_project = existing_config.as_ref().and_then(|cfg| match &cfg.transport {
-        argus_provider::ProviderTransportProfile::Watsonx { scope, .. } => match scope {
-            argus_provider::WatsonxScopeProfile::Project(id) => Some(id.clone()),
-            argus_provider::WatsonxScopeProfile::Space(id) => Some(id.clone()),
-        },
-        _ => None,
-    });
+    let existing_project = existing_config
+        .as_ref()
+        .and_then(|cfg| match &cfg.transport {
+            argus_provider::ProviderTransportProfile::Watsonx { scope, .. } => match scope {
+                argus_provider::WatsonxScopeProfile::Project(id) => Some(id.clone()),
+                argus_provider::WatsonxScopeProfile::Space(id) => Some(id.clone()),
+            },
+            _ => None,
+        });
 
     let effective_project = project_id
         .clone()
-        .or_else(|| project_env.as_ref().map(|v| if v.starts_with('$') { v.clone() } else { format!("${{{v}}}") }))
+        .or_else(|| {
+            project_env.as_ref().map(|v| {
+                if v.starts_with('$') {
+                    v.clone()
+                } else {
+                    format!("${{{v}}}")
+                }
+            })
+        })
         .or(existing_project);
 
     let discovery_endpoint = if let Some(ref pid) = project_id {
@@ -4118,9 +4210,7 @@ fn provider_discover_command(
     let query_api_key = if let Some(ref key) = api_key {
         Some(key.clone())
     } else if let Some(ref env_var) = api_key_env {
-        std::env::var(env_var)
-            .ok()
-            .filter(|s| !s.trim().is_empty())
+        std::env::var(env_var).ok().filter(|s| !s.trim().is_empty())
     } else if let Some(ref existing) = existing_key {
         argus_provider::substitute_value(existing, &mut |name| std::env::var(name).ok()).ok()
     } else if let Some(default_env) = kind.default_api_key_env() {
@@ -4182,14 +4272,22 @@ fn provider_discover_command(
 
     // Apply configured project ID if WatsonX
     if let Some(ref pid) = effective_project {
-        if let argus_provider::ProviderTransportProfile::Watsonx { ref mut scope, .. } = newly_generated.transport {
+        if let argus_provider::ProviderTransportProfile::Watsonx { ref mut scope, .. } =
+            newly_generated.transport
+        {
             *scope = argus_provider::WatsonxScopeProfile::Project(pid.clone());
         }
     }
 
     let config = if let Some(mut existing) = existing_config {
         // If explicit CLI flags were passed, update transport; otherwise preserve existing transport
-        if endpoint.is_some() || api_key.is_some() || api_key_env.is_some() || project_id.is_some() || project_env.is_some() || timeout_seconds.is_some() {
+        if endpoint.is_some()
+            || api_key.is_some()
+            || api_key_env.is_some()
+            || project_id.is_some()
+            || project_env.is_some()
+            || timeout_seconds.is_some()
+        {
             existing.transport = newly_generated.transport;
         }
         // Merge models: preserve existing configured models (custom limits, custom aliases), add newly discovered models
@@ -4222,7 +4320,11 @@ fn provider_discover_command(
         ))
     })?;
 
-    let action = if was_existing && !overwrite { "Updated" } else { "Created" };
+    let action = if was_existing && !overwrite {
+        "Updated"
+    } else {
+        "Created"
+    };
     let mut output = String::new();
     writeln!(
         output,
@@ -4378,7 +4480,9 @@ fn provider_list_command(
                         base_url.as_deref().unwrap_or("http://127.0.0.1:11434")
                     }
                     argus_provider::ProviderTransportProfile::Openai { .. } => "api.openai.com",
-                    argus_provider::ProviderTransportProfile::Anthropic { .. } => "api.anthropic.com",
+                    argus_provider::ProviderTransportProfile::Anthropic { .. } => {
+                        "api.anthropic.com"
+                    }
                     argus_provider::ProviderTransportProfile::LmStudio { base_url, .. } => {
                         base_url.as_deref().unwrap_or("http://127.0.0.1:1234/v1")
                     }
@@ -5234,34 +5338,28 @@ mod tests {
         run(["prime".to_owned()].into_iter(), temporary.path()).unwrap();
 
         let err1 = run(
-            [
-                "work",
-                "documentation",
-                "--limit",
-                "5",
-                "--no-limit",
-            ]
-            .map(str::to_owned)
-            .into_iter(),
+            ["work", "documentation", "--limit", "5", "--no-limit"]
+                .map(str::to_owned)
+                .into_iter(),
             temporary.path(),
         )
         .unwrap_err();
-        assert!(err1.to_string().contains("cannot specify both --limit and --no-limit"));
+        assert!(
+            err1.to_string()
+                .contains("cannot specify both --limit and --no-limit")
+        );
 
         let err2 = run(
-            [
-                "work",
-                "documentation",
-                "--no-limit",
-                "--limit",
-                "5",
-            ]
-            .map(str::to_owned)
-            .into_iter(),
+            ["work", "documentation", "--no-limit", "--limit", "5"]
+                .map(str::to_owned)
+                .into_iter(),
             temporary.path(),
         )
         .unwrap_err();
-        assert!(err2.to_string().contains("cannot specify both --limit and --no-limit"));
+        assert!(
+            err2.to_string()
+                .contains("cannot specify both --limit and --no-limit")
+        );
     }
 
     #[test]
@@ -5957,7 +6055,11 @@ mod tests {
             b"[package]\nname = \"relationship_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap();
-        std::fs::write(temporary.path().join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        std::fs::write(
+            temporary.path().join("src/lib.rs"),
+            b"pub fn fixture() {}\n",
+        )
+        .unwrap();
         initialize(temporary.path()).unwrap();
         let input = temporary.path().join(".argus/input");
         std::fs::create_dir_all(&input).unwrap();
@@ -5990,14 +6092,24 @@ mod tests {
         assert!(help_out.contains("argus provider list"));
 
         let help_discover = run(
-            ["provider".to_owned(), "discover".to_owned(), "--help".to_owned()].into_iter(),
+            [
+                "provider".to_owned(),
+                "discover".to_owned(),
+                "--help".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
         assert!(help_discover.contains("Discover models from a provider"));
 
         let help_list = run(
-            ["provider".to_owned(), "list".to_owned(), "--help".to_owned()].into_iter(),
+            [
+                "provider".to_owned(),
+                "list".to_owned(),
+                "--help".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -6021,7 +6133,9 @@ mod tests {
 
         std::fs::write(
             providers_dir.join("lemonade.json"),
-            serde_json::to_string_pretty(&sample_config).unwrap().as_bytes(),
+            serde_json::to_string_pretty(&sample_config)
+                .unwrap()
+                .as_bytes(),
         )
         .unwrap();
 
@@ -6164,7 +6278,10 @@ mod tests {
             temporary.path(),
         )
         .unwrap_err();
-        assert!(err.to_string().contains("requested concurrency 8 exceeds provider capacity (4)"));
+        assert!(
+            err.to_string()
+                .contains("requested concurrency 8 exceeds provider capacity (4)")
+        );
 
         // 2. Concurrency 0 is rejected
         let err0 = run(
@@ -6180,7 +6297,10 @@ mod tests {
             temporary.path(),
         )
         .unwrap_err();
-        assert!(err0.to_string().contains("concurrency must be greater than zero"));
+        assert!(
+            err0.to_string()
+                .contains("concurrency must be greater than zero")
+        );
 
         // 3. Concurrency 2 works with offline profile stopping when idle
         let work_out = run(
@@ -6233,6 +6353,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(path, providers_dir.join("bedrock.json"));
-        assert_eq!(profile.capabilities.identity.model, "anthropic.claude-3-haiku-20240307-v1:0");
+        assert_eq!(
+            profile.capabilities.identity.model,
+            "anthropic.claude-3-haiku-20240307-v1:0"
+        );
     }
 }
