@@ -1671,13 +1671,22 @@ fn audit_command(
     let run = queue
         .get_run(&run_id)?
         .ok_or_else(|| argus_core::ArgusError::invariant("current run is missing"))?;
-    if run.state != argus_storage::RunState::Active
-        || run.finalized_at_millis.is_some()
-        || run.snapshot != inventory.snapshot
-    {
-        return Err(argus_core::ArgusError::invariant(
-            "current run is not active for the current inventory snapshot",
-        ));
+    if run.state != argus_storage::RunState::Active || run.finalized_at_millis.is_some() {
+        return Err(argus_core::ArgusError::invariant(format!(
+            "current run {} is not active (state: {:?}, finalized: {}); run `argus prime` to start a new run",
+            run.id,
+            run.state,
+            run.finalized_at_millis.is_some()
+        )));
+    }
+    if run.snapshot != inventory.snapshot {
+        return Err(argus_core::ArgusError::invariant(format!(
+            "current run {} was primed for snapshot {}, but the persisted Rust inventory is for \
+             snapshot {}; the run was likely primed without `--adapter rust` after a prior \
+             `--adapter rust` prime, so the run's snapshot and the inventory on disk diverged. \
+             Run `argus prime --adapter rust` to re-align them",
+            run.id, run.snapshot, inventory.snapshot
+        )));
     }
 
     let evidence_store = argus_evidence::EvidenceStore::open(root.join(".argus/state/evidence"))?;

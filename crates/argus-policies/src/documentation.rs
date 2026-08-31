@@ -601,9 +601,11 @@ impl DocumentationDimensionDraft {
                             DocumentationCoverage::Stated,
                             SourceMateriality::MaterialBehavior
                                 | SourceMateriality::NoMaterialBehavior
+                                | SourceMateriality::NotApplicable
                         ) | (
                             DocumentationCoverage::Omitted,
                             SourceMateriality::NoMaterialBehavior
+                                | SourceMateriality::NotApplicable
                         )
                     )
             }
@@ -622,10 +624,12 @@ impl DocumentationDimensionDraft {
                         (
                             DocumentationCoverage::Omitted,
                             SourceMateriality::MaterialBehavior
+                                | SourceMateriality::NotApplicable
                         ) | (
                             DocumentationCoverage::Partial,
                             SourceMateriality::MaterialBehavior
                                 | SourceMateriality::NoMaterialBehavior
+                                | SourceMateriality::NotApplicable
                         )
                     )
             }

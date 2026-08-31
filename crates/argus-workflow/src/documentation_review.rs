@@ -259,9 +259,9 @@ For each dimension:
 - Set `documentation_coverage` from documentation evidence alone: "stated" (materially complete), "partial" (documentation says something about this dimension but omits material detail — e.g. a high-level claim without the mechanics behind it), "omitted" (documentation is silent), "unable_to_verify", or "not_applicable". Never infer stated or partial coverage from source.
 - Set `source_materiality` from source evidence alone: "material_behavior", "no_material_behavior", "unable_to_verify", or "not_applicable".
 - Set `comparison` and `status` strictly following the required truth table:
-  * "consistent" (status: "satisfied"): Stated + MaterialBehavior, Stated + NoMaterialBehavior, or Omitted + NoMaterialBehavior.
+  * "consistent" (status: "satisfied"): Stated + MaterialBehavior, Stated + NoMaterialBehavior, Stated + NotApplicable, Omitted + NoMaterialBehavior, or Omitted + NotApplicable.
   * "contradictory" (status: "deficient"): Stated or Partial documentation claim conflicts with MaterialBehavior in source.
-  * "material_omission" (status: "deficient"): Omitted documentation when source exhibits MaterialBehavior, OR Partial documentation regardless of source materiality (the partial disclosure is itself the defect — e.g. a vague or incomplete claim, even against a target with no complex source behavior).
+  * "material_omission" (status: "deficient"): Omitted documentation when source exhibits MaterialBehavior or has NotApplicable materiality, OR Partial documentation regardless of source materiality (the partial disclosure is itself the defect — e.g. a vague or incomplete claim, even against a target with no complex source behavior). Use NotApplicable materiality for self-contained dimensions like "value" that have no meaningful source-behavior counterpart — coverage alone (omitted/partial vs. stated) still determines whether the dimension is satisfied or deficient.
   * "unable_to_verify" (status: "unable_to_verify"): Insufficient evidence.
   * "not_applicable" (status: "not_applicable"): Dimension is not applicable to this target.
 
@@ -357,7 +357,7 @@ pub fn documentation_assessment_draft_schema() -> Value {
                             "enum": ["material_behavior", "no_material_behavior", "unable_to_verify", "not_applicable"]
                         },
                         "comparison": {
-                            "description": "The explicit comparison. Use material_omission for omitted documentation with material source behavior, or for partial documentation regardless of source materiality (partial coverage is itself the defect). Use contradictory when a stated or partial claim conflicts with material source behavior.",
+                            "description": "The explicit comparison. Use material_omission for omitted documentation with material (or not_applicable) source behavior, or for partial documentation regardless of source materiality (partial coverage is itself the defect). Use contradictory when a stated or partial claim conflicts with material source behavior.",
                             "enum": ["consistent", "contradictory", "material_omission", "unable_to_verify", "not_applicable"]
                         },
                         "status": {
@@ -630,6 +630,53 @@ mod tests {
                 evidence: draft.dimensions[0].evidence.clone(),
             }],
         };
+
+        DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn validator_accepts_a_material_omission_for_omitted_coverage_with_not_applicable_source_materiality()
+     {
+        let (binding, mut draft) = fixture();
+        let value = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Value)
+            .unwrap();
+        value.documentation_coverage = DocumentationCoverage::Omitted;
+        value.source_materiality = SourceMateriality::NotApplicable;
+        value.comparison = DocumentationComparison::MaterialOmission;
+        value.status = DocumentationDimensionStatus::Deficient;
+        draft.result = DocumentationResultDraft::CandidateFindings {
+            findings: vec![DocumentationCandidateDraft {
+                title: "No informational value assessment".to_owned(),
+                description: "Documentation says nothing that speaks to its own clarity or completeness.".to_owned(),
+                severity: argus_core::Severity::Low,
+                confidence_basis_points: 7000,
+                dimensions: BTreeSet::from([DocumentationDimension::Value]),
+                evidence: draft.dimensions[0].evidence.clone(),
+            }],
+        };
+
+        DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn validator_accepts_consistent_for_stated_coverage_with_not_applicable_source_materiality() {
+        let (binding, mut draft) = fixture();
+        let value = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Value)
+            .unwrap();
+        value.documentation_coverage = DocumentationCoverage::Stated;
+        value.source_materiality = SourceMateriality::NotApplicable;
+        value.comparison = DocumentationComparison::Consistent;
+        value.status = DocumentationDimensionStatus::Satisfied;
 
         DocumentationAssessmentContract::new(binding)
             .bind_output(&serde_json::to_value(draft).unwrap())
