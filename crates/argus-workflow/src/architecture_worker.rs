@@ -111,37 +111,47 @@ impl ArchitectureWorker {
     }
 
     pub async fn run_next(&self, now_millis: u64) -> Result<ArchitectureWorkerResult, ArgusError> {
-        let prerequisite_states = self
-            .queue
-            .run_records(&self.config.identity.audit_run)?
-            .work
-            .into_iter()
-            .map(|work| (work.id, work.state))
-            .collect::<BTreeMap<_, _>>();
-        let Some(leased) = self.queue.lease_next_for_partition_matching(
-            now_millis,
-            self.config.lease_duration_millis,
-            &self.config.identity.audit_run,
-            &self.config.adapter,
-            &self.config.policy,
-            |work| {
-                serde_json::from_slice::<ArchitectureReviewAdmission>(&work.payload).map_or(
-                    true,
-                    |admission| {
-                        admission.unit.prerequisite_work.iter().all(|work_id| {
-                            prerequisite_states.get(work_id).is_none_or(|state| {
-                                matches!(
-                                    state,
-                                    QueueState::Succeeded
-                                        | QueueState::Failed
-                                        | QueueState::Cancelled
-                                )
+        let queue = self.queue.clone();
+        let audit_run = self.config.identity.audit_run.clone();
+        let adapter = self.config.adapter.clone();
+        let policy = self.config.policy.clone();
+        let lease_duration_millis = self.config.lease_duration_millis;
+        let Some(leased) = tokio::task::spawn_blocking(move || {
+            let prerequisite_states = queue
+                .run_records(&audit_run)?
+                .work
+                .into_iter()
+                .map(|work| (work.id, work.state))
+                .collect::<BTreeMap<_, _>>();
+            queue.lease_next_for_partition_matching(
+                now_millis,
+                lease_duration_millis,
+                &audit_run,
+                &adapter,
+                &policy,
+                |work| {
+                    serde_json::from_slice::<ArchitectureReviewAdmission>(&work.payload).map_or(
+                        true,
+                        |admission| {
+                            admission.unit.prerequisite_work.iter().all(|work_id| {
+                                prerequisite_states.get(work_id).is_none_or(|state| {
+                                    matches!(
+                                        state,
+                                        QueueState::Succeeded
+                                            | QueueState::Failed
+                                            | QueueState::Cancelled
+                                    )
+                                })
                             })
-                        })
-                    },
-                )
-            },
-        )?
+                        },
+                    )
+                },
+            )
+        })
+        .await
+        .map_err(|error| {
+            ArgusError::invariant("architecture lease task failed").with_source(error)
+        })??
         else {
             return Ok(ArchitectureWorkerResult::Idle);
         };
@@ -149,19 +159,31 @@ impl ArchitectureWorker {
             Ok(()) => Ok(ArchitectureWorkerResult::Succeeded { work_id: leased.id }),
             Err(error) => {
                 let message = error.to_string();
-                if self
-                    .queue
-                    .get(&leased.id)?
-                    .is_some_and(|work| work.state == QueueState::Succeeded)
-                {
+                let queue = self.queue.clone();
+                let succeeded_already = {
+                    let leased_id = leased.id.clone();
+                    tokio::task::spawn_blocking(move || queue.get(&leased_id))
+                        .await
+                        .map_err(|error| {
+                            ArgusError::invariant("architecture lookup task failed")
+                                .with_source(error)
+                        })??
+                };
+                if succeeded_already.is_some_and(|work| work.state == QueueState::Succeeded) {
                     return Ok(ArchitectureWorkerResult::Succeeded { work_id: leased.id });
                 }
-                let state = self.queue.fail_attempt(
-                    &leased.id,
-                    now_millis,
-                    message.clone(),
-                    self.config.maximum_attempts,
-                )?;
+                let queue = self.queue.clone();
+                let work_id = leased.id.clone();
+                let fail_message = message.clone();
+                let maximum_attempts = self.config.maximum_attempts;
+                let state = tokio::task::spawn_blocking(move || {
+                    queue.fail_attempt(&work_id, now_millis, fail_message, maximum_attempts)
+                })
+                .await
+                .map_err(|error| {
+                    ArgusError::invariant("architecture fail-attempt task failed")
+                        .with_source(error)
+                })??;
                 Ok(match state {
                     QueueState::Pending => ArchitectureWorkerResult::RetryScheduled {
                         work_id: leased.id,
@@ -199,11 +221,16 @@ impl ArchitectureWorker {
             loop {
                 interval.tick().await;
                 let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                queue.heartbeat(
-                    &work_id,
-                    leased_at_millis.saturating_add(elapsed),
-                    lease_duration_millis,
-                )?;
+                let now = leased_at_millis.saturating_add(elapsed);
+                let heartbeat_queue = queue.clone();
+                let heartbeat_work_id = work_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    heartbeat_queue.heartbeat(&heartbeat_work_id, now, lease_duration_millis)
+                })
+                .await
+                .map_err(|error| {
+                    ArgusError::invariant("architecture heartbeat task failed").with_source(error)
+                })??;
             }
             #[allow(unreachable_code)]
             Ok::<(), ArgusError>(())

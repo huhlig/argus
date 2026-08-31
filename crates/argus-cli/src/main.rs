@@ -2044,7 +2044,8 @@ async fn run_worker_step<F, Fut, R>(
 ) -> Result<(R, std::time::Duration), argus_core::ArgusError>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<R, argus_core::ArgusError>>,
+    Fut: std::future::Future<Output = Result<R, argus_core::ArgusError>> + Send + 'static,
+    R: Send + 'static,
 {
     let start = std::time::Instant::now();
     let category = category.to_owned();
@@ -2102,7 +2103,20 @@ where
         }
     });
 
-    let result = step_fn().await;
+    let step_task = tokio::spawn(step_fn());
+    let result = match tokio::time::timeout(WORK_ITEM_WATCHDOG, step_task).await {
+        Ok(Ok(inner)) => inner,
+        Ok(Err(join_error)) => Err(argus_core::ArgusError::invariant(format!(
+            "worker step task panicked or aborted: {join_error}"
+        ))),
+        Err(_elapsed) => Err(argus_core::ArgusError::invariant(format!(
+            "[{category}] work item watchdog: step did not complete within {}s; this indicates a hang \
+             below the provider call (durable queue I/O, checkpoint writes, or workflow orchestration), \
+             not a slow model response. Abandoning this attempt so its lease can expire and be reclaimed \
+             via 'argus resume'.",
+            WORK_ITEM_WATCHDOG.as_secs()
+        ))),
+    };
     let _ = stop_tx.send(());
     let _ = ticker_handle.await;
     let duration = start.elapsed();
@@ -2149,6 +2163,14 @@ enum WorkerStepResult {
 /// being exhausted, so a run of these indicates the provider or model itself is not producing
 /// usable output, not ordinary per-item flakiness.
 const CIRCUIT_BREAKER_CONSECUTIVE_FAILURES: usize = 5;
+
+/// Hard ceiling on a single work item's processing time, independent of the provider's own
+/// per-request timeout. Anything beyond this indicates a hang below the LLM call itself (durable
+/// queue I/O, checkpoint writes, workflow orchestration) that would otherwise block a worker slot
+/// forever and never surface as a `Failed` outcome the circuit breaker can see. The step runs as
+/// its own task so the timeout stays effective even if the step gets stuck in a synchronous call
+/// that never yields back to the executor.
+const WORK_ITEM_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(3600);
 
 async fn execute_concurrent_worker_pool<W, F, Fut>(
     category: &'static str,

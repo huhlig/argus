@@ -256,12 +256,12 @@ You MUST evaluate all 14 distinct documentation dimensions exactly once in the `
 14. value: Documentation clarity, completeness, and non-trivial informational value.
 
 For each dimension:
-- Set `documentation_coverage` from documentation evidence alone: "stated", "omitted", "unable_to_verify", or "not_applicable".
+- Set `documentation_coverage` from documentation evidence alone: "stated" (materially complete), "partial" (documentation says something about this dimension but omits material detail — e.g. a high-level claim without the mechanics behind it), "omitted" (documentation is silent), "unable_to_verify", or "not_applicable". Never infer stated or partial coverage from source.
 - Set `source_materiality` from source evidence alone: "material_behavior", "no_material_behavior", "unable_to_verify", or "not_applicable".
 - Set `comparison` and `status` strictly following the required truth table:
   * "consistent" (status: "satisfied"): Stated + MaterialBehavior, Stated + NoMaterialBehavior, or Omitted + NoMaterialBehavior.
-  * "contradictory" (status: "deficient"): Stated documentation claim conflicts with MaterialBehavior in source.
-  * "material_omission" (status: "deficient"): Omitted documentation when source exhibits MaterialBehavior.
+  * "contradictory" (status: "deficient"): Stated or Partial documentation claim conflicts with MaterialBehavior in source.
+  * "material_omission" (status: "deficient"): Omitted or Partial documentation when source exhibits MaterialBehavior beyond what was stated.
   * "unable_to_verify" (status: "unable_to_verify"): Insufficient evidence.
   * "not_applicable" (status: "not_applicable"): Dimension is not applicable to this target.
 
@@ -348,15 +348,15 @@ pub fn documentation_assessment_draft_schema() -> Value {
                     "properties": {
                         "dimension": {"enum": dimensions},
                         "documentation_coverage": {
-                            "description": "Whether this dimension is literally stated in documentation evidence. Use omitted when documentation is silent; never infer stated coverage from source.",
-                            "enum": ["stated", "omitted", "unable_to_verify", "not_applicable"]
+                            "description": "Whether this dimension is literally stated in documentation evidence. Use partial when documentation says something about this dimension but omits material detail (a claim without its mechanics). Use omitted when documentation is silent. Never infer stated or partial coverage from source.",
+                            "enum": ["stated", "partial", "omitted", "unable_to_verify", "not_applicable"]
                         },
                         "source_materiality": {
                             "description": "Whether source evidence contains behavior material to this documentation dimension.",
                             "enum": ["material_behavior", "no_material_behavior", "unable_to_verify", "not_applicable"]
                         },
                         "comparison": {
-                            "description": "The explicit comparison. Use material_omission for omitted documentation with material source behavior, and contradictory when a stated claim conflicts with material source behavior.",
+                            "description": "The explicit comparison. Use material_omission for omitted or partial documentation with material source behavior beyond what was stated, and contradictory when a stated or partial claim conflicts with material source behavior.",
                             "enum": ["consistent", "contradictory", "material_omission", "unable_to_verify", "not_applicable"]
                         },
                         "status": {
@@ -576,6 +576,34 @@ mod tests {
             .bind_output(&serde_json::to_value(draft).unwrap())
             .unwrap_err();
         assert!(error.contains("inconsistent coverage, materiality, comparison, and status"));
+    }
+
+    #[test]
+    fn validator_accepts_a_material_omission_over_partial_coverage() {
+        let (binding, mut draft) = fixture();
+        let errors = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Behavior)
+            .unwrap();
+        errors.documentation_coverage = DocumentationCoverage::Partial;
+        errors.source_materiality = SourceMateriality::MaterialBehavior;
+        errors.comparison = DocumentationComparison::MaterialOmission;
+        errors.status = DocumentationDimensionStatus::Deficient;
+        draft.result = DocumentationResultDraft::CandidateFindings {
+            findings: vec![DocumentationCandidateDraft {
+                title: "Partially documented behavior".to_owned(),
+                description: "Documentation states a high-level claim but omits material mechanics.".to_owned(),
+                severity: argus_core::Severity::Medium,
+                confidence_basis_points: 9000,
+                dimensions: BTreeSet::from([DocumentationDimension::Behavior]),
+                evidence: draft.dimensions[0].evidence.clone(),
+            }],
+        };
+
+        DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap();
     }
 
     #[test]
