@@ -261,7 +261,7 @@ For each dimension:
 - Set `comparison` and `status` strictly following the required truth table:
   * "consistent" (status: "satisfied"): Stated + MaterialBehavior, Stated + NoMaterialBehavior, Stated + NotApplicable, Omitted + NoMaterialBehavior, or Omitted + NotApplicable.
   * "contradictory" (status: "deficient"): Stated or Partial documentation claim conflicts with MaterialBehavior in source.
-  * "material_omission" (status: "deficient"): Omitted documentation when source exhibits MaterialBehavior or has NotApplicable materiality, OR Partial documentation regardless of source materiality (the partial disclosure is itself the defect — e.g. a vague or incomplete claim, even against a target with no complex source behavior). Use NotApplicable materiality for self-contained dimensions like "value" that have no meaningful source-behavior counterpart — coverage alone (omitted/partial vs. stated) still determines whether the dimension is satisfied or deficient.
+  * "material_omission" (status: "deficient"): Omitted or Partial documentation, regardless of source materiality (the omission or partial disclosure is itself the defect). This holds even when source shows NoMaterialBehavior or NotApplicable materiality — e.g. a trivial struct with no complex behavior can still deserve a purpose statement or an examples note, so silence about it is a material omission even though nothing about the source itself is complex. Use your judgment: Omitted + NoMaterialBehavior/NotApplicable is valid under EITHER "consistent" or "material_omission" — choose "material_omission" when the dimension is one a reader would still expect covered (e.g. purpose, examples) even for a structurally simple item, and "consistent" when the dimension genuinely has nothing to say (e.g. errors, panics, side_effects for an item with no such behavior at all).
   * "unable_to_verify" (status: "unable_to_verify"): Insufficient evidence.
   * "not_applicable" (status: "not_applicable"): Dimension is not applicable to this target.
 
@@ -357,7 +357,7 @@ pub fn documentation_assessment_draft_schema() -> Value {
                             "enum": ["material_behavior", "no_material_behavior", "unable_to_verify", "not_applicable"]
                         },
                         "comparison": {
-                            "description": "The explicit comparison. Use material_omission for omitted documentation with material (or not_applicable) source behavior, or for partial documentation regardless of source materiality (partial coverage is itself the defect). Use contradictory when a stated or partial claim conflicts with material source behavior.",
+                            "description": "The explicit comparison. Use material_omission for omitted or partial documentation regardless of source materiality (the omission or partial disclosure is itself the defect, even when the source shows no material behavior). Use contradictory when a stated or partial claim conflicts with material source behavior.",
                             "enum": ["consistent", "contradictory", "material_omission", "unable_to_verify", "not_applicable"]
                         },
                         "status": {
@@ -656,6 +656,35 @@ mod tests {
                 severity: argus_core::Severity::Low,
                 confidence_basis_points: 7000,
                 dimensions: BTreeSet::from([DocumentationDimension::Value]),
+                evidence: draft.dimensions[0].evidence.clone(),
+            }],
+        };
+
+        DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn validator_accepts_a_material_omission_for_omitted_coverage_with_no_material_source_behavior()
+     {
+        let (binding, mut draft) = fixture();
+        let purpose = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Purpose)
+            .unwrap();
+        purpose.documentation_coverage = DocumentationCoverage::Omitted;
+        purpose.source_materiality = SourceMateriality::NoMaterialBehavior;
+        purpose.comparison = DocumentationComparison::MaterialOmission;
+        purpose.status = DocumentationDimensionStatus::Deficient;
+        draft.result = DocumentationResultDraft::CandidateFindings {
+            findings: vec![DocumentationCandidateDraft {
+                title: "Missing purpose documentation".to_owned(),
+                description: "Documentation is silent on the type's purpose, even though it has no complex source behavior.".to_owned(),
+                severity: argus_core::Severity::Medium,
+                confidence_basis_points: 9000,
+                dimensions: BTreeSet::from([DocumentationDimension::Purpose]),
                 evidence: draft.dimensions[0].evidence.clone(),
             }],
         };

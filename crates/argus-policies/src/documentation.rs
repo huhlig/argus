@@ -620,17 +620,14 @@ impl DocumentationDimensionDraft {
             DocumentationComparison::MaterialOmission => {
                 self.status == DocumentationDimensionStatus::Deficient
                     && matches!(
-                        (self.documentation_coverage, self.source_materiality),
-                        (
-                            DocumentationCoverage::Omitted,
-                            SourceMateriality::MaterialBehavior
-                                | SourceMateriality::NotApplicable
-                        ) | (
-                            DocumentationCoverage::Partial,
-                            SourceMateriality::MaterialBehavior
-                                | SourceMateriality::NoMaterialBehavior
-                                | SourceMateriality::NotApplicable
-                        )
+                        self.documentation_coverage,
+                        DocumentationCoverage::Omitted | DocumentationCoverage::Partial
+                    )
+                    && matches!(
+                        self.source_materiality,
+                        SourceMateriality::MaterialBehavior
+                            | SourceMateriality::NoMaterialBehavior
+                            | SourceMateriality::NotApplicable
                     )
             }
             DocumentationComparison::UnableToVerify => {
