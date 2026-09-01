@@ -17,8 +17,10 @@ use crate::{
     ProviderError, ProviderHealth, StructuredOutputSupport,
 };
 use async_trait::async_trait;
+use futures::StreamExt;
 use langchart_adapters::llm::{
-    FinishReason, LlmAdapter, LlmError, LlmRequest, Message, ResponseFormat,
+    FinishReason, LlmAdapter, LlmError, LlmEventStream, LlmRequest, LlmResponse, LlmStreamEvent,
+    Message, ResponseFormat,
 };
 use langchart_llm_generic::GenericLlmAdapter;
 use langchart_llm_watsonx::{WatsonxAdapter, WatsonxConfig, WatsonxCredentials};
@@ -340,9 +342,9 @@ impl ModelProvider for LangchartModelProvider {
             prompt = %user_content,
             "Sending prompt to LLM provider"
         );
-        let response = self
+        let stream = self
             .adapter
-            .complete(LlmRequest {
+            .complete_stream(LlmRequest {
                 model_policy: ModelPolicy {
                     profile: None,
                     model: Some(self.capabilities.identity.model.clone()),
@@ -359,6 +361,7 @@ impl ModelProvider for LangchartModelProvider {
             })
             .await
             .map_err(map_error)?;
+        let response = drive_llm_stream(stream).await?;
         tracing::debug!(
             provider = %self.capabilities.identity.provider,
             model = %self.capabilities.identity.model,
@@ -653,6 +656,28 @@ fn repair_json_syntax(input: &str) -> String {
     }
 
     out
+}
+
+/// Drains a normalized LLM event stream, preferring true incremental streaming when the
+/// adapter supports it (its `stream_idle_timeout` then bounds the gap between deltas, a
+/// tighter hang signal than the total generation deadline alone) and transparently accepting
+/// the trait's buffered two-event fallback when it does not. Either way, only the terminal
+/// `ResponseCompleted` event carries a durable response; earlier deltas are provisional.
+async fn drive_llm_stream(mut stream: LlmEventStream) -> Result<LlmResponse, ProviderError> {
+    let mut delta_chars = 0usize;
+    while let Some(event) = stream.next().await {
+        match event.map_err(map_error)? {
+            LlmStreamEvent::ResponseCompleted { response } => return Ok(response),
+            LlmStreamEvent::TextDelta { delta } | LlmStreamEvent::ReasoningDelta { delta } => {
+                delta_chars += delta.chars().count();
+                tracing::trace!(chars_received = delta_chars, "LLM stream delta received");
+            }
+            _ => {}
+        }
+    }
+    Err(ProviderError::Unavailable(
+        "LLM stream ended before a completed response was received".to_owned(),
+    ))
 }
 
 #[allow(clippy::match_wildcard_for_single_variants)]

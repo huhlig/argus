@@ -44,6 +44,7 @@ tempfile = "3.27"
 redb = "4.2"
 ra_ap_syntax = "0.0.350"
 async-trait = "0.1"
+futures = "0.3"
 langchart-model = { git = "https://github.com/huhlig/langchart.git" }
 langchart-runtime = { git = "https://github.com/huhlig/langchart.git" }
 langchart-adapters = { git = "https://github.com/huhlig/langchart.git" }

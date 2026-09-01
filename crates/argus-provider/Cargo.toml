@@ -22,6 +22,7 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+futures.workspace = true
 langchart-adapters.workspace = true
 langchart-llm-generic.workspace = true
 langchart-llm-watsonx.workspace = true

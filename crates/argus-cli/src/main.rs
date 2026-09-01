@@ -2253,15 +2253,44 @@ where
                 )
                 .await;
 
-                let (result, duration) = match step_res {
-                    Ok(r) => r,
-                    Err(err) => return Err(err),
-                };
-
                 let item_label = limit.map_or_else(
                     || format!("{}", item_index + 1),
                     |l| format!("{}/{}", item_index + 1, l),
                 );
+
+                let (result, duration) = match step_res {
+                    Ok(r) => r,
+                    Err(err) => {
+                        // A step-level error (watchdog timeout, task panic) means this one item's
+                        // lease is abandoned and recoverable via 'argus resume'; it must not take
+                        // down the other workers still making progress in this pool, so it is
+                        // handled the same way as WorkerStepResult::Failed instead of propagating.
+                        failed.fetch_add(1, Ordering::SeqCst);
+                        metrics::counter!("argus.worker.failed", "policy" => category).increment(1);
+                        tracing::error!(
+                            policy = category,
+                            error = %err,
+                            "[{category}] Item {item_label} step failed: {err}"
+                        );
+                        let consecutive = consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
+                        if consecutive >= CIRCUIT_BREAKER_CONSECUTIVE_FAILURES {
+                            breaker_tripped.store(true, Ordering::SeqCst);
+                            tracing::error!(
+                                policy = category,
+                                provider = %provider_id,
+                                model = %model_id,
+                                consecutive_failures = consecutive,
+                                "[{category}] Aborting: {consecutive} consecutive work items failed \
+                                 with provider `{provider_id}` model `{model_id}` after exhausting \
+                                 their retry budgets. This provider/model combination is not \
+                                 producing usable output; stopping instead of continuing through \
+                                 the remaining queue. Run 'argus status' for failure details."
+                            );
+                            break;
+                        }
+                        continue;
+                    }
+                };
 
                 match result {
                     WorkerStepResult::Idle => {
