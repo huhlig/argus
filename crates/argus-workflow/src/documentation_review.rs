@@ -236,7 +236,7 @@ impl PolicyAssessmentContract for DocumentationAssessmentContract {
 }
 
 const DOCUMENTATION_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against the documentation policy rubric in two explicit stages:
-1. First, extract claims strictly from records whose kind is documentation. Never infer a documentation claim from a signature, source code, or expected API convention.
+1. First, extract claims strictly from records whose kind is documentation. Never infer a documentation claim from a signature, source code, or expected API convention. Identify all documentation, doc comments, and inline comments that mention, describe, or acknowledge gaps, inconsistencies, stubs, or unimplemented aspects.
 2. Next, compare those extracted claims and material omissions against records whose kind is source.
 
 You MUST evaluate all 14 distinct documentation dimensions exactly once in the `dimensions` array:
@@ -254,6 +254,14 @@ You MUST evaluate all 14 distinct documentation dimensions exactly once in the `
 12. accuracy: Consistency of doc statements with actual source behavior.
 13. currency: Up-to-date terminology, names, and references.
 14. value: Documentation clarity, completeness, and non-trivial informational value.
+
+Documented Gaps, Inconsistencies, Stubs, and Unimplemented Aspects:
+- You MUST identify all documentation, doc comments, and inline comments that describe, acknowledge, or note gaps, inconsistencies, stubs, or unimplemented aspects in the target declaration or implementation.
+- Mandatory Rule: All documented gaps, inconsistencies, stubs, or unimplemented aspects MUST be explicitly listed with `TODO` in the comments (e.g. `// TODO: ...` or `/// TODO: ...`).
+- If any gap, inconsistency, stub, or unimplemented aspect is documented or mentioned without being explicitly listed with `TODO` in the comments, it is a documentation defect:
+  * Mark the corresponding dimension (such as `behavior`, `value`, `purpose`, or `accuracy`) as `deficient` (using comparison `material_omission` or `contradictory`).
+  * Emit candidate findings detailing that the documented gap, inconsistency, stub, or unimplemented aspect is missing a `TODO` designation in the comments.
+- Furthermore, if source evidence shows unimplemented aspects, stubs, or gaps that are either omitted from documentation or documented without `TODO` in the comments, report them as candidate findings.
 
 For each dimension:
 - Set `documentation_coverage` from documentation evidence alone: "stated" (materially complete), "partial" (documentation says something about this dimension but omits material detail — e.g. a high-level claim without the mechanics behind it), "omitted" (documentation is silent), "unable_to_verify", or "not_applicable". Never infer stated or partial coverage from source.
@@ -274,7 +282,7 @@ Evidence Citation Rules:
 - In `findings[].evidence`: You MUST cite BOTH at least one documentation evidence ID and at least one source evidence ID.
 
 Decision Rules:
-- If ANY dimension is deficient (due to material omission or contradictory documentation):
+- If ANY dimension is deficient (due to material omission, contradictory documentation, or failure to list documented gaps/stubs/unimplemented aspects with `TODO` in comments):
   * Emit `event_type: "review.candidate_found"`
   * Set `assessment.result` to `{"state": "candidate_findings", "findings": [...]}` with finding entries for each defect.
 - If all 14 dimensions are satisfied or not applicable:
@@ -955,5 +963,11 @@ mod tests {
         ] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn documentation_instructions_require_listing_gaps_stubs_and_unimplemented_aspects_with_todo() {
+        assert!(DOCUMENTATION_INSTRUCTIONS.contains("gaps, inconsistencies, stubs, or unimplemented aspects"));
+        assert!(DOCUMENTATION_INSTRUCTIONS.contains("listed with `TODO` in the comments"));
     }
 }

@@ -242,6 +242,16 @@ You MUST evaluate all 9 standard correctness dimensions:
 8. unsafe_assumptions: Implicit or unverified preconditions, bounds, or caller assumptions.
 9. boundary_conditions: Edge cases, empty inputs, limits, overflows, and off-by-one behavior.
 
+Gaps, Inconsistencies, Stubs, and Unimplemented Aspects:
+- You MUST actively inspect the code for any gaps, inconsistencies, stubs, and unimplemented aspects:
+  * Stubs & unimplemented aspects: `todo!()`, `unimplemented!()`, placeholder or mock return values, empty or incomplete function/handler bodies, and partial implementations that do not fulfill declared contracts.
+  * Gaps: Missing behavior that the documentation specifies or that is implied by the function's scope, missing branches, unhandled error variants, missing state transitions, dropped operations, and incomplete validations.
+  * Inconsistencies: Contradictory state handling, asymmetric operations, conflicting invariant checks, and mismatched preconditions/postconditions.
+- Surfacing and Reporting Rule:
+  * Gaps, inconsistencies, stubs, and unimplemented aspects in the code MUST ALWAYS be surfaced and reported as deficient dimensions and candidate findings, including when they are documented, commented, or intentional (e.g. marked with comments like `// TODO`, `// stub`, or described in doc comments/specifications).
+  * Being documented means the item is not necessarily broken or erroneous code, but it is an indication of future work that MUST be surfaced so it can be documented at the top level and placed in the backlog if not already there.
+  * Never classify an unimplemented aspect, stub, gap, or inconsistency as satisfied or omit it simply because it is documented; always surface it as a candidate finding so it remains visible for backlog tracking and top-level documentation.
+
 Decision Rules:
 - For each dimension, provide dimension name, status ("satisfied", "deficient", "unable_to_verify", or "not_applicable"), rationale, and source evidence citation IDs.
 - If ANY dimension is deficient, emit `review.candidate_found` with the assessment containing the candidate findings for each defect found.
@@ -490,5 +500,13 @@ mod tests {
         ] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn correctness_instructions_require_reporting_gaps_stubs_and_unimplemented_aspects_even_if_documented() {
+        assert!(CORRECTNESS_INSTRUCTIONS.contains("gaps, inconsistencies, stubs, and unimplemented aspects"));
+        assert!(CORRECTNESS_INSTRUCTIONS.contains("Missing behavior that the documentation specifies or that is implied by the function's scope"));
+        assert!(CORRECTNESS_INSTRUCTIONS.contains("MUST ALWAYS be surfaced and reported"));
+        assert!(CORRECTNESS_INSTRUCTIONS.contains("indication of future work that MUST be surfaced so it can be documented at the top level and placed in the backlog"));
     }
 }
