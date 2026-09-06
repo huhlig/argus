@@ -21,19 +21,27 @@ use langchart_adapters::llm::LlmAdapter;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
+/// Schema version for provider runtime profiles.
 pub const PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION: u32 = 1;
+/// Schema version for provider configuration files.
 pub const PROVIDER_CONFIG_SCHEMA_VERSION: u32 = 1;
 
+/// Configuration options and capacity parameters for an individual model within a provider.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderModelConfig {
+    /// Token capacity of the context window.
     #[serde(default = "default_context_window")]
     pub context_window_tokens: u32,
+    /// Maximum completion tokens supported in a single response.
     #[serde(default = "default_max_output_tokens")]
     pub max_output_tokens: u32,
+    /// Level of structured output support (overrides transport default if set).
     #[serde(default)]
     pub structured_output: Option<StructuredOutputSupport>,
+    /// Maximum concurrent in-flight requests permitted for this model.
     #[serde(default = "default_concurrency_capacity")]
     pub concurrency_capacity: u32,
+    /// Alternative aliases or names mapping to this model (e.g. "default", "fast").
     #[serde(default)]
     pub aliases: Vec<String>,
 }
@@ -50,16 +58,23 @@ const fn default_concurrency_capacity() -> u32 {
     1
 }
 
+/// Declarative provider configuration defining transport endpoints, default policies, and models.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderConfig {
+    /// Configuration schema version.
     #[serde(default = "default_provider_config_schema_version")]
     pub schema_version: u32,
+    /// Provider identifier (e.g. "anthropic", "openai", "ollama").
     pub provider: String,
+    /// Transport connection and authentication profile.
     pub transport: ProviderTransportProfile,
+    /// Default governing policy if not overridden per review run.
     #[serde(default)]
     pub default_policy: Option<ProviderPolicy>,
+    /// Default output repair policy.
     #[serde(default)]
     pub default_repair: Option<RepairPolicy>,
+    /// Map of model identifiers to their configurations.
     #[serde(default)]
     pub models: BTreeMap<String, ProviderModelConfig>,
 }
@@ -69,6 +84,11 @@ const fn default_provider_config_schema_version() -> u32 {
 }
 
 impl ProviderConfig {
+    /// Resolves a concrete [`ProviderRuntimeProfile`] for a requested model ID or alias.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the model is not configured or profile validation fails.
     pub fn resolve_runtime_profile(
         &self,
         model_selector: Option<&str>,
@@ -191,60 +211,93 @@ impl ProviderConfig {
     }
 }
 
+/// Complete runtime specification binding provider capabilities, policy, repair settings, and transport.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderRuntimeProfile {
+    /// Runtime profile schema version.
     pub schema_version: u32,
+    /// Advertised provider capabilities.
     pub capabilities: ProviderCapabilities,
+    /// Execution policy constraints.
     pub policy: ProviderPolicy,
+    /// Corrective output repair policy.
     pub repair: RepairPolicy,
+    /// Transport connection profile.
     pub transport: ProviderTransportProfile,
 }
 
+/// Transport-specific connection parameters and credential specifications.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderTransportProfile {
+    /// Anthropic Messages API transport.
     Anthropic {
+        /// API key or environment variable reference (`$ENV_VAR`).
         #[serde(alias = "api_key_env")]
         api_key: String,
     },
+    /// OpenAI Chat Completions API transport.
     Openai {
+        /// API key or environment variable reference (`$ENV_VAR`).
         #[serde(alias = "api_key_env")]
         api_key: String,
     },
+    /// Local Ollama daemon transport.
     Ollama {
+        /// Base URL for the Ollama API (defaults to `http://localhost:11434`).
         base_url: Option<String>,
     },
+    /// Local Lemonade proxy server transport.
     Lemonade {
+        /// Base URL for Lemonade server.
         base_url: Option<String>,
+        /// Optional API key for Lemonade endpoint.
         #[serde(default, alias = "api_key_env")]
         api_key: Option<String>,
+        /// Optional request timeout in seconds.
         #[serde(default)]
         request_timeout_seconds: Option<u64>,
     },
+    /// Local LM Studio server transport.
     LmStudio {
+        /// Base URL for LM Studio API (defaults to `http://localhost:1234`).
         base_url: Option<String>,
+        /// Optional API key.
         #[serde(default, alias = "api_key_env")]
         api_key: Option<String>,
     },
+    /// IBM watsonx.ai enterprise transport.
     Watsonx {
+        /// Base service URL for watsonx endpoint.
         service_url: String,
+        /// API version date string.
         api_version: String,
+        /// Project or deployment space scope.
         scope: WatsonxScopeProfile,
+        /// Authentication credential specification.
         credential: WatsonxCredentialProfile,
     },
+    /// AWS Bedrock Converse API transport.
     Bedrock {
+        /// AWS region (defaults to `${AWS_REGION:-us-east-1}`).
         #[serde(default = "default_bedrock_region")]
         region: String,
+        /// AWS access key ID.
         #[serde(default, alias = "access_key_id_env")]
         access_key_id: Option<String>,
+        /// AWS secret access key.
         #[serde(default, alias = "secret_access_key_env")]
         secret_access_key: Option<String>,
+        /// AWS session token for temporary credentials.
         #[serde(default, alias = "session_token_env")]
         session_token: Option<String>,
+        /// AWS bearer token if using web identity.
         #[serde(default, alias = "bearer_token_env")]
         bearer_token: Option<String>,
+        /// Optional custom endpoint URL.
         #[serde(default)]
         endpoint_url: Option<String>,
+        /// Named AWS configuration profile.
         #[serde(default)]
         profile_name: Option<String>,
     },
@@ -254,30 +307,50 @@ fn default_bedrock_region() -> String {
     "${AWS_REGION:-us-east-1}".to_owned()
 }
 
+/// Scope targeting for IBM watsonx.ai workloads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum WatsonxScopeProfile {
+    /// Watsonx project identifier.
     Project(String),
+    /// Watsonx deployment space identifier.
     Space(String),
 }
 
+/// Credential specification for IBM watsonx.ai authentication.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum WatsonxCredentialProfile {
+    /// IBM Cloud API key.
     ApiKey(String),
+    /// Direct IAM bearer token.
     BearerToken(String),
 }
 
+/// Materialized provider instance and LangChart LLM adapter ready for execution.
 pub struct BuiltProviderRuntime {
+    /// Governed model provider adapter.
     pub provider: Arc<LangchartModelProvider>,
+    /// Underling LangChart LLM adapter.
     pub adapter: Arc<dyn LlmAdapter>,
 }
 
 impl ProviderRuntimeProfile {
+    /// Instantiates the provider runtime, resolving credentials from environment variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if credentials cannot be resolved or provider construction fails.
     pub fn build_from_environment(&self) -> Result<BuiltProviderRuntime, ProviderError> {
         self.build_with_secrets(|name| std::env::var(name).ok())
     }
 
+    /// Instantiates the provider runtime using a custom secret resolver callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if required secrets are missing, capabilities fail validation,
+    /// or transport initialization fails.
     pub fn build_with_secrets(
         &self,
         mut read_secret: impl FnMut(&str) -> Option<String>,

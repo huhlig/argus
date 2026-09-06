@@ -30,47 +30,81 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+/// Current schema version for recovery manifests.
 pub const RECOVERY_MANIFEST_SCHEMA_VERSION: u32 = 1;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// Immutable identity and content hash for a workflow artifact.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowArtifactIdentity {
+    /// Document identifier assigned to the workflow.
     pub workflow_id: String,
+    /// Semantic version of the workflow document.
     pub workflow_version: String,
+    /// BLAKE3 hexadecimal content digest of the serialized workflow source.
     pub content_hash: String,
 }
 
+/// Identifies an actor bound to an agentic state within a workflow document.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ActorIdentity {
+    /// State identifier within the workflow definition.
     pub state_id: String,
+    /// Identifier of the actor executing within the state.
     pub actor_id: String,
+    /// Version string of the actor implementation.
     pub actor_version: String,
 }
 
+/// Manifest capturing the complete provenance and configuration needed to recover and resume a workflow run.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RecoveryManifest {
+    /// Recovery manifest schema version.
     pub schema_version: u32,
+    /// Schema version of the associated review workflow data.
     pub workflow_data_schema_version: u32,
+    /// Unique LangChart execution run identifier.
     pub langchart_run_id: String,
+    /// Snapshot identifier under audit.
     pub audit_snapshot: SnapshotId,
+    /// Audit run identifier.
     pub audit_run: AuditRunId,
+    /// Work item identifier corresponding to this execution.
     pub work_id: WorkItemId,
+    /// Identity and content hash of the executing workflow document.
     pub workflow: WorkflowArtifactIdentity,
+    /// Registered actor identities participating in this workflow.
     pub actors: Vec<ActorIdentity>,
+    /// Provider executing model inference.
     pub provider: ProviderIdentity,
+    /// Provider policy constraints.
     pub provider_policy: ProviderPolicy,
+    /// Version of the active policy.
     pub policy_version: String,
+    /// Version of prompt templates applied during execution.
     pub prompt_version: String,
+    /// Revision number of the evidence bundle.
     pub evidence_revision: u32,
+    /// Version of the LangChart runtime engine.
     pub langchart_runtime_version: String,
 }
 
+/// Filesystem-backed storage for workflow documents and execution recovery manifests.
+///
+/// Ensures immutable, content-addressed persistence of workflow sources and recovery manifests.
 #[derive(Debug)]
 pub struct RecoveryStore {
     state_directory: PathBuf,
 }
 
 impl RecoveryStore {
+    /// Opens or initializes a recovery store at the specified root directory.
+    ///
+    /// Creates the `workflows/` and `recovery/` subdirectories if they do not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError::Io`] if creating the required directories fails.
     pub fn open(state_directory: &Path) -> Result<Self, RecoveryError> {
         fs::create_dir_all(state_directory.join("workflows")).map_err(RecoveryError::Io)?;
         fs::create_dir_all(state_directory.join("recovery")).map_err(RecoveryError::Io)?;
@@ -79,10 +113,24 @@ impl RecoveryStore {
         })
     }
 
+    /// Stores the built-in target review workflow definition immutably.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError`] if parsing, compiling, or writing the workflow fails.
     pub fn store_target_review(&self) -> Result<WorkflowArtifactIdentity, RecoveryError> {
         self.store_workflow(target_review_source().as_bytes())
     }
 
+    /// Parses, validates, compiles, and immutably stores a workflow document from serialized JSON bytes.
+    ///
+    /// Content is indexed by its BLAKE3 hex digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError::Json`] if the input is not valid JSON,
+    /// [`RecoveryError::Compile`] if workflow compilation fails, or
+    /// [`RecoveryError::Conflict`] if a conflicting file already exists under the same digest.
     pub fn store_workflow(&self, source: &[u8]) -> Result<WorkflowArtifactIdentity, RecoveryError> {
         let document: WorkflowDocument =
             serde_json::from_slice(source).map_err(RecoveryError::Json)?;
@@ -97,6 +145,12 @@ impl RecoveryStore {
         Ok(identity)
     }
 
+    /// Extracts and validates all actor identities declared within a stored workflow.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError`] if the workflow document cannot be loaded, or
+    /// [`RecoveryError::Invalid`] if duplicate state IDs are detected.
     pub fn actor_identities(
         &self,
         workflow: &WorkflowArtifactIdentity,
@@ -116,12 +170,25 @@ impl RecoveryStore {
         Ok(actors)
     }
 
+    /// Immutably records a recovery manifest for an execution run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError::Invalid`] if manifest fields are malformed,
+    /// or [`RecoveryError::Conflict`] if an incompatible record already exists for the run.
     pub fn write_manifest(&self, manifest: &RecoveryManifest) -> Result<(), RecoveryError> {
         self.validate_manifest(manifest)?;
         let bytes = serde_json::to_vec_pretty(manifest).map_err(RecoveryError::Json)?;
         write_immutable(&self.manifest_path(&manifest.langchart_run_id), &bytes)
     }
 
+    /// Loads and validates a recovery manifest for a given LangChart run identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError::Io`] if the manifest file cannot be read,
+    /// [`RecoveryError::Json`] if deserialization fails, or
+    /// [`RecoveryError::Invalid`] if the content fails validation.
     pub fn load_manifest(&self, langchart_run_id: &str) -> Result<RecoveryManifest, RecoveryError> {
         let bytes = fs::read(self.manifest_path(langchart_run_id)).map_err(RecoveryError::Io)?;
         let manifest: RecoveryManifest =
@@ -135,6 +202,11 @@ impl RecoveryStore {
         Ok(manifest)
     }
 
+    /// Loads a stored workflow document and compiles it into executable form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError`] if loading or compiling the workflow document fails.
     pub fn load_compiled(
         &self,
         workflow: &WorkflowArtifactIdentity,
@@ -309,12 +381,18 @@ fn write_immutable(path: &Path, bytes: &[u8]) -> Result<(), RecoveryError> {
     }
 }
 
+/// Errors encountered during workflow document and recovery manifest operations.
 #[derive(Debug)]
 pub enum RecoveryError {
+    /// Underlying filesystem I/O error.
     Io(std::io::Error),
+    /// Failed to serialize or deserialize JSON data.
     Json(serde_json::Error),
+    /// Failed to compile a workflow document.
     Compile(langchart_model::error::CompileError),
+    /// Manifest or workflow data failed semantic validation.
     Invalid(String),
+    /// A conflicting immutable record already exists at the target path with different contents.
     Conflict(PathBuf),
 }
 

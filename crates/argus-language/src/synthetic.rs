@@ -21,25 +21,38 @@ use argus_core::{
     SourcePath, Target, TargetId, TargetKind,
 };
 
+/// Operational mode for synthetic adapters used in testing and simulation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyntheticMode {
+    /// Normal operation: emits complete inventory without errors.
     Complete,
+    /// Simulates a conflict between providers.
     Conflict,
+    /// Simulates partial capability availability with diagnostic message.
     Partial,
+    /// Simulates entirely unavailable language capabilities.
     Unavailable,
+    /// Simulates a failed discovery partition.
     Failed,
+    /// Emits malformed inventory data pointing outside the snapshot.
     Malformed,
+    /// Injects an unhandled crash/invariant error during discovery.
     Crash,
 }
 
+/// Test double implementing [`LanguageAdapter`] with configurable synthetic behaviors.
 #[derive(Clone, Debug)]
 pub struct SyntheticAdapter {
+    /// Adapter identifier name.
     pub name: String,
+    /// Simulation mode governing discovery outcome.
     pub mode: SyntheticMode,
+    /// Synthetic source file path to emit as target location.
     pub path: SourcePath,
 }
 
 impl SyntheticAdapter {
+    /// Creates a new synthetic adapter with the given name, mode, and target source path.
     pub fn new(name: impl Into<String>, mode: SyntheticMode, path: SourcePath) -> Self {
         Self {
             name: name.into(),

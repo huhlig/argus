@@ -21,11 +21,19 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::Semaphore;
 
+/// Pluggable validator that checks model JSON output against a target JSON schema.
 pub trait OutputValidator: Send + Sync {
+    /// Validates `output` against `schema`, returning `Ok(())` on success or an error explanation string.
     fn validate(&self, schema: &Value, output: &Value) -> Result<(), String>;
 }
 
+/// Destination sink for telemetry emitted during model execution.
 pub trait ProviderTelemetrySink: Send + Sync {
+    /// Publishes an updated telemetry snapshot for the specified provider identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if publication fails.
     fn publish(
         &self,
         identity: &ProviderIdentity,
@@ -42,30 +50,49 @@ where
     }
 }
 
+/// Configuration policy governing retry and prompt-repair behavior on invalid JSON output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RepairPolicy {
+    /// Maximum number of corrective repair round-trips to attempt before failing.
     pub max_repair_attempts: u32,
 }
 
+/// Cumulative execution telemetry and operational health metrics for a provider.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderTelemetry {
+    /// Most recent health check result.
     pub last_health: Option<ProviderHealth>,
+    /// Total inference requests initiated.
     pub requests: u64,
+    /// Total successful requests that passed validation.
     pub successes: u64,
+    /// Total failed requests (network, budget, or unrecoverable output).
     pub failures: u64,
+    /// Number of corrective repair prompts dispatched.
     pub repair_attempts: u64,
+    /// Cumulative round-trip latency in milliseconds across all calls.
     pub provider_call_millis: u64,
+    /// Cumulative input tokens consumed.
     pub input_tokens: u64,
+    /// Cumulative output tokens generated.
     pub output_tokens: u64,
+    /// Cumulative estimated cost in micro-USD ($0.000001).
     pub estimated_cost_microusd: u64,
+    /// Responses that lacked token usage reporting.
     pub unreported_token_responses: u64,
+    /// Responses that lacked estimated cost reporting.
     pub unreported_cost_responses: u64,
+    /// Requests currently waiting for a concurrency permit.
     pub waiting: u64,
+    /// Peak number of concurrent requests waiting for a permit.
     pub peak_waiting: u64,
+    /// Requests currently executing against the model provider.
     pub in_flight: u64,
+    /// Peak number of concurrent requests in flight.
     pub peak_in_flight: u64,
 }
 
+/// Governed execution harness wrapping a [`ModelProvider`] with concurrency, budget, and validation controls.
 pub struct ProviderExecutor {
     provider: Arc<dyn ModelProvider>,
     expected_identity: ProviderIdentity,
@@ -78,6 +105,12 @@ pub struct ProviderExecutor {
 }
 
 impl ProviderExecutor {
+    /// Creates a new provider executor, authorizing the provider against policy and verifying identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the provider fails policy authorization, identity verification,
+    /// or if the provider's advertised identity does not match `expected_identity`.
     pub fn new(
         provider: Arc<dyn ModelProvider>,
         expected_identity: ProviderIdentity,
@@ -106,6 +139,7 @@ impl ProviderExecutor {
         })
     }
 
+    /// Attaches an optional telemetry sink for streaming telemetry metrics.
     #[must_use]
     pub fn with_telemetry_sink(mut self, sink: Arc<dyn ProviderTelemetrySink>) -> Self {
         self.telemetry_sink = Some(sink);
@@ -132,6 +166,12 @@ impl ProviderExecutor {
         })
     }
 
+    /// Executes a model request through the configured provider subject to policy, budget, and validation rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if concurrency permits cannot be acquired, execution fails,
+    /// budget is exceeded, or output cannot be repaired to conform to the expected schema.
     pub async fn execute(&self, request: ModelRequest) -> Result<ModelResponse, ProviderError> {
         self.execute_with_provider(self.provider.as_ref(), request)
             .await
@@ -257,21 +297,25 @@ impl ProviderExecutor {
         }
     }
 
+    /// Returns a point-in-time snapshot of provider execution telemetry.
     #[must_use]
     pub fn telemetry(&self) -> ProviderTelemetry {
         lock(&self.telemetry).clone()
     }
 
+    /// Returns the capabilities advertised by the underlying provider.
     #[must_use]
     pub fn capabilities(&self) -> &ProviderCapabilities {
         self.provider.capabilities()
     }
 
+    /// Returns the expected provider and model identity.
     #[must_use]
     pub const fn expected_identity(&self) -> &ProviderIdentity {
         &self.expected_identity
     }
 
+    /// Returns the governing provider policy.
     #[must_use]
     pub const fn policy(&self) -> &ProviderPolicy {
         &self.policy

@@ -16,12 +16,16 @@ use crate::{ModelSubstitution, ProviderError, ProviderIdentity};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Binding between a workflow partition (or review role) and a specific provider/model identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelAssignment {
+    /// Name of the workflow partition (e.g. "primary", "verification").
     pub partition: String,
+    /// Provider identity assigned to execute this partition.
     pub provider: ProviderIdentity,
 }
 
+/// Ledger tracking model-to-partition assignments across a review run according to substitution policy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelAssignmentBook {
     substitution: ModelSubstitution,
@@ -29,6 +33,7 @@ pub struct ModelAssignmentBook {
 }
 
 impl ModelAssignmentBook {
+    /// Creates a new assignment book enforcing the specified substitution rule.
     #[must_use]
     pub fn new(substitution: ModelSubstitution) -> Self {
         Self {
@@ -37,6 +42,15 @@ impl ModelAssignmentBook {
         }
     }
 
+    /// Assigns a provider to a partition, enforcing stability and substitution constraints.
+    ///
+    /// Returns `Ok(true)` if a new assignment was recorded, or `Ok(false)` if the partition was
+    /// already assigned to the exact same provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::SubstitutionDenied`] if the partition is already pinned to a different
+    /// provider, or if the run is [`ModelSubstitution::Pinned`] and a different model is attempted.
     pub fn assign(
         &mut self,
         partition: &str,
@@ -68,6 +82,7 @@ impl ModelAssignmentBook {
         Ok(true)
     }
 
+    /// Returns a list of all active partition-to-provider assignments.
     #[must_use]
     pub fn assignments(&self) -> Vec<ModelAssignment> {
         self.assignments

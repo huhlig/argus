@@ -16,12 +16,20 @@ use crate::{DriftKind, DriftRecord, DriftReport, SnapshotManifest};
 use argus_core::{ContentHash, SnapshotId, SourcePath};
 use std::{fs, path::PathBuf};
 
+/// Filesystem-backed content-addressed store for source blobs and snapshot manifests.
 #[derive(Clone, Debug)]
 pub struct SnapshotRepository {
     root: PathBuf,
 }
 
 impl SnapshotRepository {
+    /// Opens or initializes a snapshot repository at the specified directory path.
+    ///
+    /// Creates `blobs/` and `snapshots/` subdirectories if they do not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if creating repository directories fails.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, argus_core::ArgusError> {
         let repository = Self { root: root.into() };
         fs::create_dir_all(repository.root.join("blobs"))
@@ -31,6 +39,11 @@ impl SnapshotRepository {
         Ok(repository)
     }
 
+    /// Stores a source blob immutably indexed by its content hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if writing or renaming the blob file fails.
     pub fn write_blob(
         &self,
         hash: &ContentHash,
@@ -55,6 +68,11 @@ impl SnapshotRepository {
         }
     }
 
+    /// Immutably records a snapshot manifest JSON file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if serializing or writing the manifest fails.
     pub fn write_manifest(
         &self,
         manifest: &SnapshotManifest,
@@ -71,6 +89,11 @@ impl SnapshotRepository {
         fs::rename(temporary, destination).map_err(io_error("cannot commit snapshot manifest"))
     }
 
+    /// Loads and validates a snapshot manifest by its identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if reading, deserializing, or validating the manifest fails.
     pub fn load_manifest(
         &self,
         id: &SnapshotId,
@@ -94,6 +117,7 @@ impl SnapshotRepository {
         Ok(manifest)
     }
 
+    /// Creates a [`SourceReader`] for accessing files described by the given manifest.
     #[must_use]
     pub fn reader(&self, manifest: SnapshotManifest) -> SourceReader {
         SourceReader {
@@ -108,6 +132,7 @@ impl SnapshotRepository {
     }
 }
 
+/// Reader providing content and range access to files within a snapshot.
 #[derive(Clone, Debug)]
 pub struct SourceReader {
     repository: SnapshotRepository,
@@ -115,11 +140,13 @@ pub struct SourceReader {
 }
 
 impl SourceReader {
+    /// Returns the snapshot identifier backing this reader.
     #[must_use]
     pub fn snapshot_id(&self) -> &SnapshotId {
         &self.manifest.id
     }
 
+    /// Checks whether the snapshot contains readable content for the given relative path.
     #[must_use]
     pub fn contains(&self, path: &SourcePath) -> bool {
         self.manifest
@@ -128,6 +155,12 @@ impl SourceReader {
             .is_some_and(|record| record.content.is_some())
     }
 
+    /// Reads the raw file bytes for a relative path from the content-addressed blob store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if the file is not in the snapshot, has no readable
+    /// content, cannot be read from disk, or fails content hash verification.
     pub fn read(&self, path: &SourcePath) -> Result<Vec<u8>, argus_core::ArgusError> {
         let record = self.manifest.files.get(path).ok_or_else(|| {
             argus_core::ArgusError::invalid_input("path is not present in snapshot")
@@ -145,6 +178,11 @@ impl SourceReader {
         Ok(bytes)
     }
 
+    /// Reads a sub-slice of bytes for a file given a byte span.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if reading fails or the span is out of bounds.
     pub fn read_range(
         &self,
         path: &SourcePath,
@@ -161,16 +199,27 @@ impl SourceReader {
             .ok_or_else(|| argus_core::ArgusError::invalid_input("source range is out of bounds"))
     }
 
+    /// Reads a source file as a UTF-8 string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if reading fails or contents are not valid UTF-8.
     pub fn read_text(&self, path: &SourcePath) -> Result<String, argus_core::ArgusError> {
         String::from_utf8(self.read(path)?).map_err(|error| {
             argus_core::ArgusError::unsupported("source content is not UTF-8").with_source(error)
         })
     }
 
+    /// Builds a [`LineIndex`] for line-and-column lookups into the specified file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if reading the file fails.
     pub fn line_index(&self, path: &SourcePath) -> Result<LineIndex, argus_core::ArgusError> {
         Ok(LineIndex::new(&self.read(path)?))
     }
 
+    /// Compares on-disk files rooted at `root` against the snapshot manifest to detect drift.
     #[must_use]
     pub fn detect_drift(&self, root: &std::path::Path) -> DriftReport {
         let mut report = DriftReport::default();
@@ -205,12 +254,14 @@ impl SourceReader {
     }
 }
 
+/// Zero-based index of newline offsets within a byte buffer for fast line lookup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LineIndex {
     starts: Vec<u64>,
 }
 
 impl LineIndex {
+    /// Constructs a line index by scanning for newline byte positions.
     #[must_use]
     pub fn new(bytes: &[u8]) -> Self {
         let mut starts = vec![0];
@@ -222,11 +273,13 @@ impl LineIndex {
         Self { starts }
     }
 
+    /// Returns the zero-based byte offset where the specified line starts.
     #[must_use]
     pub fn line_start(&self, zero_based_line: usize) -> Option<u64> {
         self.starts.get(zero_based_line).copied()
     }
 
+    /// Returns the total number of lines indexed.
     #[must_use]
     pub fn line_count(&self) -> usize {
         self.starts.len()

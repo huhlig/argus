@@ -17,24 +17,35 @@ use argus_core::{ContentHash, EvidenceRecord, SnapshotId};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 
+/// Sensitivity and compliance classification for evidence items.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataClassification {
+    /// Publicly shareable data without sensitivity constraints.
     Public,
+    /// Internal project data suitable for standard review pipelines.
     Internal,
+    /// Sensitive data requiring policy authorization to expose.
     Sensitive,
+    /// Restricted data subject to strict confidentiality rules.
     Restricted,
 }
 
+/// Metadata envelope wrapping an [`EvidenceRecord`] with snapshot provenance and classification.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceEnvelope {
+    /// Schema version for evidence envelopes.
     pub schema_version: u32,
+    /// Snapshot identifier where the evidence was captured.
     pub snapshot: SnapshotId,
+    /// Security classification of the enclosed evidence.
     pub classification: DataClassification,
+    /// The core evidence record payload.
     pub record: EvidenceRecord,
 }
 
 impl EvidenceEnvelope {
+    /// Constructs a new envelope using the current schema version.
     #[must_use]
     pub const fn current(
         snapshot: SnapshotId,
@@ -49,6 +60,11 @@ impl EvidenceEnvelope {
         }
     }
 
+    /// Validates schema version and runs semantic validation on the inner evidence record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if the schema version is unsupported or the record is invalid.
     pub fn validate(&self) -> Result<(), argus_core::ArgusError> {
         if self.schema_version != EVIDENCE_SCHEMA_VERSION {
             return Err(argus_core::ArgusError::unsupported(format!(
@@ -68,19 +84,29 @@ impl EvidenceEnvelope {
     }
 }
 
+/// A validated evidence envelope retrieved from storage along with its content hash and byte size.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredEvidence {
+    /// BLAKE3 content hash of the serialized envelope.
     pub hash: ContentHash,
+    /// The retrieved envelope.
     pub envelope: EvidenceEnvelope,
+    /// Canonical size in bytes of the serialized JSON envelope.
     pub canonical_bytes: usize,
 }
 
+/// Filesystem-backed, content-addressed storage for evidence envelopes.
 #[derive(Clone, Debug)]
 pub struct EvidenceStore {
     root: PathBuf,
 }
 
 impl EvidenceStore {
+    /// Opens or initializes an evidence store at the specified root directory path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if directory creation fails.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, argus_core::ArgusError> {
         let store = Self { root: root.into() };
         fs::create_dir_all(store.root.join("objects"))
@@ -88,6 +114,11 @@ impl EvidenceStore {
         Ok(store)
     }
 
+    /// Immutably stores an evidence envelope and returns its content hash digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if validation fails or filesystem writes encounter an error.
     pub fn put(&self, envelope: &EvidenceEnvelope) -> Result<ContentHash, argus_core::ArgusError> {
         let bytes = envelope.canonical_bytes()?;
         let hash = ContentHash::digest(&bytes);
@@ -118,6 +149,11 @@ impl EvidenceStore {
         }
     }
 
+    /// Loads and verifies a stored evidence envelope by its content hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if reading fails, hash mismatch occurs, or validation fails.
     pub fn get(&self, hash: &ContentHash) -> Result<StoredEvidence, argus_core::ArgusError> {
         let bytes =
             fs::read(self.object_path(hash)).map_err(io_error("cannot read evidence object"))?;

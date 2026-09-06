@@ -17,87 +17,146 @@ use argus_core::{ConfigurationId, ContentHash, EvidenceKind, PolicyId, SnapshotI
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// Availability status of an evidence candidate evaluated for package inclusion.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CandidateAvailability {
+    /// Full evidence content is available in storage.
     Available,
+    /// Only a summarized representation is available.
     Summarized,
+    /// Partial evidence content is available.
     Partial,
+    /// Evidence could not be produced or is missing.
     Unavailable,
 }
 
+/// Potential piece of evidence submitted for budget and policy packaging evaluation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvidenceCandidate {
+    /// Stored content hash, or `None` if content is unavailable.
     pub hash: Option<ContentHash>,
+    /// Classification kind of the evidence.
     pub kind: EvidenceKind,
+    /// Priority weighting (higher values prioritized during budget truncation).
     pub priority: u16,
+    /// Relationship traversal distance from the target under review.
     pub relation_depth: u32,
+    /// Estimated token count consumed by this evidence item.
     pub estimated_tokens: usize,
+    /// Availability status reported by the evidence producer.
     pub availability: CandidateAvailability,
+    /// Optional explanatory note or omission reason.
     pub reason: Option<String>,
 }
 
+/// Token, byte, and traversal constraints enforced when assembling an evidence package.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceBudget {
+    /// Maximum total canonical bytes allowed across all included items.
     pub max_bytes: usize,
+    /// Maximum total estimated tokens allowed across all included items.
     pub max_tokens: usize,
+    /// Maximum number of evidence items allowed in the package.
     pub max_items: usize,
+    /// Maximum relation traversal depth permitted.
     pub max_relation_depth: u32,
 }
 
+/// Policy constraints specifying allowed and required evidence categories.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PolicyEvidenceRequirements {
+    /// Set of evidence kinds permitted by the policy.
     pub allowed_kinds: BTreeSet<EvidenceKind>,
+    /// Set of evidence kinds that must be present in the package.
     pub required_kinds: BTreeSet<EvidenceKind>,
+    /// Highest data classification label permitted in the package.
     pub maximum_classification: DataClassification,
 }
 
+/// Final packaging disposition of an evidence candidate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceDisposition {
+    /// Fully included in the evidence package.
     Included,
+    /// Included in summarized form.
     Summarized,
+    /// Included with truncated or partial content.
     Partial,
+    /// Omitted because package budget limits (tokens, bytes, or item count) were reached.
     OmittedBudget,
+    /// Omitted because policy forbids this kind or classification.
     OmittedPolicy,
+    /// Omitted because the evidence was unavailable.
     Unavailable,
 }
 
+/// Record of an individual evidence item and its packaging disposition.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EvidencePackageItem {
+    /// Stored content hash if available.
     pub hash: Option<ContentHash>,
+    /// Kind of evidence.
     pub kind: EvidenceKind,
+    /// Packaging outcome for this item.
     pub disposition: EvidenceDisposition,
+    /// Actual canonical bytes in storage.
     pub canonical_bytes: usize,
+    /// Estimated tokens for LLM context inclusion.
     pub estimated_tokens: usize,
+    /// Relation distance from the target under review.
     pub relation_depth: u32,
+    /// Reason explaining omission, truncation, or status.
     pub reason: Option<String>,
 }
 
+/// Immutable, deterministic bundle of evidence prepared for an automated review run.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EvidencePackage {
+    /// Schema version for evidence packages.
     pub schema_version: u32,
+    /// Monotonically increasing revision number (1 for initial package).
     pub revision: u32,
+    /// Content hash of the previous revision package, if this is an expansion.
     pub previous_package: Option<ContentHash>,
+    /// Snapshot under audit.
     pub snapshot: SnapshotId,
+    /// Configuration under audit.
     pub configuration: ConfigurationId,
+    /// Target item being reviewed.
     pub target: TargetId,
+    /// Policy identifier governing the review.
     pub policy: PolicyId,
+    /// Version string of the review policy.
     pub policy_version: String,
+    /// Constraints applied during package assembly.
     pub budget: EvidenceBudget,
+    /// Total canonical bytes consumed by included items.
     pub used_bytes: usize,
+    /// Total estimated tokens consumed by included items.
     pub used_tokens: usize,
+    /// Complete list of evaluated candidates and their dispositions.
     pub items: Vec<EvidencePackageItem>,
+    /// Any required evidence kinds that could not be satisfied.
     pub unsatisfied_requirements: Vec<EvidenceKind>,
 }
 
+/// Content-addressed artifact holding a serialized evidence package and its hash digest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageArtifact {
+    /// BLAKE3 digest of the serialized JSON evidence package.
     pub hash: ContentHash,
+    /// The wrapped evidence package.
     pub package: EvidencePackage,
 }
 
 impl PackageArtifact {
+    /// Validates that the artifact's hash matches the serialized content of its package.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if serialization fails or the hash does not match.
     pub fn validate_identity(&self) -> Result<(), argus_core::ArgusError> {
         let bytes = serde_json::to_vec(&self.package).map_err(|error| {
             argus_core::ArgusError::invariant("cannot serialize evidence package")
@@ -112,16 +171,24 @@ impl PackageArtifact {
     }
 }
 
+/// Builder that evaluates candidates against policy and budget constraints to produce an [`EvidencePackage`].
 pub struct EvidencePackageBuilder<'a> {
     store: &'a EvidenceStore,
 }
 
 impl<'a> EvidencePackageBuilder<'a> {
+    /// Creates a package builder backed by the given evidence store.
     #[must_use]
     pub const fn new(store: &'a EvidenceStore) -> Self {
         Self { store }
     }
 
+    /// Assembles an initial revision-1 evidence package from candidates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if inputs are invalid, policy requirements are contradictory,
+    /// or referenced evidence envelopes cannot be loaded from storage.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn build(
         &self,
@@ -149,6 +216,12 @@ impl<'a> EvidencePackageBuilder<'a> {
         )
     }
 
+    /// Assembles an evidence package at the given revision number, optionally chaining to a prior revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`argus_core::ArgusError`] if inputs are invalid, revision numbering is inconsistent,
+    /// or referenced evidence envelopes cannot be loaded from storage.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn build_revision(
         &self,

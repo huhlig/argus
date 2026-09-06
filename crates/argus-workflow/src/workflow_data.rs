@@ -28,14 +28,25 @@ pub const WORKFLOW_DATA_DATABASE_FILE: &str = "workflow-data.redb";
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("workflow_data_v1");
 const HASH_DOMAIN: &[u8] = b"argus.workflow-data.v1\0";
 
+/// Immutable candidate finding generated during an agent review execution.
+///
+/// Each candidate is derived deterministically from the parent work item ID,
+/// current evidence revision, and canonical JSON draft representation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CandidateFindingRecord {
+    /// Content-derived identifier for this candidate finding.
     pub id: FindingId,
+    /// Evidence revision under which this finding was produced.
     pub evidence_revision: u32,
+    /// Validated finding payload draft.
     pub draft: serde_json::Value,
 }
 
 impl CandidateFindingRecord {
+    /// Derives a candidate finding record from a work item ID, evidence revision, and draft JSON.
+    ///
+    /// # Errors
+    /// Returns [`WorkflowDataError::Invalid`] if candidate draft validation fails.
     pub fn derive(
         work_id: &WorkItemId,
         evidence_revision: u32,
@@ -59,58 +70,101 @@ impl CandidateFindingRecord {
     }
 }
 
+/// Recorded outcome of a primary review model evaluation step.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PrimaryReviewDecision {
+    /// Evidence revision active when this decision was made.
     pub evidence_revision: u32,
+    /// Type tag identifying the decision event (e.g. finding, pass, escalation).
     pub event_type: String,
+    /// Opaque JSON payload containing the review output.
     pub payload: serde_json::Value,
+    /// Provider model identity that generated this decision.
     pub provider: ProviderIdentity,
+    /// Tracking identifier for the provider call.
     pub request_id: String,
+    /// One-based attempt counter for this review step.
     pub attempt: u32,
 }
 
+/// Outcome of evaluating an agent's request to expand evidence scope.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum EvidenceRequestDisposition {
+    /// Request was approved within the policy and budget constraints.
     Allowed {
+        /// Authorization token and allocated budget for expansion.
         authorization: AuthorizedEvidenceExpansion,
     },
+    /// Request was denied due to budget exhaustion or policy restrictions.
     Denied {
+        /// Explanation and category for the denial.
         denial: ExpansionDenial,
     },
 }
 
+/// Recorded audit record of an evidence expansion request and its resolution.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceRequestDecision {
+    /// Evidence revision under which the request was issued.
     pub evidence_revision: u32,
+    /// The requested evidence scope and rationale.
     pub request: EvidenceRequest,
+    /// Whether the request was approved or denied.
     pub disposition: EvidenceRequestDisposition,
 }
 
+/// Record of an enacted evidence expansion advancing the revision counter.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceExpansionRecord {
+    /// Hash of the authorization token granting this expansion.
     pub authorization_hash: ContentHash,
+    /// Revision before expansion.
     pub from_revision: u32,
+    /// Hash of the base evidence package.
     pub previous_package: ContentHash,
+    /// Revision after expansion.
     pub to_revision: u32,
+    /// Hash of the new expanded evidence package.
     pub package_ref: ContentHash,
 }
 
+/// Intermediate workflow execution state tracked across actor transitions in a Langchart run.
+///
+/// # Invariants
+/// - `review_unit_id` and `evidence_package_ref` must be non-empty and trimmed.
+/// - `evidence_revision` is 1-indexed and monotonically increasing.
+/// - `candidate_findings` and `primary_decisions` are append-only.
+/// - Evidence expansions must form an unbroken contiguous revision chain.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReviewWorkflowData {
+    /// Durable queue work item identifier.
     pub work_id: WorkItemId,
+    /// Logical review unit being audited.
     pub review_unit_id: String,
+    /// Policy identifier being evaluated.
     pub policy_id: PolicyId,
+    /// Active evidence package content digest or path reference.
     pub evidence_package_ref: String,
+    /// Current evidence revision counter (starts at 1).
     pub evidence_revision: u32,
+    /// Chronological history of review model decisions.
     pub primary_decisions: Vec<PrimaryReviewDecision>,
+    /// Candidate findings produced during this workflow run.
     pub candidate_findings: Vec<CandidateFindingRecord>,
+    /// Secondary verification work items scheduled for candidate findings.
     pub scheduled_verification_work: Vec<WorkItemId>,
+    /// Recorded outcomes of secondary verifications.
     pub verification_results: Vec<String>,
+    /// Decisions made regarding evidence expansion requests.
     pub evidence_request_decisions: Vec<EvidenceRequestDecision>,
+    /// Applied evidence package expansions.
     pub evidence_expansions: Vec<EvidenceExpansionRecord>,
+    /// Total number of model escalations encountered.
     pub escalation_count: u32,
+    /// Total number of approved evidence expansions.
     pub evidence_expansion_count: u32,
+    /// Final human adjudication label, if any.
     pub adjudication: Option<String>,
 }
 
@@ -313,28 +367,53 @@ impl ReviewWorkflowData {
     }
 }
 
+/// Persistent versioned record tracking the mutable state of a workflow execution.
+///
+/// Each record stores the active schema version, run identifier, monotonic revision number,
+/// content hash, and full [`ReviewWorkflowData`].
+///
+/// # Invariants
+/// - Revisions are monotonically increasing starting from 0.
+/// - `content_hash` matches the BLAKE3 digest of the canonical JSON data.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowDataRecord {
+    /// Schema version for format compatibility.
     pub schema_version: u32,
+    /// Langchart execution run ID.
     pub langchart_run_id: String,
+    /// Monotonic revision sequence number.
     pub revision: u64,
+    /// BLAKE3 hex content digest of `data`.
     pub content_hash: String,
+    /// Active review workflow payload.
     pub data: ReviewWorkflowData,
 }
 
+/// Result disposition of a write to [`WorkflowDataStore`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkflowDataWrite {
+    /// Newly inserted initial workflow record (revision 0).
     Inserted(WorkflowDataRecord),
+    /// Successfully applied transition with incremented revision.
     Updated(WorkflowDataRecord),
+    /// Idempotent replay of an existing identical record.
     Existing(WorkflowDataRecord),
 }
 
+/// Embedded transactional store managing intermediate review workflow state.
+///
+/// Backed by `redb`, provides atomic compare-and-swap mutation semantics for
+/// multi-actor Langchart workflow graphs.
 #[derive(Debug)]
 pub struct WorkflowDataStore {
     database: Database,
 }
 
 impl WorkflowDataStore {
+    /// Opens or creates a workflow data database within the specified state directory.
+    ///
+    /// # Errors
+    /// Returns [`WorkflowDataError::Storage`] if directory creation or database initialization fails.
     pub fn open(state_directory: &Path) -> Result<Self, WorkflowDataError> {
         fs::create_dir_all(state_directory).map_err(storage_error)?;
         let database = Database::create(state_directory.join(WORKFLOW_DATA_DATABASE_FILE))
@@ -345,6 +424,13 @@ impl WorkflowDataStore {
         Ok(Self { database })
     }
 
+    /// Initializes a new workflow data record at revision 0 for a run ID.
+    ///
+    /// # Errors
+    /// Returns:
+    /// - [`WorkflowDataError::Invalid`] if the run ID or data fails validation.
+    /// - [`WorkflowDataError::Conflict`] if a record already exists with different data.
+    /// - [`WorkflowDataError::Storage`] if database write fails.
     pub fn create(
         &self,
         langchart_run_id: &str,
@@ -383,6 +469,10 @@ impl WorkflowDataStore {
         Ok(disposition)
     }
 
+    /// Loads a workflow data record by Langchart run ID.
+    ///
+    /// # Errors
+    /// Returns [`WorkflowDataError`] if database reading or record validation fails.
     pub fn load(
         &self,
         langchart_run_id: &str,
@@ -404,6 +494,16 @@ impl WorkflowDataStore {
     }
 
     /// Applies one actor transition, or recognizes its byte-equivalent replay.
+    ///
+    /// # Invariants
+    /// - Transitions must be valid (append-only collections, monotonic counters).
+    /// - On success, the revision increments by 1.
+    ///
+    /// # Errors
+    /// Returns:
+    /// - [`WorkflowDataError::Missing`] if no record exists for the run ID.
+    /// - [`WorkflowDataError::Conflict`] if `expected_revision` does not match the stored revision.
+    /// - [`WorkflowDataError::Invalid`] if the state transition violates append-only or monotonicity constraints.
     pub fn compare_and_swap(
         &self,
         langchart_run_id: &str,
@@ -586,6 +686,7 @@ fn validate_text(name: &str, value: &str) -> Result<(), WorkflowDataError> {
     Ok(())
 }
 
+/// Derives the secondary verification work item ID associated with a candidate finding.
 #[must_use]
 pub fn verification_work_id(candidate_id: &FindingId) -> WorkItemId {
     WorkItemId::derive([
@@ -614,14 +715,22 @@ fn storage_error(error: impl fmt::Display) -> WorkflowDataError {
     WorkflowDataError::Storage(error.to_string())
 }
 
+/// Errors produced by workflow data operations and invariants.
 #[derive(Debug)]
 pub enum WorkflowDataError {
+    /// Underlying storage or I/O failure.
     Storage(String),
+    /// Serialization or deserialization error.
     Json(serde_json::Error),
+    /// Data constraint or validation failure.
     Invalid(String),
+    /// Expected workflow record does not exist.
     Missing,
+    /// Optimistic concurrency conflict during compare-and-swap.
     Conflict {
+        /// Expected revision supplied by caller.
         expected_revision: Option<u64>,
+        /// Current revision in the database.
         actual_revision: u64,
     },
 }
