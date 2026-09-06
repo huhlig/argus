@@ -15,8 +15,9 @@
 use crate::{read_jsonl, write_reconciled};
 use argus_core::{Confidence, FindingId, RunId, Severity, TargetId, WorkItemId};
 use argus_policies::{
-    ArchitectureAssessment, ArchitectureCandidate, ArchitectureDimension, ArchitectureFindingKind,
-    ArchitectureResultStatus, ArchitectureScope, ArchitectureVerificationStatus,
+    ArchitectureAssessment, ArchitectureCandidate, ArchitectureDimension,
+    ArchitectureEvidenceCitation, ArchitectureFindingKind, ArchitectureResultStatus,
+    ArchitectureScope, ArchitectureVerificationStatus,
 };
 use argus_storage::{OutcomeRecord, QueueState, QueueWork, StoredArtifact};
 use argus_workflow::EffectiveOutcome;
@@ -301,6 +302,8 @@ impl ArchitectureReport {
                     cluster.id, rep.defect_kind, rep.severity, dims
                 )
                 .unwrap();
+                let loc_str = architecture_citations(&rep.citations);
+                writeln!(out, "- **Location**: {loc_str}").unwrap();
                 writeln!(out, "- **Scope**: {:?}", rep.scope).unwrap();
                 writeln!(out, "- **Target**: `{}`", rep.target).unwrap();
                 writeln!(out, "- **Confidence**: {:?}", rep.confidence).unwrap();
@@ -322,6 +325,41 @@ impl ArchitectureReport {
 
         out
     }
+}
+
+fn architecture_citations(values: &[ArchitectureEvidenceCitation]) -> String {
+    if values.is_empty() {
+        return "none".to_owned();
+    }
+    values
+        .iter()
+        .map(|citation| {
+            citation.location.as_ref().map_or_else(
+                || format!("`{}`", citation.evidence),
+                |location| {
+                    location.start.map_or_else(
+                        || {
+                            format!(
+                                "`{}:{}-{}`",
+                                location.path.as_str(),
+                                location.bytes.start,
+                                location.bytes.end
+                            )
+                        },
+                        |start| {
+                            format!(
+                                "`{}:{}:{}`",
+                                location.path.as_str(),
+                                start.line,
+                                start.column
+                            )
+                        },
+                    )
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[allow(clippy::similar_names)]
@@ -405,5 +443,59 @@ mod tests {
             ArchitectureReport::build(run, "architecture-code-derived@1", &[work], &[], &[])
                 .unwrap_err();
         assert!(error.to_string().contains("missing a valid assessment"));
+    }
+
+    #[test]
+    fn markdown_renders_location_and_target_for_architecture_clusters() {
+        use argus_core::{ByteSpan, LineColumn, SourceLocation, SourcePath};
+
+        let run_id = RunId::derive([b"test-arch-run".as_slice()]);
+        let target_id = TargetId::derive([b"arch-target-1".as_slice()]);
+        let citation = ArchitectureEvidenceCitation {
+            evidence: argus_core::EvidenceId::derive([b"arch-ev-1".as_slice()]),
+            kind: argus_core::EvidenceKind::Source,
+            location: Some(SourceLocation {
+                path: SourcePath::new("crates/example/src/arch.rs").unwrap(),
+                bytes: ByteSpan::new(20, 80).unwrap(),
+                start: Some(LineColumn { line: 3, column: 1 }),
+                end: Some(LineColumn { line: 7, column: 1 }),
+            }),
+            related_targets: vec![target_id.clone()],
+        };
+        let candidate = ArchitectureCandidate {
+            id: "arch-cand-1".to_owned(),
+            severity: Severity::High,
+            defect_kind: ArchitectureFindingKind::StructuralDefect,
+            dimensions: std::collections::BTreeSet::from([ArchitectureDimension::BoundaryAnalysis]),
+            confidence: Confidence::from_basis_points(8_500).unwrap(),
+            explanation: "Inverted dependency layer detected.".to_owned(),
+            citations: vec![citation],
+            target: target_id.clone(),
+            scope: ArchitectureScope::Module,
+            observed_facts: vec!["calls lower level directly".to_owned()],
+            inferred_intent: Some("abstraction bypass".to_owned()),
+        };
+        let cluster = ArchitectureFindingCluster {
+            id: FindingId::derive([b"arch-cluster-1".as_slice()]),
+            representative: candidate,
+            verification: ArchitectureVerificationStatus::Corroborated,
+            occurrences: 1,
+        };
+        let report = ArchitectureReport {
+            schema_version: ARCHITECTURE_REPORT_SCHEMA_VERSION,
+            run_id,
+            policy_version: "architecture-code-derived@1".to_owned(),
+            summary: ArchitectureReportSummary {
+                total: 1,
+                corroborated_candidates: 1,
+                finding_clusters: 1,
+                ..Default::default()
+            },
+            finding_clusters: vec![cluster],
+            assessments: Vec::new(),
+        };
+        let md = report.to_markdown();
+        assert!(md.contains("- **Location**: `crates/example/src/arch.rs:3:1`"));
+        assert!(md.contains(&format!("- **Target**: `{target_id}`")));
     }
 }

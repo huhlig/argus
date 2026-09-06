@@ -368,6 +368,29 @@ impl QueueStatus {
     }
 }
 
+/// Persistent, transactional review queue backed by an embedded database (`redb`).
+///
+/// `DurableQueue` manages work items, leases, outcomes, artifacts, and checkpoints
+/// throughout an Argus audit run. All state transitions (enqueueing work, acquiring leases,
+/// completing attempts, storing artifacts, recording outcomes) are ACID-compliant and durable
+/// against process crashes and restarts.
+///
+/// # Invariants
+/// - Schema versioning is validated on initialization against internal schema metadata.
+/// - Attempt sequences and revision numbers are monotonically increasing per work item.
+/// - Outcomes and artifacts are content-addressed and immutable once committed.
+///
+/// # Examples
+///
+/// ```no_run
+/// use argus_storage::DurableQueue;
+/// use std::path::Path;
+///
+/// # fn run() -> Result<(), argus_core::ArgusError> {
+/// let queue = DurableQueue::open(Path::new(".argus/state/queue.redb"))?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct DurableQueue {
     database: Database,
@@ -375,6 +398,27 @@ pub struct DurableQueue {
 }
 
 impl DurableQueue {
+    /// Opens or creates a durable queue at the specified filesystem path.
+    ///
+    /// Parent directories will be created automatically if they do not exist.
+    ///
+    /// # Errors
+    /// Returns an [`ArgusError`](argus_core::ArgusError) if:
+    /// - Parent directory creation fails due to I/O or permission errors.
+    /// - The underlying database cannot be opened or is locked by another process.
+    /// - Database initialization or schema validation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use argus_storage::DurableQueue;
+    /// use std::path::Path;
+    ///
+    /// # fn run() -> Result<(), argus_core::ArgusError> {
+    /// let queue = DurableQueue::open(Path::new("/tmp/test_queue.redb"))?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn open(path: &Path) -> Result<Self, argus_core::ArgusError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(io_error("cannot create state directory"))?;

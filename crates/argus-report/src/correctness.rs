@@ -16,13 +16,13 @@ use crate::{read_jsonl, write_reconciled};
 use argus_core::{Confidence, FindingId, RunId, Severity, TargetId, WorkItemId};
 use argus_policies::{
     CorrectnessAssessment, CorrectnessCandidate, CorrectnessDefectKind, CorrectnessDimension,
-    CorrectnessResult,
+    CorrectnessEvidenceCitation, CorrectnessResult,
 };
 use argus_storage::{OutcomeRecord, QueueState, QueueWork, StoredArtifact};
 use argus_workflow::EffectiveOutcome;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt::Write as _,
     path::Path,
 };
@@ -278,11 +278,22 @@ impl CorrectnessReport {
                 self.summary.finding_clusters, self.summary.finding_occurrences
             );
             for cluster in &self.finding_clusters {
+                let location_str = correctness_citations(&cluster.representative.citations);
+                let target_ids = cluster
+                    .occurrences
+                    .iter()
+                    .map(|o| format!("`{}`", o.target))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let _ = writeln!(
                     out,
                     "### `{}` — {}\n",
                     cluster.id, cluster.representative.title
                 );
+                let _ = writeln!(out, "- **Location**: {location_str}");
+                let _ = writeln!(out, "- **Target**: {target_ids}");
                 let _ = writeln!(
                     out,
                     "- **Defect Kind**: {:?}",
@@ -321,6 +332,41 @@ impl CorrectnessReport {
 
         out
     }
+}
+
+fn correctness_citations(values: &[CorrectnessEvidenceCitation]) -> String {
+    if values.is_empty() {
+        return "none".to_owned();
+    }
+    values
+        .iter()
+        .map(|citation| {
+            citation.location.as_ref().map_or_else(
+                || format!("`{}`", citation.evidence),
+                |location| {
+                    location.start.map_or_else(
+                        || {
+                            format!(
+                                "`{}:{}-{}`",
+                                location.path.as_str(),
+                                location.bytes.start,
+                                location.bytes.end
+                            )
+                        },
+                        |start| {
+                            format!(
+                                "`{}:{}:{}`",
+                                location.path.as_str(),
+                                start.line,
+                                start.column
+                            )
+                        },
+                    )
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn canonical_finding_key(
@@ -393,4 +439,64 @@ pub fn correctness_report_from_queue(
         &records.outcomes,
         &records.artifacts,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argus_core::{ByteSpan, LineColumn, SourceLocation, SourcePath};
+
+    #[test]
+    fn markdown_renders_location_and_target_for_correctness_clusters() {
+        let run_id = RunId::derive([b"test-run".as_slice()]);
+        let target_id = TargetId::derive([b"target-1".as_slice()]);
+        let citation = CorrectnessEvidenceCitation {
+            evidence: argus_core::EvidenceId::derive([b"ev-1".as_slice()]),
+            target: target_id.clone(),
+            location: Some(SourceLocation {
+                path: SourcePath::new("crates/example/src/lib.rs").unwrap(),
+                bytes: ByteSpan::new(10, 50).unwrap(),
+                start: Some(LineColumn { line: 5, column: 1 }),
+                end: Some(LineColumn { line: 8, column: 1 }),
+            }),
+        };
+        let candidate = CorrectnessCandidate {
+            title: "Unchecked boundary condition".to_owned(),
+            description: "Slice indexing may panic.".to_owned(),
+            defect_kind: CorrectnessDefectKind::DemonstratedDefect,
+            severity: Severity::High,
+            confidence: Confidence::from_basis_points(9_000).unwrap(),
+            failure_path: "foo -> bar".to_owned(),
+            dimensions: std::collections::BTreeSet::from([CorrectnessDimension::BoundaryConditions]),
+            citations: vec![citation],
+        };
+        let cluster = CorrectnessFindingCluster {
+            id: FindingId::derive([b"cluster-1".as_slice()]),
+            representative: candidate,
+            occurrences: vec![CorrectnessFindingOccurrence {
+                work_item: WorkItemId::derive([b"work-1".as_slice()]),
+                target: target_id.clone(),
+                finding_index: 0,
+                severity: Severity::High,
+                confidence: Confidence::from_basis_points(9_000).unwrap(),
+            }],
+        };
+        let report = CorrectnessReport {
+            schema_version: CORRECTNESS_REPORT_SCHEMA_VERSION,
+            run_id,
+            policy_version: "correctness@1".to_owned(),
+            summary: CorrectnessReportSummary {
+                total: 1,
+                candidate_findings: 1,
+                finding_clusters: 1,
+                finding_occurrences: 1,
+                ..Default::default()
+            },
+            finding_clusters: vec![cluster],
+            assessments: Vec::new(),
+        };
+        let md = report.to_markdown();
+        assert!(md.contains("- **Location**: `crates/example/src/lib.rs:5:1`"));
+        assert!(md.contains(&format!("- **Target**: `{target_id}`")));
+    }
 }

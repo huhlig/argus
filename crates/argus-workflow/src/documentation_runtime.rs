@@ -28,14 +28,30 @@ use langchart_runtime::{
 use serde_json::json;
 use std::{collections::BTreeSet, sync::Arc};
 
+/// Runtime identity and configuration parameters for documentation review execution.
 #[derive(Clone, Debug)]
 pub struct DocumentationRuntimeIdentity {
+    /// Snapshot ID of the source tree being audited.
     pub audit_snapshot: SnapshotId,
+    /// Audit run identifier.
     pub audit_run: RunId,
+    /// Provenance metadata tracking prompt version, actor ID, and actor version.
     pub provenance: OutcomeProvenance,
+    /// Token budget cap for review model output generation.
     pub max_output_tokens: u32,
 }
 
+/// Builds and populates an [`ActorRegistry`] with the actors required for documentation review.
+///
+/// Registers actors for the standard documentation review pipeline:
+/// - `argus.prepare-evidence`: Prepares documentation evidence from materialized targets.
+/// - `argus.review`: Prompts the review model using the provider executor.
+/// - `argus.evaluate-evidence-request`: Handles requests for evidence scope expansion.
+/// - `argus.record-candidate`: Records intermediate candidate findings into the workflow store.
+/// - `argus.record-outcome`: Stores validated assessments and commits final outcomes to [`DurableQueue`].
+///
+/// # Errors
+/// Returns [`ActorRegistryError`] if actor identity validation fails or duplicate factories are registered.
 pub fn documentation_actor_registry(
     queue: Arc<DurableQueue>,
     workflow_data: Arc<WorkflowDataStore>,

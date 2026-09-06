@@ -22,7 +22,15 @@ use std::{
     sync::Arc,
 };
 
+/// Factory trait for dynamically instantiating [`AgentActor`] instances for workflow states.
+///
+/// Implementations must be thread-safe (`Send + Sync`). Any closure matching
+/// `Fn(&str) -> Result<Arc<dyn AgentActor>, String> + Send + Sync` automatically implements `ActorFactory`.
 pub trait ActorFactory: Send + Sync {
+    /// Builds an actor instance configured for the given workflow state ID.
+    ///
+    /// # Errors
+    /// Returns an error message string if the actor cannot be instantiated for the state.
     fn build(&self, state_id: &str) -> Result<Arc<dyn AgentActor>, String>;
 }
 
@@ -35,17 +43,42 @@ where
     }
 }
 
+/// Registry mapping `(actor_id, actor_version)` pairs to [`ActorFactory`] implementations.
+///
+/// `ActorRegistry` is used during workflow recovery to deterministically reconstruct the
+/// runtime actor topology declared in a [`RecoveryManifest`].
+///
+/// # Invariants
+/// - Every `(actor_id, actor_version)` pair in the registry is unique.
+/// - Actor IDs and versions must be non-empty and trimmed.
+/// - During reconstruction, each state ID must map to at most one actor.
+///
+/// # Examples
+///
+/// ```
+/// use argus_workflow::{ActorRegistry, ActorFactory};
+/// use std::sync::Arc;
+///
+/// let mut registry = ActorRegistry::new();
+/// ```
 #[derive(Default)]
 pub struct ActorRegistry {
     factories: HashMap<(String, String), Arc<dyn ActorFactory>>,
 }
 
 impl ActorRegistry {
+    /// Creates an empty actor registry.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Registers an [`ActorFactory`] for the given actor identity and version.
+    ///
+    /// # Errors
+    /// Returns [`ActorRegistryError::Invalid`] if the actor ID or version is empty or contains
+    /// leading/trailing whitespace.
+    /// Returns [`ActorRegistryError::Duplicate`] if a factory is already registered for this identity.
     pub fn register(
         &mut self,
         actor_id: impl Into<String>,
@@ -69,6 +102,14 @@ impl ActorRegistry {
         Ok(())
     }
 
+    /// Reconstructs actors for all states declared in a [`RecoveryManifest`].
+    ///
+    /// # Errors
+    /// Returns:
+    /// - [`ActorRegistryError::MissingFactory`] if any actor identity required by the manifest
+    ///   is not registered.
+    /// - [`ActorRegistryError::Build`] if an actor factory fails to construct an actor.
+    /// - [`ActorRegistryError::DuplicateState`] if the manifest assigns multiple actors to the same state ID.
     pub fn reconstruct(
         &self,
         manifest: &RecoveryManifest,
@@ -112,20 +153,32 @@ fn validate_identity(value: &str, name: &str) -> Result<(), ActorRegistryError> 
     Ok(())
 }
 
+/// Errors that can occur when registering actors or reconstructing a workflow from a manifest.
 #[derive(Debug)]
 pub enum ActorRegistryError {
+    /// An actor ID or version failed validation (e.g. empty or unnormalized whitespace).
     Invalid(String),
+    /// An actor factory is already registered for the specified ID and version.
     Duplicate {
+        /// Identifier of the duplicated actor.
         actor_id: String,
+        /// Version of the duplicated actor.
         actor_version: String,
     },
+    /// No actor factory was registered for the required actor ID and version.
     MissingFactory {
+        /// Identifier of the missing actor.
         actor_id: String,
+        /// Version of the missing actor.
         actor_version: String,
     },
+    /// The recovery manifest repeated a state ID with multiple actors.
     DuplicateState(String),
+    /// An actor factory failed to build an actor instance.
     Build {
+        /// Identity of the actor being built.
         identity: ActorIdentity,
+        /// Underlying failure message from the factory.
         message: String,
     },
 }
