@@ -75,14 +75,15 @@ impl ProviderConfig {
     ) -> Result<ProviderRuntimeProfile, ProviderError> {
         let (model_id, model_cfg) = self.select_model(model_selector)?;
         let deployment = self.transport.infer_deployment_mode();
-        let structured_output = model_cfg.structured_output.unwrap_or_else(|| {
-            match &self.transport {
-                ProviderTransportProfile::Openai { .. } => {
-                    StructuredOutputSupport::SchemaConstrained
-                }
-                _ => StructuredOutputSupport::BestEffort,
-            }
-        });
+        let structured_output =
+            model_cfg
+                .structured_output
+                .unwrap_or_else(|| match &self.transport {
+                    ProviderTransportProfile::Openai { .. } => {
+                        StructuredOutputSupport::SchemaConstrained
+                    }
+                    _ => StructuredOutputSupport::BestEffort,
+                });
 
         let identity = ProviderIdentity {
             provider: self.provider.clone(),
@@ -106,25 +107,27 @@ impl ProviderConfig {
             reports_estimated_cost: false,
         };
 
-        let policy = self.default_policy.clone().unwrap_or_else(|| ProviderPolicy {
-            repository_classification: DataClassification::Internal,
-            authorize_online_transmission: deployment == DeploymentMode::Online,
-            substitution: ModelSubstitution::Pinned,
-            limits: ReviewLimits {
-                max_requests: 20,
-                max_input_tokens: 1_000_000,
-                max_output_tokens: 163_840,
-                max_evidence_bytes: 10_000_000,
-                max_evidence_expansions: 0,
-                max_concurrency: model_cfg.concurrency_capacity,
-                max_estimated_cost_microusd: None,
-            },
-        });
-
-        let repair = self
-            .default_repair
+        let policy = self
+            .default_policy
             .clone()
-            .unwrap_or(RepairPolicy { max_repair_attempts: 1 });
+            .unwrap_or_else(|| ProviderPolicy {
+                repository_classification: DataClassification::Internal,
+                authorize_online_transmission: deployment == DeploymentMode::Online,
+                substitution: ModelSubstitution::Pinned,
+                limits: ReviewLimits {
+                    max_requests: 20,
+                    max_input_tokens: 1_000_000,
+                    max_output_tokens: 163_840,
+                    max_evidence_bytes: 10_000_000,
+                    max_evidence_expansions: 0,
+                    max_concurrency: model_cfg.concurrency_capacity,
+                    max_estimated_cost_microusd: None,
+                },
+            });
+
+        let repair = self.default_repair.clone().unwrap_or(RepairPolicy {
+            max_repair_attempts: 1,
+        });
 
         let profile = ProviderRuntimeProfile {
             schema_version: PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION,
@@ -155,7 +158,11 @@ impl ProviderConfig {
                 return Ok(entry);
             }
             for (id, cfg) in &self.models {
-                if cfg.aliases.iter().any(|alias| alias.eq_ignore_ascii_case(target)) {
+                if cfg
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(target))
+                {
                     return Ok((id, cfg));
                 }
             }
@@ -172,7 +179,11 @@ impl ProviderConfig {
         }
 
         for (id, cfg) in &self.models {
-            if cfg.aliases.iter().any(|alias| alias.eq_ignore_ascii_case("default")) {
+            if cfg
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case("default"))
+            {
                 return Ok((id, cfg));
             }
         }
@@ -421,15 +432,18 @@ impl ProviderTransportProfile {
     #[must_use]
     pub fn infer_deployment_mode(&self) -> DeploymentMode {
         match self {
-            Self::Ollama { base_url } => {
-                base_url.as_deref().map(crate::infer_deployment_mode).unwrap_or(DeploymentMode::Local)
-            }
-            Self::Lemonade { base_url, .. } => {
-                base_url.as_deref().map(crate::infer_deployment_mode).unwrap_or(DeploymentMode::Local)
-            }
-            Self::LmStudio { base_url, .. } => {
-                base_url.as_deref().map(crate::infer_deployment_mode).unwrap_or(DeploymentMode::Local)
-            }
+            Self::Ollama { base_url } => base_url
+                .as_deref()
+                .map(crate::infer_deployment_mode)
+                .unwrap_or(DeploymentMode::Local),
+            Self::Lemonade { base_url, .. } => base_url
+                .as_deref()
+                .map(crate::infer_deployment_mode)
+                .unwrap_or(DeploymentMode::Local),
+            Self::LmStudio { base_url, .. } => base_url
+                .as_deref()
+                .map(crate::infer_deployment_mode)
+                .unwrap_or(DeploymentMode::Local),
             Self::Anthropic { .. }
             | Self::Openai { .. }
             | Self::Watsonx { .. }
@@ -531,7 +545,8 @@ fn looks_like_env_var_name(s: &str) -> bool {
     if s.is_empty() || s.starts_with(|c: char| c.is_ascii_digit()) {
         return false;
     }
-    s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    s.chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 pub fn substitute_optional_value(
@@ -767,6 +782,10 @@ mod tests {
         );
 
         // 4. Non-existent model fails
-        assert!(config.resolve_runtime_profile(Some("non-existent")).is_err());
+        assert!(
+            config
+                .resolve_runtime_profile(Some("non-existent"))
+                .is_err()
+        );
     }
 }

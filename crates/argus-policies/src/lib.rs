@@ -25,10 +25,10 @@ pub use architecture::{
     ArchitectureAssessmentDraft, ArchitectureCandidate, ArchitectureCandidateDraft,
     ArchitectureCandidateVerification, ArchitectureDimension, ArchitectureDimensionDraft,
     ArchitectureDimensionResult, ArchitectureDimensionStatus, ArchitectureEvidenceCitation,
-    ArchitectureEvidenceCitationDraft,
-    ArchitectureFindingKind, ArchitectureResult, ArchitectureResultDraft, ArchitectureResultStatus,
-    ArchitectureScope, ArchitectureTargetClass, ArchitectureTargetProfile,
-    ArchitectureVerificationStatus, ArchitectureVisibility, ConstituentHealthSummary,
+    ArchitectureEvidenceCitationDraft, ArchitectureFindingKind, ArchitectureResult,
+    ArchitectureResultDraft, ArchitectureResultStatus, ArchitectureScope, ArchitectureTargetClass,
+    ArchitectureTargetProfile, ArchitectureVerificationStatus, ArchitectureVisibility,
+    ConstituentHealthSummary,
 };
 pub use correctness::{
     ALL_CORRECTNESS_DIMENSIONS, CORRECTNESS_ASSESSMENT_SCHEMA_VERSION,

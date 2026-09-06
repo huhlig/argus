@@ -5349,7 +5349,8 @@ mod tests {
             argus_storage::DurableQueue::open(&temporary.path().join("state.redb")).unwrap(),
         );
         let snapshot = argus_core::SnapshotId::derive([b"breaker-snapshot".as_slice()]);
-        let configuration = argus_core::ConfigurationId::derive([b"breaker-configuration".as_slice()]);
+        let configuration =
+            argus_core::ConfigurationId::derive([b"breaker-configuration".as_slice()]);
         let run_id = argus_core::RunId::derive([b"breaker-run".as_slice()]);
         queue
             .create_run(&argus_storage::RunRecord {

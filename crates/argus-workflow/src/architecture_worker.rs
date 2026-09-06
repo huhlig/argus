@@ -95,12 +95,12 @@ impl ArchitectureWorker {
                 "architecture worker adapter and policy must not be empty",
             ));
         }
-        let checkpoint_store = Arc::new(
-            open_checkpoint_store(&config.state_directory).map_err(|error| {
+        let checkpoint_store = Arc::new(open_checkpoint_store(&config.state_directory).map_err(
+            |error| {
                 ArgusError::invariant("cannot open architecture checkpoint store")
                     .with_source(error)
-            })?,
-        );
+            },
+        )?);
         Ok(Self {
             queue,
             workflow_data,

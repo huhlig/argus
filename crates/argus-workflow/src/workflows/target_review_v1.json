@@ -23,7 +23,7 @@
       "agent": { "id": "argus.review", "version": "1.0.0" },
       "prompt": "Conduct a bounded policy review of the target declaration against the policy rubric using only the provided evidence. If any quality defect, omission, or violation is found, declare review.candidate_found with candidate findings. If all dimensions satisfy the policy, declare review.pass. Return review.failed only if internal execution constraints prevent evaluation.",
       "model": { "profile": "local_primary", "model": null, "temperature": 0.0, "max_tokens": 4096 },
-      "limits": { "max_turns": 3, "max_tool_calls": 0, "timeout": 1800, "max_tokens_total": 50000 },
+      "limits": { "max_turns": 3, "max_tool_calls": 0, "timeout": 1800, "max_tokens_total": 2000000 },
       "on": {
         "review.pass": [{ "target": "record_outcome", "priority": 0, "actions": [] }],
         "review.suggestion": [{ "target": "record_outcome", "priority": 0, "actions": [] }],

@@ -594,7 +594,9 @@ mod tests {
         draft.result = DocumentationResultDraft::CandidateFindings {
             findings: vec![DocumentationCandidateDraft {
                 title: "Partially documented behavior".to_owned(),
-                description: "Documentation states a high-level claim but omits material mechanics.".to_owned(),
+                description:
+                    "Documentation states a high-level claim but omits material mechanics."
+                        .to_owned(),
                 severity: argus_core::Severity::Medium,
                 confidence_basis_points: 9000,
                 dimensions: BTreeSet::from([DocumentationDimension::Behavior]),
@@ -623,7 +625,9 @@ mod tests {
         draft.result = DocumentationResultDraft::CandidateFindings {
             findings: vec![DocumentationCandidateDraft {
                 title: "Low informational value".to_owned(),
-                description: "Documentation is too vague to be useful, independent of source complexity.".to_owned(),
+                description:
+                    "Documentation is too vague to be useful, independent of source complexity."
+                        .to_owned(),
                 severity: argus_core::Severity::Low,
                 confidence_basis_points: 7000,
                 dimensions: BTreeSet::from([DocumentationDimension::Value]),
@@ -652,7 +656,9 @@ mod tests {
         draft.result = DocumentationResultDraft::CandidateFindings {
             findings: vec![DocumentationCandidateDraft {
                 title: "No informational value assessment".to_owned(),
-                description: "Documentation says nothing that speaks to its own clarity or completeness.".to_owned(),
+                description:
+                    "Documentation says nothing that speaks to its own clarity or completeness."
+                        .to_owned(),
                 severity: argus_core::Severity::Low,
                 confidence_basis_points: 7000,
                 dimensions: BTreeSet::from([DocumentationDimension::Value]),
@@ -667,7 +673,7 @@ mod tests {
 
     #[test]
     fn validator_accepts_a_material_omission_for_omitted_coverage_with_no_material_source_behavior()
-     {
+    {
         let (binding, mut draft) = fixture();
         let purpose = draft
             .dimensions

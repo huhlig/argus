@@ -441,9 +441,8 @@ impl StructuredOutputStrategy {
         if provider == "watsonx" {
             return match support {
                 StructuredOutputSupport::None => Self::PromptGuidedText,
-                StructuredOutputSupport::BestEffort | StructuredOutputSupport::SchemaConstrained => {
-                    Self::NativeJsonObject
-                }
+                StructuredOutputSupport::BestEffort
+                | StructuredOutputSupport::SchemaConstrained => Self::NativeJsonObject,
             };
         }
         match support {
@@ -1161,12 +1160,7 @@ mod tests {
         assert!(!system.contains("/no_think"));
         assert!(qwen.starts_with("/no_think\n"));
         assert!(!other.contains("/no_think"));
-        let messages = structured_messages(
-            system,
-            qwen,
-            "lemonade",
-            "Qwen3.6-35B-A3B-GGUF",
-        );
+        let messages = structured_messages(system, qwen, "lemonade", "Qwen3.6-35B-A3B-GGUF");
         assert_eq!(messages.len(), 3);
         assert!(matches!(
             messages.last(),

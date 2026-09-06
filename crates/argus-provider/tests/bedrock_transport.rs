@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use argus_provider::{
-    BedrockConfig, BedrockCredentials, DataClassification, DeploymentMode,
-    DiscoveredProviderKind, LangchartModelProvider, ModelProvider, ModelSubstitution,
+    BedrockConfig, BedrockCredentials, DataClassification, DeploymentMode, DiscoveredProviderKind,
+    LangchartModelProvider, ModelProvider, ModelSubstitution,
     PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION, ProviderCapabilities, ProviderIdentity,
     ProviderPolicy, ProviderRuntimeProfile, ProviderTransportProfile, RepairPolicy, ReviewLimits,
     StructuredOutputSupport, generate_provider_config, generate_runtime_profile,
@@ -203,12 +203,25 @@ fn bedrock_provider_config_resolves_and_builds_runtime_profile() {
     )
     .unwrap();
 
-    let resolved_sonnet = config.resolve_runtime_profile(Some("claude-3-7-sonnet")).unwrap();
-    assert_eq!(resolved_sonnet.capabilities.identity.model, "anthropic.claude-3-7-sonnet-20250219-v1:0");
+    let resolved_sonnet = config
+        .resolve_runtime_profile(Some("claude-3-7-sonnet"))
+        .unwrap();
+    assert_eq!(
+        resolved_sonnet.capabilities.identity.model,
+        "anthropic.claude-3-7-sonnet-20250219-v1:0"
+    );
 
-    let resolved_haiku = config.resolve_runtime_profile(Some("claude-3-haiku")).unwrap();
-    assert_eq!(resolved_haiku.capabilities.identity.model, "anthropic.claude-3-haiku-20240307-v1:0");
+    let resolved_haiku = config
+        .resolve_runtime_profile(Some("claude-3-haiku"))
+        .unwrap();
+    assert_eq!(
+        resolved_haiku.capabilities.identity.model,
+        "anthropic.claude-3-haiku-20240307-v1:0"
+    );
 
     let resolved_default = config.resolve_runtime_profile(None).unwrap();
-    assert_eq!(resolved_default.capabilities.identity.model, "anthropic.claude-3-7-sonnet-20250219-v1:0");
+    assert_eq!(
+        resolved_default.capabilities.identity.model,
+        "anthropic.claude-3-7-sonnet-20250219-v1:0"
+    );
 }

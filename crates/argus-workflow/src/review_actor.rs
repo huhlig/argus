@@ -251,20 +251,41 @@ impl AgentActor for PrimaryReviewActor {
         let context_window = u64::from(self.executor.capabilities().context_window_tokens);
         let max_output = u64::from(self.max_output_tokens);
         let safety_margin = 2_048; // Instructions, JSON formatting, schema overhead
-        let max_allowed_input = context_window.saturating_sub(max_output).saturating_sub(safety_margin);
-        let effective_input_budget = max_allowed_input.min(self.executor.policy().limits.max_input_tokens);
+        let max_allowed_input = context_window
+            .saturating_sub(max_output)
+            .saturating_sub(safety_margin);
+        let envelope_input_cap = envelope.max_tokens_total().map(|max| {
+            u64::from(max.saturating_sub(envelope.tokens_used()))
+                .saturating_sub(max_output)
+                .saturating_sub(safety_margin)
+        });
+        let effective_input_budget = match envelope_input_cap {
+            Some(cap) => max_allowed_input
+                .min(self.executor.policy().limits.max_input_tokens)
+                .min(cap),
+            None => max_allowed_input.min(self.executor.policy().limits.max_input_tokens),
+        };
 
         if effective_input_budget < 200 {
+            let reason = if envelope_input_cap.is_some_and(|cap| cap < 200) {
+                format!(
+                    "workflow capability envelope token budget ({} tokens total, {} used) is too small to accommodate the review framing and max output ({} tokens)",
+                    envelope.max_tokens_total().unwrap_or(0),
+                    envelope.tokens_used(),
+                    self.max_output_tokens,
+                )
+            } else {
+                format!(
+                    "model context window ({} tokens) is too small to accommodate the review framing and max output ({} tokens)",
+                    self.executor.capabilities().context_window_tokens,
+                    self.max_output_tokens,
+                )
+            };
             let decision = PrimaryReviewDecision {
                 evidence_revision: record.data.evidence_revision,
-                event_type: "review.unable_to_verify".to_owned(),
+                event_type: "review.failed".to_owned(),
                 payload: json!({
-                    "reason": format!(
-                        "model context window ({} tokens) is too small to accommodate the review framing and max output ({} tokens)",
-                        self.executor.capabilities().context_window_tokens,
-                        self.max_output_tokens,
-                    ),
-                    "requested_evidence": [],
+                    "reason": reason,
                 }),
                 provider: self.executor.capabilities().identity.clone(),
                 request_id: review_request_id(
@@ -274,12 +295,17 @@ impl AgentActor for PrimaryReviewActor {
                 ),
                 attempt: 0,
             };
-            return self.record_decision(decision, &invocation.output_event_types, record).await;
+            return self
+                .record_decision(decision, &invocation.output_event_types, record)
+                .await;
         }
 
         let base_task = match (
             invocation.instructions.task.as_deref(),
-            self.policy_contract.as_ref().map(|c| c.instructions()).filter(|text| !text.trim().is_empty()),
+            self.policy_contract
+                .as_ref()
+                .map(|c| c.instructions())
+                .filter(|text| !text.trim().is_empty()),
         ) {
             (Some(task), Some(policy)) => Some(format!("{task}\n\n{policy}")),
             (Some(task), None) => Some(task.to_owned()),
@@ -308,8 +334,11 @@ impl AgentActor for PrimaryReviewActor {
             broker,
             envelope: Mutex::new(envelope),
         });
-        let provider = LangchartModelProvider::new(self.executor.capabilities().clone(), adapter)
-            .map_err(|error| AgentError::Internal(error.to_string()))?;
+        let provider = LangchartModelProvider::new(
+            self.executor.capabilities().clone(),
+            Arc::clone(&adapter) as Arc<dyn LlmAdapter>,
+        )
+        .map_err(|error| AgentError::Internal(error.to_string()))?;
 
         if chunks.len() <= 1 {
             let chunk_items = chunks.first().map_or(&[][..], Vec::as_slice);
@@ -319,7 +348,9 @@ impl AgentActor for PrimaryReviewActor {
                 effective_input_budget,
                 chunk_items,
             )?;
-            let estimated_input_tokens = u64::try_from(prompt.len().div_ceil(3)).unwrap_or(u64::MAX).max(1);
+            let estimated_input_tokens = u64::try_from(prompt.len().div_ceil(3))
+                .unwrap_or(u64::MAX)
+                .max(1);
             let request = ModelRequest {
                 request_id: review_request_id(
                     invocation.run_id.as_ref(),
@@ -362,6 +393,26 @@ impl AgentActor for PrimaryReviewActor {
 
         for (idx, chunk_items) in chunks.iter().enumerate() {
             let chunk_num = idx + 1;
+            if let Some(remaining) = adapter.remaining_tokens().await {
+                let required_minimum = u64::from(self.max_output_tokens).saturating_add(200);
+                if remaining < required_minimum {
+                    let decision = PrimaryReviewDecision {
+                        evidence_revision: record.data.evidence_revision,
+                        event_type: "review.failed".to_owned(),
+                        payload: json!({
+                            "reason": format!(
+                                "workflow capability envelope token budget exhausted before evaluating chunk {chunk_num} of {total_chunks} ({remaining} tokens remaining)"
+                            ),
+                        }),
+                        provider: last_response_provider,
+                        request_id: format!("{base_request_id}:chunk-{chunk_num}"),
+                        attempt: 0,
+                    };
+                    return self
+                        .record_decision(decision, &invocation.output_event_types, record)
+                        .await;
+                }
+            }
             let chunk_note = format!(
                 "Evidence Chunk {chunk_num} of {total_chunks}. Evaluate this portion of evidence against the policy rubric."
             );
@@ -377,7 +428,9 @@ impl AgentActor for PrimaryReviewActor {
                 chunk_items,
             )?;
 
-            let estimated_input_tokens = u64::try_from(prompt.len().div_ceil(3)).unwrap_or(u64::MAX).max(1);
+            let estimated_input_tokens = u64::try_from(prompt.len().div_ceil(3))
+                .unwrap_or(u64::MAX)
+                .max(1);
             let request = ModelRequest {
                 request_id: format!("{base_request_id}:chunk-{chunk_num}"),
                 attempt: 0,
@@ -393,20 +446,46 @@ impl AgentActor for PrimaryReviewActor {
                 max_output_tokens: self.max_output_tokens,
             };
 
-            let response = if let Some(contract) = &self.policy_contract {
+            let execution_result = if let Some(contract) = &self.policy_contract {
                 let validator = PolicyReviewDecisionValidator::new(contract.clone());
                 self.executor
                     .execute_with_provider_and_validator(&provider, request, &validator)
                     .await
             } else {
-                self.executor.execute_with_provider(&provider, request).await
-            }
-            .map_err(|error| AgentError::Internal(error.to_string()))?;
+                self.executor
+                    .execute_with_provider(&provider, request)
+                    .await
+            };
+
+            let response = match execution_result {
+                Ok(response) => response,
+                Err(error) => {
+                    let error_msg = error.to_string();
+                    if error_msg.contains("token budget exhausted") {
+                        let decision = PrimaryReviewDecision {
+                            evidence_revision: record.data.evidence_revision,
+                            event_type: "review.failed".to_owned(),
+                            payload: json!({
+                                "reason": format!("provider unavailable in chunk {chunk_num}: {error_msg}"),
+                            }),
+                            provider: last_response_provider,
+                            request_id: format!("{base_request_id}:chunk-{chunk_num}"),
+                            attempt: 0,
+                        };
+                        return self
+                            .record_decision(decision, &invocation.output_event_types, record)
+                            .await;
+                    }
+                    return Err(AgentError::Internal(error_msg));
+                }
+            };
 
             last_response_provider = response.provider.clone();
 
             let (event_type, payload) = review_event(&response.output).map_err(|message| {
-                AgentError::Internal(format!("invalid review decision in chunk {chunk_num}: {message}"))
+                AgentError::Internal(format!(
+                    "invalid review decision in chunk {chunk_num}: {message}"
+                ))
             })?;
 
             if event_type == "review.failed" || event_type == "review.unable_to_verify" {
@@ -418,7 +497,9 @@ impl AgentActor for PrimaryReviewActor {
                     request_id: response.request_id,
                     attempt: response.attempt,
                 };
-                return self.record_decision(decision, &invocation.output_event_types, record).await;
+                return self
+                    .record_decision(decision, &invocation.output_event_types, record)
+                    .await;
             }
 
             if let Some(assessment) = payload.get("assessment") {
@@ -448,21 +529,30 @@ impl AgentActor for PrimaryReviewActor {
 
         let (event_type, payload) = if !aggregated_candidates.is_empty() {
             let assessment_val = last_assessment.unwrap_or_else(|| json!({}));
-            ("review.candidate_found".to_owned(), json!({
-                "assessment": assessment_val,
-                "candidates": aggregated_candidates,
-            }))
+            (
+                "review.candidate_found".to_owned(),
+                json!({
+                    "assessment": assessment_val,
+                    "candidates": aggregated_candidates,
+                }),
+            )
         } else if !aggregated_suggestions.is_empty() {
             let assessment_val = last_assessment.unwrap_or_else(|| json!({}));
-            ("review.suggestion".to_owned(), json!({
-                "assessment": assessment_val,
-                "suggestions": aggregated_suggestions,
-            }))
+            (
+                "review.suggestion".to_owned(),
+                json!({
+                    "assessment": assessment_val,
+                    "suggestions": aggregated_suggestions,
+                }),
+            )
         } else {
             let assessment_val = last_assessment.unwrap_or_else(|| json!({}));
-            ("review.pass".to_owned(), json!({
-                "assessment": assessment_val,
-            }))
+            (
+                "review.pass".to_owned(),
+                json!({
+                    "assessment": assessment_val,
+                }),
+            )
         };
 
         let decision = PrimaryReviewDecision {
@@ -473,13 +563,23 @@ impl AgentActor for PrimaryReviewActor {
             request_id: base_request_id,
             attempt: 0,
         };
-        self.record_decision(decision, &invocation.output_event_types, record).await
+        self.record_decision(decision, &invocation.output_event_types, record)
+            .await
     }
 }
 
 struct BrokerInvocationAdapter {
     broker: Arc<CapabilityBroker>,
     envelope: Mutex<CapabilityEnvelope>,
+}
+
+impl BrokerInvocationAdapter {
+    async fn remaining_tokens(&self) -> Option<u64> {
+        let envelope = self.envelope.lock().await;
+        envelope
+            .max_tokens_total()
+            .map(|max| u64::from(max.saturating_sub(envelope.tokens_used())))
+    }
 }
 
 #[async_trait]
@@ -514,15 +614,38 @@ impl PrimaryReviewActor {
         declared_events: &[String],
         record: WorkflowDataRecord,
     ) -> Result<AgentOutputEvent, AgentError> {
-        let response = if let Some(contract) = &self.policy_contract {
+        let execution_result = if let Some(contract) = &self.policy_contract {
             let validator = PolicyReviewDecisionValidator::new(contract.clone());
             self.executor
-                .execute_with_provider_and_validator(provider, request, &validator)
+                .execute_with_provider_and_validator(provider, request.clone(), &validator)
                 .await
         } else {
-            self.executor.execute_with_provider(provider, request).await
-        }
-        .map_err(|error| AgentError::Internal(error.to_string()))?;
+            self.executor
+                .execute_with_provider(provider, request.clone())
+                .await
+        };
+        let response = match execution_result {
+            Ok(response) => response,
+            Err(error) => {
+                let error_msg = error.to_string();
+                if error_msg.contains("token budget exhausted") {
+                    let decision = PrimaryReviewDecision {
+                        evidence_revision: record.data.evidence_revision,
+                        event_type: "review.failed".to_owned(),
+                        payload: json!({
+                            "reason": format!("provider unavailable: {error_msg}"),
+                        }),
+                        provider: self.executor.capabilities().identity.clone(),
+                        request_id: request.request_id,
+                        attempt: request.attempt,
+                    };
+                    return self
+                        .record_decision(decision, declared_events, record)
+                        .await;
+                }
+                return Err(AgentError::Internal(error_msg));
+            }
+        };
         self.record_response(response, declared_events, record)
             .await
     }
@@ -577,7 +700,8 @@ impl PrimaryReviewActor {
             request_id: response.request_id,
             attempt: response.attempt,
         };
-        self.record_decision(decision, declared_events, record).await
+        self.record_decision(decision, declared_events, record)
+            .await
     }
 
     async fn record_decision(
@@ -623,11 +747,29 @@ impl PrimaryReviewActor {
         declared_events: &[String],
         record: WorkflowDataRecord,
     ) -> Result<AgentOutputEvent, AgentError> {
-        let response = self
-            .executor
-            .execute(request)
-            .await
-            .map_err(|error| AgentError::Internal(error.to_string()))?;
+        let result = self.executor.execute(request.clone()).await;
+        let response = match result {
+            Ok(response) => response,
+            Err(error) => {
+                let error_msg = error.to_string();
+                if error_msg.contains("token budget exhausted") {
+                    let decision = PrimaryReviewDecision {
+                        evidence_revision: record.data.evidence_revision,
+                        event_type: "review.failed".to_owned(),
+                        payload: json!({
+                            "reason": format!("provider unavailable: {error_msg}"),
+                        }),
+                        provider: self.executor.capabilities().identity.clone(),
+                        request_id: request.request_id,
+                        attempt: request.attempt,
+                    };
+                    return self
+                        .record_decision(decision, declared_events, record)
+                        .await;
+                }
+                return Err(AgentError::Internal(error_msg));
+            }
+        };
         self.record_response(response, declared_events, record)
             .await
     }
@@ -689,7 +831,10 @@ fn fit_context_items_to_budget(
                     while end > 0 && !item.content.is_char_boundary(end) {
                         end -= 1;
                     }
-                    format!("{}\n\n... [remaining content omitted for model context budget]", &item.content[..end])
+                    format!(
+                        "{}\n\n... [remaining content omitted for model context budget]",
+                        &item.content[..end]
+                    )
                 } else {
                     item.content.clone()
                 };
@@ -811,10 +956,8 @@ fn framed_prompt_for_items(
         .saturating_sub(base_tokens)
         .saturating_sub(500);
 
-    let (mut evidence, evidence_bytes) = fit_context_items_to_budget(
-        items,
-        available_evidence_tokens,
-    );
+    let (mut evidence, evidence_bytes) =
+        fit_context_items_to_budget(items, available_evidence_tokens);
 
     let mut prompt = frame_prompt_fields(
         &invocation.instructions.system,
@@ -1342,6 +1485,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn token_budget_exhaustion_becomes_review_failed() {
+        let store = workflow_store();
+        let actor = PrimaryReviewActor::new(
+            executor(Err(ProviderError::Unavailable(
+                "Langchart capability broker rejected call: token budget exhausted (91457 / 50000 tokens used)".to_owned(),
+            ))),
+            store.clone(),
+            100,
+        );
+        let event = actor
+            .execute_and_record(
+                request(),
+                &["review.failed".to_owned()],
+                store.load("run-1").unwrap().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(event.event_type.as_str(), "review.failed");
+        let durable = store.load("run-1").unwrap().unwrap();
+        assert_eq!(durable.data.primary_decisions.len(), 1);
+        assert_eq!(
+            durable.data.primary_decisions[0].event_type,
+            "review.failed"
+        );
+    }
+
+    #[tokio::test]
     async fn crash_before_provider_call_reopens_and_records_one_decision() {
         let directory = tempfile::tempdir().unwrap();
         {
@@ -1506,7 +1676,12 @@ mod tests {
         assert_eq!(evidence.len(), 2);
         assert_eq!(evidence[0]["source"], "file1.rs");
         assert_eq!(evidence[0]["content"], "a".repeat(3_000));
-        assert!(evidence[1]["content"].as_str().unwrap().contains("omitted for model context budget"));
+        assert!(
+            evidence[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("omitted for model context budget")
+        );
         assert!(evidence_bytes > 0);
     }
 

@@ -83,11 +83,11 @@ impl CorrectnessWorker {
                 "correctness worker adapter and policy must not be empty",
             ));
         }
-        let checkpoint_store = Arc::new(
-            open_checkpoint_store(&config.state_directory).map_err(|error| {
+        let checkpoint_store = Arc::new(open_checkpoint_store(&config.state_directory).map_err(
+            |error| {
                 ArgusError::invariant("cannot open correctness checkpoint store").with_source(error)
-            })?,
-        );
+            },
+        )?);
         Ok(Self {
             queue,
             workflow_data,
@@ -145,8 +145,7 @@ impl CorrectnessWorker {
                 })
                 .await
                 .map_err(|error| {
-                    ArgusError::invariant("correctness fail-attempt task failed")
-                        .with_source(error)
+                    ArgusError::invariant("correctness fail-attempt task failed").with_source(error)
                 })??;
                 Ok(match state {
                     QueueState::Pending => CorrectnessWorkerResult::RetryScheduled {

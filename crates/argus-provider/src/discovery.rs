@@ -163,7 +163,9 @@ async fn discover_watsonx_models(
                 .send()
                 .await
                 .map_err(|err| {
-                    ProviderError::Unavailable(format!("IBM Cloud IAM token exchange failed: {err}"))
+                    ProviderError::Unavailable(format!(
+                        "IBM Cloud IAM token exchange failed: {err}"
+                    ))
                 })?;
 
             if !iam_res.status().is_success() {
@@ -222,9 +224,7 @@ async fn discover_watsonx_models(
         .send()
         .await
         .map_err(|err| {
-            ProviderError::Unavailable(format!(
-                "failed to query WatsonX models at `{url}`: {err}"
-            ))
+            ProviderError::Unavailable(format!("failed to query WatsonX models at `{url}`: {err}"))
         })?;
 
     if !response.status().is_success() {
@@ -289,10 +289,9 @@ async fn discover_openai_compatible_models(
         )));
     }
 
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|err| ProviderError::InvalidOutput(format!("cannot parse JSON from `{url}`: {err}")))?;
+    let json: serde_json::Value = response.json().await.map_err(|err| {
+        ProviderError::InvalidOutput(format!("cannot parse JSON from `{url}`: {err}"))
+    })?;
 
     parse_model_ids_from_json(&json)
 }
@@ -361,10 +360,9 @@ async fn discover_anthropic_models(
         )));
     }
 
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|err| ProviderError::InvalidOutput(format!("cannot parse JSON from `{url}`: {err}")))?;
+    let json: serde_json::Value = response.json().await.map_err(|err| {
+        ProviderError::InvalidOutput(format!("cannot parse JSON from `{url}`: {err}"))
+    })?;
 
     parse_model_ids_from_json(&json)
 }
@@ -373,7 +371,11 @@ fn parse_model_ids_from_json(json: &serde_json::Value) -> Result<Vec<String>, Pr
     if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
         let ids: Vec<String> = data
             .iter()
-            .filter_map(|item| item.get("id").and_then(|id| id.as_str()).map(ToOwned::to_owned))
+            .filter_map(|item| {
+                item.get("id")
+                    .and_then(|id| id.as_str())
+                    .map(ToOwned::to_owned)
+            })
             .collect();
         if !ids.is_empty() {
             return Ok(ids);
@@ -566,12 +568,24 @@ pub fn generate_runtime_profile(
         },
         DiscoveredProviderKind::Openai => ProviderTransportProfile::Openai {
             api_key: api_key_env
-                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .map(|k| {
+                    if k.starts_with('$') {
+                        k
+                    } else {
+                        format!("${{{k}}}")
+                    }
+                })
                 .unwrap_or_else(|| "${OPENAI_API_KEY}".to_owned()),
         },
         DiscoveredProviderKind::Anthropic => ProviderTransportProfile::Anthropic {
             api_key: api_key_env
-                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .map(|k| {
+                    if k.starts_with('$') {
+                        k
+                    } else {
+                        format!("${{{k}}}")
+                    }
+                })
                 .unwrap_or_else(|| "${ANTHROPIC_API_KEY}".to_owned()),
         },
         DiscoveredProviderKind::LmStudio => ProviderTransportProfile::LmStudio {
@@ -581,11 +595,7 @@ pub fn generate_runtime_profile(
         DiscoveredProviderKind::Bedrock => {
             let region = if let Some(pos) = endpoint.find(".api.aws") {
                 let prefix = &endpoint[..pos];
-                prefix
-                    .split('.')
-                    .last()
-                    .unwrap_or("us-east-1")
-                    .to_owned()
+                prefix.split('.').last().unwrap_or("us-east-1").to_owned()
             } else if endpoint.contains("bedrock-runtime.") {
                 endpoint
                     .split("bedrock-runtime.")
@@ -597,7 +607,13 @@ pub fn generate_runtime_profile(
                 "${AWS_REGION:-us-east-1}".to_owned()
             };
             let bearer_token = api_key_env
-                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .map(|k| {
+                    if k.starts_with('$') {
+                        k
+                    } else {
+                        format!("${{{k}}}")
+                    }
+                })
                 .or_else(|| Some("${AWS_BEARER_TOKEN_BEDROCK}".to_owned()));
             ProviderTransportProfile::Bedrock {
                 region,
@@ -620,7 +636,13 @@ pub fn generate_runtime_profile(
                 endpoint.to_owned()
             };
             let api_key_var = api_key_env
-                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .map(|k| {
+                    if k.starts_with('$') {
+                        k
+                    } else {
+                        format!("${{{k}}}")
+                    }
+                })
                 .unwrap_or_else(|| "${WATSONX_API_KEY}".to_owned());
             ProviderTransportProfile::Watsonx {
                 service_url,
@@ -680,8 +702,7 @@ pub fn slugify_model_alias(model_id: &str) -> String {
         trimmed
     };
 
-    slugify_profile_name(DiscoveredProviderKind::Openai, without_version)
-        .replace("openai-", "")
+    slugify_profile_name(DiscoveredProviderKind::Openai, without_version).replace("openai-", "")
 }
 
 /// Generates a complete ProviderConfig containing all discovered models with aliases.
@@ -708,12 +729,24 @@ pub fn generate_provider_config(
         },
         DiscoveredProviderKind::Openai => ProviderTransportProfile::Openai {
             api_key: api_key_env
-                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .map(|k| {
+                    if k.starts_with('$') {
+                        k
+                    } else {
+                        format!("${{{k}}}")
+                    }
+                })
                 .unwrap_or_else(|| "${OPENAI_API_KEY}".to_owned()),
         },
         DiscoveredProviderKind::Anthropic => ProviderTransportProfile::Anthropic {
             api_key: api_key_env
-                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .map(|k| {
+                    if k.starts_with('$') {
+                        k
+                    } else {
+                        format!("${{{k}}}")
+                    }
+                })
                 .unwrap_or_else(|| "${ANTHROPIC_API_KEY}".to_owned()),
         },
         DiscoveredProviderKind::LmStudio => ProviderTransportProfile::LmStudio {
@@ -723,11 +756,7 @@ pub fn generate_provider_config(
         DiscoveredProviderKind::Bedrock => {
             let region = if let Some(pos) = endpoint.find(".api.aws") {
                 let prefix = &endpoint[..pos];
-                prefix
-                    .split('.')
-                    .last()
-                    .unwrap_or("us-east-1")
-                    .to_owned()
+                prefix.split('.').last().unwrap_or("us-east-1").to_owned()
             } else if endpoint.contains("bedrock-runtime.") {
                 endpoint
                     .split("bedrock-runtime.")
@@ -739,7 +768,13 @@ pub fn generate_provider_config(
                 "${AWS_REGION:-us-east-1}".to_owned()
             };
             let bearer_token = api_key_env
-                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .map(|k| {
+                    if k.starts_with('$') {
+                        k
+                    } else {
+                        format!("${{{k}}}")
+                    }
+                })
                 .or_else(|| Some("${AWS_BEARER_TOKEN_BEDROCK}".to_owned()));
             ProviderTransportProfile::Bedrock {
                 region,
@@ -762,7 +797,13 @@ pub fn generate_provider_config(
                 endpoint.to_owned()
             };
             let api_key_var = api_key_env
-                .map(|k| if k.starts_with('$') { k } else { format!("${{{k}}}") })
+                .map(|k| {
+                    if k.starts_with('$') {
+                        k
+                    } else {
+                        format!("${{{k}}}")
+                    }
+                })
                 .unwrap_or_else(|| "${WATSONX_API_KEY}".to_owned());
             ProviderTransportProfile::Watsonx {
                 service_url,
@@ -812,9 +853,7 @@ pub fn generate_provider_config(
             aliases.push("default".to_owned());
         }
         let alias = slugify_model_alias(model_id);
-        if !alias.is_empty()
-            && alias != model_id.to_ascii_lowercase()
-            && !aliases.contains(&alias)
+        if !alias.is_empty() && alias != model_id.to_ascii_lowercase() && !aliases.contains(&alias)
         {
             aliases.push(alias);
         }
@@ -837,7 +876,11 @@ pub fn generate_provider_config(
                 context_window_tokens,
                 max_output_tokens,
                 structured_output: Some(default_structured_output),
-                concurrency_capacity: if deployment == DeploymentMode::Local { 2 } else { 4 },
+                concurrency_capacity: if deployment == DeploymentMode::Local {
+                    2
+                } else {
+                    4
+                },
                 aliases,
             },
         );
@@ -886,24 +929,15 @@ mod tests {
     #[test]
     fn slugify_produces_clean_names() {
         assert_eq!(
-            slugify_profile_name(
-                DiscoveredProviderKind::Lemonade,
-                "Qwen3.6-35B-A3B-GGUF"
-            ),
+            slugify_profile_name(DiscoveredProviderKind::Lemonade, "Qwen3.6-35B-A3B-GGUF"),
             "lemonade-qwen3.6-35b-a3b-gguf"
         );
         assert_eq!(
-            slugify_profile_name(
-                DiscoveredProviderKind::Ollama,
-                "llama3.2:latest"
-            ),
+            slugify_profile_name(DiscoveredProviderKind::Ollama, "llama3.2:latest"),
             "ollama-llama3.2-latest"
         );
         assert_eq!(
-            slugify_profile_name(
-                DiscoveredProviderKind::Openai,
-                "gpt-4o"
-            ),
+            slugify_profile_name(DiscoveredProviderKind::Openai, "gpt-4o"),
             "openai-gpt-4o"
         );
     }
@@ -1000,16 +1034,27 @@ mod tests {
         assert_eq!(config.provider, "bedrock");
         assert_eq!(config.models.len(), 2);
 
-        let sonnet = config.models.get("anthropic.claude-3-7-sonnet-20250219-v1:0").unwrap();
+        let sonnet = config
+            .models
+            .get("anthropic.claude-3-7-sonnet-20250219-v1:0")
+            .unwrap();
         assert!(sonnet.aliases.contains(&"default".to_owned()));
         assert!(sonnet.aliases.contains(&"claude-3-7-sonnet".to_owned()));
 
-        let haiku = config.models.get("anthropic.claude-3-haiku-20240307-v1:0").unwrap();
+        let haiku = config
+            .models
+            .get("anthropic.claude-3-haiku-20240307-v1:0")
+            .unwrap();
         assert!(haiku.aliases.contains(&"claude-3-haiku".to_owned()));
 
         // Resolve by alias
-        let resolved = config.resolve_runtime_profile(Some("claude-3-haiku")).unwrap();
-        assert_eq!(resolved.capabilities.identity.model, "anthropic.claude-3-haiku-20240307-v1:0");
+        let resolved = config
+            .resolve_runtime_profile(Some("claude-3-haiku"))
+            .unwrap();
+        assert_eq!(
+            resolved.capabilities.identity.model,
+            "anthropic.claude-3-haiku-20240307-v1:0"
+        );
     }
 
     #[test]
@@ -1032,13 +1077,25 @@ mod tests {
 
         let granite = config.models.get("ibm/granite-3-8b-instruct").unwrap();
         assert!(granite.aliases.contains(&"default".to_owned()));
-        assert!(granite.aliases.contains(&"granite-3-8b-instruct".to_owned()));
+        assert!(
+            granite
+                .aliases
+                .contains(&"granite-3-8b-instruct".to_owned())
+        );
 
-        let llama = config.models.get("meta-llama/llama-3-3-70b-instruct").unwrap();
+        let llama = config
+            .models
+            .get("meta-llama/llama-3-3-70b-instruct")
+            .unwrap();
         assert!(llama.aliases.contains(&"llama-3-3-70b-instruct".to_owned()));
 
         // Resolve by alias
-        let resolved = config.resolve_runtime_profile(Some("llama-3-3-70b-instruct")).unwrap();
-        assert_eq!(resolved.capabilities.identity.model, "meta-llama/llama-3-3-70b-instruct");
+        let resolved = config
+            .resolve_runtime_profile(Some("llama-3-3-70b-instruct"))
+            .unwrap();
+        assert_eq!(
+            resolved.capabilities.identity.model,
+            "meta-llama/llama-3-3-70b-instruct"
+        );
     }
 }

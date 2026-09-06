@@ -323,7 +323,8 @@ impl ProviderExecutor {
                 > u64::from(capabilities.context_window_tokens)
         {
             return Err(ProviderError::InvalidPolicy(
-                "request token bounds exceed the assigned provider context window or policy".to_owned(),
+                "request token bounds exceed the assigned provider context window or policy"
+                    .to_owned(),
             ));
         }
         Ok(())
