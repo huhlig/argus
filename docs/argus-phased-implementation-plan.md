@@ -563,12 +563,14 @@ Deliver the first complete repository-wide semantic policy.
   (`crates/argus-policies/src/documentation.rs`).
 - [x] Presence, purpose, behavior, inputs, outputs, errors, panics, safety, side effects, invariants, examples,
   accuracy, currency, and value rubrics (all 14 rubrics implemented).
+- [x] Documented gap and stub tracking rules: mandatory `TODO` comment requirement in doc comments and inline notes.
 - [x] Claim extraction and claim-to-evidence mapping.
 - [x] Pass, candidate finding, and unable-to-verify assessments.
 - [x] Finding canonicalization and duplicate clustering.
 - [x] Markdown and JSON/JSONL reports (`crates/argus-report`).
 - [x] Seeded documentation-defect corpus and human adjudication capture (`docs/evaluation/documentation-corpus-v1.json`,
-  `argus adjudicate`).
+  `docs/evaluation/documentation-corpus-v1-workspace`, with 16 expected issues and 4 clean controls).
+- [x] Baseline quality thresholds configuration (`docs/evaluation/documentation-thresholds-v1.json`).
 - [x] Evaluation reporting CLI (`argus evaluate documentation`).
 
 ### CLI Slice
@@ -620,10 +622,13 @@ Add conservative correctness analysis without lowering evidence or verification 
 - [x] Target rubrics for functions, methods, types, implementations, modules, and tests (`argus_policies::correctness`).
 - [x] Evidence-backed failure-path, invariant, state-transition, error-handling, resource-lifecycle, concurrency,
   persistence, boundary-condition, and unsafe-assumption analysis.
+- [x] Gap, inconsistency, stub, and unimplemented aspect inspection with non-exemption for documented defects.
 - [x] Relationship-group review where isolated targets are insufficient.
 - [x] Candidate verification workflow with isolated context.
 - [x] Configurable corroboration, disagreement, escalation, and human-review requirements.
-- [x] Seeded correctness corpus, including relational and adversarial cases (`docs/evaluation/correctness-corpus-v1.json`, `docs/evaluation/correctness-corpus-v1-workspace`).
+- [x] Seeded correctness corpus, including relational, adversarial, stub, and scope gap cases (`docs/evaluation/correctness-corpus-v1.json`,
+  `docs/evaluation/correctness-corpus-v1-workspace`, with 11 expected issues and 4 clean controls).
+- [x] Baseline quality thresholds configuration (`docs/evaluation/correctness-thresholds-v1.json`).
 
 ### Deliverable
 

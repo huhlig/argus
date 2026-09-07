@@ -1151,6 +1151,19 @@ Complex fields should explain:
 - optionality,
 - and non-obvious behavior.
 
+## 23.6 Policy Rubric Rules for Gaps, Stubs, and TODO Tracking
+
+### Correctness: Non-Exemption for Documented Defects
+Review models evaluating correctness must actively inspect source declarations and implementations for incomplete work:
+- **Scope Gaps and Stubs**: `todo!()`, `unimplemented!()`, placeholder or mock return values, empty or truncated handler bodies, missing branches, unhandled error variants, and partial implementations.
+- **Documented Defect Non-Exemption**: Gaps, inconsistencies, stubs, and unimplemented aspects MUST ALWAYS be surfaced as deficient dimensions and candidate findings, regardless of whether they are documented, commented, or intentional (e.g. marked with `// TODO`, `// stub`, or described in doc comments/specifications).
+- **Rationale**: Documenting future work acknowledges an implementation gap but does not fulfill the contract; surfacing candidate findings ensures that incomplete aspects remain visible for top-level documentation and backlog prioritization.
+
+### Documentation: Mandatory `TODO` Comment Rule
+Review models evaluating documentation must enforce explicit tagging of incomplete or provisional behavior:
+- **Mandatory `TODO` Comment Rule**: Any documentation, doc comment, or inline comment that acknowledges or describes gaps, inconsistencies, stubs, mock implementations, or unimplemented functionality in a public or internal target MUST explicitly include `TODO` in comments (e.g. `// TODO: ...` or `/// TODO: ...`).
+- **Defect Classification**: Describing or acknowledging an incomplete aspect or stub in documentation or comments without an explicit `TODO` designation is classified as a documentation defect under the relevant dimension (`behavior`, `value`, `purpose`, or `accuracy`) and must emit candidate findings.
+
 ---
 
 # 24. Significance Model

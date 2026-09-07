@@ -13,13 +13,34 @@ correctness rubrics:
 8. `UnsafeAssumptions`
 9. `BoundaryConditions`
 
-plus 3 clean controls. Corpus and evaluation records are independently schema-versioned; changing
+including targeted enforcement for documented stubs and scope gaps, plus 4 clean controls (11 expected issues total). Corpus and evaluation records are independently schema-versioned; changing
 ground truth requires a new corpus version.
 The serialized corpus is checked in at `docs/evaluation/correctness-corpus-v1.json` and is tested
-against the fixture builder to prevent drift.
+against the fixture builder to prevent drift. Baseline quality thresholds are checked in at
+`docs/evaluation/correctness-thresholds-v1.json`.
 Its executable Cargo workspace is checked in at
 `docs/evaluation/correctness-corpus-v1-workspace`. The corpus uses logical target IDs, which are
 independent of snapshot, analysis configuration, VCS state, and source byte offsets.
+
+### Gaps, Inconsistencies, Stubs, and Documented Defect Non-Exemption
+
+The correctness review policy enforces active inspection and surfacing of all incomplete or stubbed code:
+- **Active Inspection**: The reviewer must actively inspect code for:
+  - *Stubs & unimplemented aspects*: `todo!()`, `unimplemented!()`, placeholder or mock return values,
+    empty or incomplete function/handler bodies, and partial implementations that do not fulfill declared contracts.
+  - *Gaps*: Missing behavior that documentation specifies or that is implied by the function's scope,
+    missing branches, unhandled error variants, missing state transitions, and incomplete validations.
+  - *Inconsistencies*: Contradictory state handling, asymmetric operations, conflicting invariant checks,
+    and mismatched preconditions/postconditions.
+- **Documented Defect Non-Exemption**: Gaps, inconsistencies, stubs, and unimplemented aspects in code
+  MUST ALWAYS be surfaced as deficient dimensions and candidate findings, including when they are
+  documented, commented, or intentional (e.g. marked with `// TODO`, `// stub`, or described in doc comments).
+  Documenting an incomplete aspect acknowledges future work but does NOT exempt the code from being flagged;
+  it must be surfaced so it can be tracked in the backlog and top-level documentation.
+- **Seeded Defect Cases**:
+  - `documented-stub-todo`: Validates detection under `FailurePaths` of intentional `todo!()` stubs in production paths.
+  - `documented-scope-gap`: Validates detection under `Invariants` of dummy return values that violate operational invariants.
+  - `known-clean-implemented-feature`: Control verifying that full, complete implementations without stubs or scope gaps pass review.
 
 Human decisions use the generic `HumanAdjudication` record and existing `AdjudicationState` rather
 than a correctness-specific verdict. Records are append-only per run and finding. Revision writes
@@ -81,7 +102,7 @@ Evaluate one run, or pass additional run IDs to measure stability, optionally en
 ```text
 argus evaluate correctness \
   --corpus docs/evaluation/correctness-corpus-v1.json \
-  [--thresholds .argus/config/thresholds.json] \
+  [--thresholds docs/evaluation/correctness-thresholds-v1.json] \
   [--format markdown|json] \
   <run-id> [<run-id> ...]
 ```
@@ -92,6 +113,6 @@ Create each repeated evaluation run from the executable corpus workspace:
 cd docs/evaluation/correctness-corpus-v1-workspace
 argus prime --adapter rust
 argus audit --pipeline correctness
-argus work correctness --profile <profile-name-or-path> --limit 12
+argus work correctness --profile <profile-name-or-path> --limit 15
 argus finalize <run-id>
 ```
