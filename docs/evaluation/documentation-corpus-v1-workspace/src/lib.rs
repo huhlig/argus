@@ -159,3 +159,34 @@ pub fn known_clean_error(path: &str) -> Result<String, std::io::Error> {
         Ok(path.to_owned())
     }
 }
+
+// 15. Documented stub missing TODO comment
+/// Generates encryption key pairs.
+///
+/// Note: Hardware security module key generation is currently a stub returning mock keys.
+#[must_use]
+pub fn documented_stub_missing_todo(key_type: &str) -> Vec<u8> {
+    if key_type == "hsm" {
+        vec![0xAA; 32]
+    } else {
+        vec![0x00; 32]
+    }
+}
+
+// 16. Documented gap missing TODO comment
+/// Synchronizes state with the upstream coordinator.
+///
+/// Sync retry on network timeout is unimplemented and dropped packets are ignored.
+#[must_use]
+pub fn documented_gap_missing_todo(state_id: u64) -> bool {
+    state_id > 0
+}
+
+/// Computes message digest using the specified cipher suite.
+///
+/// TODO: Add hardware-accelerated SHA-3 implementation.
+#[must_use]
+pub fn known_clean_stub_with_todo(input: &[u8]) -> usize {
+    input.len()
+}
+

@@ -1,0 +1,6 @@
+{
+  "min_precision_basis_points": 8000,
+  "min_recall_basis_points": 0,
+  "max_duplicate_rate_basis_points": 1000,
+  "max_unable_to_verify_rate_basis_points": 1000
+}
