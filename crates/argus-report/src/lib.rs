@@ -16,10 +16,14 @@
 
 mod architecture;
 mod architecture_evaluation;
+pub mod backlog;
 mod correctness;
 mod correctness_evaluation;
 mod evaluation;
 
+pub use backlog::{
+    BacklogCategory, BacklogItem, BacklogReport, classify_backlog_finding, extract_backlog_report,
+};
 pub use architecture::{
     ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ARCHITECTURE_REPORT_SCHEMA_VERSION,
     ArchitectureFindingCluster, ArchitectureFindingOccurrence, ArchitectureReport,

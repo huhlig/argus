@@ -43,6 +43,7 @@ Inspection & Telemetry:
 
 Review, Adjudication & Evaluation:
   report       Render the documentation review report for a run (Markdown)
+  backlog      Surface candidate gap findings into backlog items or top-level tracking
   adjudicate   Record a human adjudication decision on a candidate finding
   evaluate     Measure precision, recall, and stability against a versioned corpus
   finalize     Publish an immutable terminal run bundle to .argus/reviews/
@@ -269,7 +270,7 @@ Examples:
 
 const HELP_REPORT: &str = "Render the audit report for a run (documentation or correctness)
 
-Usage: argus report [run-id] [--format <markdown|json|jsonl>] [--dimension <dimension>] [--severity <severity>]
+Usage: argus report [run-id] [--format <markdown|json|jsonl|backlog|beads>] [--dimension <dimension>] [--severity <severity>] [--gaps-only]
 
 Description:
   Generates a developer report from the durable queue or finalized bundle,
@@ -280,14 +281,39 @@ Arguments:
   [run-id]   Run identifier to report (default: current run)
 
 Options:
-  --format <format>        Output format: markdown (default), json, jsonl
+  --format <format>        Output format: markdown (default), json, jsonl, backlog, beads
   --dimension <dimension>  Filter findings by dimension
   --severity <severity>    Filter findings by severity (e.g. critical, high, medium, low, info)
+  --gaps-only              Only include findings classified as documented gaps, stubs, or TODOs
 
 Examples:
   argus report 5c82a1...
   argus report 5c82a1... --format json
-  argus report 5c82a1... --dimension concurrency";
+  argus report 5c82a1... --format backlog
+  argus report 5c82a1... --format beads
+  argus report 5c82a1... --gaps-only";
+
+const HELP_BACKLOG: &str = "Surface candidate gap findings into backlog items or top-level tracking
+
+Usage: argus backlog [run-id] [--format <markdown|beads|json|jsonl>] [--dimension <dimension>] [--severity <severity>]
+
+Description:
+  Extracts documented gap findings, stubs, and future work items (TODOs, placeholders,
+  unimplemented functions) from an audit run, and formats them for issue tracking
+  or documentation checklists.
+
+Arguments:
+  [run-id]   Run identifier to extract gaps from (default: current run)
+
+Options:
+  --format <format>        Output format: markdown (default), beads (shell script with `bd create`), json, jsonl
+  --dimension <dimension>  Filter findings by dimension
+  --severity <severity>    Filter findings by severity
+
+Examples:
+  argus backlog
+  argus backlog --format beads
+  argus backlog 5c82a1... --format json";
 
 const HELP_ADJUDICATE: &str = "Record a human decision about a candidate finding
 
@@ -477,6 +503,7 @@ fn command_help(command: &str) -> Result<String, argus_core::ArgusError> {
         "cancel" => Ok(HELP_CANCEL.to_owned()),
         "finalize" => Ok(HELP_FINALIZE.to_owned()),
         "report" => Ok(HELP_REPORT.to_owned()),
+        "backlog" => Ok(HELP_BACKLOG.to_owned()),
         "adjudicate" => Ok(HELP_ADJUDICATE.to_owned()),
         "evaluate" => Ok(HELP_EVALUATE.to_owned()),
         "provider" | "profile" => Ok(HELP_PROVIDER.to_owned()),
@@ -1050,6 +1077,10 @@ pub enum CliCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    Backlog {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     Adjudicate {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -1134,6 +1165,14 @@ fn run(
         CliCommand::Cancel { run_id } => cancel_command(root, run_id),
         CliCommand::Finalize { run_id } => finalize_command(root, run_id),
         CliCommand::Report { args } => report_command(root, append_config(args).into_iter()),
+        CliCommand::Backlog { args } => {
+            let mut backlog_args = append_config(args);
+            if !backlog_args.iter().any(|a| a == "--format") {
+                backlog_args.push("--format".to_owned());
+                backlog_args.push("backlog".to_owned());
+            }
+            report_command(root, backlog_args.into_iter())
+        }
         CliCommand::Adjudicate { args } => {
             adjudicate_command(root, append_config(args).into_iter())
         }
@@ -3034,7 +3073,7 @@ fn report_command(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    let usage = "usage: argus report [run-id] [--format <markdown|json|jsonl>] [--dimension <dimension>] [--severity <severity>]";
+    let usage = "usage: argus report [run-id] [--format <markdown|json|jsonl|backlog|beads>] [--dimension <dimension>] [--severity <severity>] [--gaps-only]";
     let first = args.next();
     if is_help_flag(first.as_deref()) {
         return Ok(HELP_REPORT.to_owned());
@@ -3048,6 +3087,7 @@ fn report_command(
     let mut format = "markdown";
     let mut dimension_str: Option<String> = None;
     let mut severity_filter: Option<argus_core::Severity> = None;
+    let mut gaps_only = false;
 
     let flag_iter = flag_peek.into_iter().chain(args);
     let mut iter = flag_iter.peekable();
@@ -3055,6 +3095,10 @@ fn report_command(
     while let Some(flag) = iter.next() {
         if is_help_flag(Some(&flag)) {
             return Ok(HELP_REPORT.to_owned());
+        }
+        if flag == "--gaps-only" {
+            gaps_only = true;
+            continue;
         }
         let value = iter
             .next()
@@ -3064,9 +3108,11 @@ fn report_command(
                 "markdown" => format = "markdown",
                 "json" => format = "json",
                 "jsonl" => format = "jsonl",
+                "backlog" => format = "backlog",
+                "beads" => format = "beads",
                 _ => {
                     return Err(argus_core::ArgusError::invalid_input(
-                        "supported report formats: markdown, json, jsonl",
+                        "supported report formats: markdown, json, jsonl, backlog, beads",
                     ));
                 }
             },
@@ -3103,6 +3149,76 @@ fn report_command(
         .any(|w| w.coverage.policy.starts_with("documentation"));
     let policy_count =
         usize::from(is_architecture) + usize::from(is_correctness) + usize::from(is_documentation);
+
+    if format == "backlog" || format == "beads" || gaps_only {
+        let documentation = is_documentation
+            .then(|| {
+                argus_report::documentation_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "documentation-public-api@1",
+                )
+            })
+            .transpose()?;
+        let correctness = is_correctness
+            .then(|| {
+                argus_report::correctness_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "correctness-conservative@1",
+                )
+            })
+            .transpose()?;
+        let architecture = is_architecture
+            .then(|| {
+                argus_report::architecture_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "architecture-code-derived@1",
+                )
+            })
+            .transpose()?;
+
+        let mut backlog = argus_report::extract_backlog_report(
+            id,
+            documentation.as_ref(),
+            correctness.as_ref(),
+            architecture.as_ref(),
+        );
+
+        if let Some(sev) = severity_filter {
+            backlog.items.retain(|item| item.severity == sev);
+        }
+        if let Some(ref dim) = dimension_str {
+            let dim_lower = dim.to_lowercase();
+            backlog.items.retain(|item| {
+                item.dimensions
+                    .iter()
+                    .any(|d| d.to_lowercase() == dim_lower)
+            });
+        }
+
+        return match format {
+            "beads" => Ok(backlog.to_beads_script()),
+            "json" => serde_json::to_string_pretty(&backlog).map_err(|error| {
+                argus_core::ArgusError::invariant("cannot serialize backlog report")
+                    .with_source(error)
+            }),
+            "jsonl" => {
+                let mut out = String::new();
+                for item in &backlog.items {
+                    let line = serde_json::to_string(item).map_err(|error| {
+                        argus_core::ArgusError::invariant("cannot serialize backlog item")
+                            .with_source(error)
+                    })?;
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+                Ok(out.trim_end().to_owned())
+            }
+            _ => Ok(backlog.to_markdown()),
+        };
+    }
 
     if policy_count > 1 {
         if dimension_str.is_some() || severity_filter.is_some() {
@@ -4819,6 +4935,7 @@ mod tests {
             "cancel",
             "finalize",
             "report",
+            "backlog",
             "adjudicate",
             "evaluate",
         ];
@@ -6522,5 +6639,124 @@ mod tests {
             profile.capabilities.identity.model,
             "anthropic.claude-3-haiku-20240307-v1:0"
         );
+    }
+
+    #[test]
+    fn audit_and_report_backlog_and_gaps_pipeline() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temporary.path().join("Cargo.toml"),
+            b"[package]\nname = \"backlog_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(
+            temporary.path().join("src/lib.rs"),
+            b"/// TODO: Missing documentation note\npub fn stub_item() { todo!() }\n",
+        )
+        .unwrap();
+
+        let primed = run(
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "rust".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let run_id = primed.split_whitespace().nth(2).unwrap().to_owned();
+
+        let _audit_out = run(
+            [
+                "audit".to_owned(),
+                "--pipeline".to_owned(),
+                "documentation".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        // 1. argus backlog command
+        let backlog_out = run(
+            ["backlog".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(backlog_out.contains("# Project Backlog & Gap Tracking"));
+        assert!(backlog_out.contains(&format!("Run: `{run_id}`")));
+
+        // 2. argus backlog --format beads
+        let beads_out = run(
+            [
+                "backlog".to_owned(),
+                run_id.clone(),
+                "--format".to_owned(),
+                "beads".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(beads_out.contains(&format!("# Beads backlog export for Argus run {run_id}")));
+
+        // 3. argus report --gaps-only
+        let gaps_only_out = run(
+            [
+                "report".to_owned(),
+                run_id.clone(),
+                "--gaps-only".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(gaps_only_out.contains("# Project Backlog & Gap Tracking"));
+
+        // 4. argus report --format backlog
+        let report_backlog = run(
+            [
+                "report".to_owned(),
+                run_id.clone(),
+                "--format".to_owned(),
+                "backlog".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(report_backlog.contains("# Project Backlog & Gap Tracking"));
+
+        // 5. argus report --format beads
+        let report_beads = run(
+            [
+                "report".to_owned(),
+                run_id.clone(),
+                "--format".to_owned(),
+                "beads".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(report_beads.contains(&format!("# Beads backlog export for Argus run {run_id}")));
+
+        // 6. argus report --gaps-only --format json
+        let gaps_json = run(
+            [
+                "report".to_owned(),
+                run_id,
+                "--gaps-only".to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let parsed: argus_report::BacklogReport = serde_json::from_str(&gaps_json).unwrap();
+        assert_eq!(parsed.run_id.as_str(), parsed.run_id.to_string());
     }
 }
