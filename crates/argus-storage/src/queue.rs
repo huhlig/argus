@@ -1360,6 +1360,124 @@ impl DurableQueue {
         Ok(next)
     }
 
+    /// Voluntarily releases an active lease on a work item back to [`QueueState::Pending`].
+    ///
+    /// This is invoked during graceful shutdown or cooperative lease cancellation so that work
+    /// items are immediately available for subsequent worker runs or resume without waiting
+    /// for lease expiration.
+    ///
+    /// Returns `Ok(true)` if the item was leased and successfully released, or `Ok(false)`
+    /// if the item was not in [`QueueState::Leased`].
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if the database write transaction fails.
+    pub fn release_lease(
+        &self,
+        id: &WorkItemId,
+        at_millis: u64,
+    ) -> Result<bool, argus_core::ArgusError> {
+        let write = self
+            .database
+            .begin_write()
+            .map_err(database_error("cannot release lease"))?;
+        let exists = {
+            let table = write
+                .open_table(WORK)
+                .map_err(database_error("cannot open work table"))?;
+            table
+                .get(id.as_str())
+                .map_err(database_error("cannot read work"))?
+                .is_some()
+        };
+        if !exists {
+            return Ok(false);
+        }
+        let changed = update_work(&write, id, |work| {
+            if work.state == QueueState::Leased {
+                work.state = QueueState::Pending;
+                work.lease_until_millis = None;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })?;
+        if changed {
+            append_event(
+                &write,
+                id,
+                QueueEventKind::RetryScheduled,
+                at_millis,
+                Some("lease voluntarily released during graceful shutdown".to_owned()),
+            )?;
+        }
+        write
+            .commit()
+            .map_err(database_error("cannot commit lease release"))?;
+        Ok(changed)
+    }
+
+    /// Voluntarily releases all in-flight active leases belonging to a specific run back to [`QueueState::Pending`].
+    ///
+    /// Invoked during graceful shutdown of worker pools for a run so that any in-flight items
+    /// are immediately available upon restart or resume without waiting for lease timeouts.
+    ///
+    /// Returns the number of leased items released.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if the database write transaction fails.
+    pub fn release_in_flight_leases_for_run(
+        &self,
+        run_id: &RunId,
+        at_millis: u64,
+    ) -> Result<u64, argus_core::ArgusError> {
+        let write = self
+            .database
+            .begin_write()
+            .map_err(database_error("cannot release in-flight leases"))?;
+        let released_ids = {
+            let mut table = write
+                .open_table(WORK)
+                .map_err(database_error("cannot open work table"))?;
+            let mut updates = Vec::new();
+            for entry in table
+                .iter()
+                .map_err(database_error("cannot scan run work"))?
+            {
+                let (key, value) = entry.map_err(database_error("cannot read run work"))?;
+                let mut work: QueueWork = decode(value.value())?;
+                if work.run == *run_id && work.state == QueueState::Leased {
+                    work.state = QueueState::Pending;
+                    work.lease_until_millis = None;
+                    updates.push((key.value().to_owned(), work));
+                }
+            }
+            let ids = updates
+                .iter()
+                .map(|(_, work)| work.id.clone())
+                .collect::<Vec<_>>();
+            for (key, work) in updates {
+                let bytes = encode(&work)?;
+                table
+                    .insert(key.as_str(), bytes.as_slice())
+                    .map_err(database_error("cannot update released work"))?;
+            }
+            ids
+        };
+        for work_id in &released_ids {
+            append_event(
+                &write,
+                work_id,
+                QueueEventKind::RetryScheduled,
+                at_millis,
+                Some("in-flight lease voluntarily released during graceful shutdown".to_owned()),
+            )?;
+        }
+        write
+            .commit()
+            .map_err(database_error("cannot commit in-flight lease release"))?;
+        Ok(u64::try_from(released_ids.len()).unwrap_or(u64::MAX))
+    }
+
     /// Cancels a specific work item by ID.
     ///
     /// Work in [`QueueState::Pending`] or [`QueueState::Leased`] transitions to [`QueueState::Cancelled`].

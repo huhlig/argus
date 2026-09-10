@@ -2471,6 +2471,47 @@ where
     let is_idle = std::sync::Arc::new(AtomicBool::new(false));
     let consecutive_failures = std::sync::Arc::new(AtomicUsize::new(0));
     let breaker_tripped = std::sync::Arc::new(AtomicBool::new(false));
+    let shutdown_requested = std::sync::Arc::new(AtomicBool::new(false));
+
+    // Spawn a background listener for Ctrl+C / SIGINT shutdown signals
+    let signal_shutdown = shutdown_requested.clone();
+    let signal_breaker = breaker_tripped.clone();
+    let signal_category = category;
+    let signal_handle = tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigint = signal(SignalKind::interrupt()).ok();
+            let mut sigterm = signal(SignalKind::terminate()).ok();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = async {
+                    if let Some(s) = sigint.as_mut() {
+                        s.recv().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {}
+                _ = async {
+                    if let Some(s) = sigterm.as_mut() {
+                        s.recv().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        signal_shutdown.store(true, Ordering::SeqCst);
+        signal_breaker.store(true, Ordering::SeqCst);
+        tracing::warn!(
+            policy = signal_category,
+            "[{signal_category}] Shutdown signal received. Halting new work dispatch and cleanly releasing in-flight leases..."
+        );
+    });
 
     let pool_size = concurrency.max(1);
     let mut join_set = tokio::task::JoinSet::new();
@@ -2483,6 +2524,7 @@ where
         let is_idle = is_idle.clone();
         let consecutive_failures = consecutive_failures.clone();
         let breaker_tripped = breaker_tripped.clone();
+        let shutdown_requested = shutdown_requested.clone();
         let queue = queue.clone();
         let run_id = run_id.clone();
         let worker = worker.clone();
@@ -2492,7 +2534,10 @@ where
 
         join_set.spawn(async move {
             loop {
-                if is_idle.load(Ordering::Relaxed) || breaker_tripped.load(Ordering::Relaxed) {
+                if is_idle.load(Ordering::Relaxed)
+                    || breaker_tripped.load(Ordering::Relaxed)
+                    || shutdown_requested.load(Ordering::Relaxed)
+                {
                     break;
                 }
                 let item_index = dispatched.fetch_add(1, Ordering::SeqCst);
@@ -2525,6 +2570,10 @@ where
                 let (result, duration) = match step_res {
                     Ok(r) => r,
                     Err(err) => {
+                        // If shutdown was requested while a step was running, do not treat as an error
+                        if shutdown_requested.load(Ordering::Relaxed) {
+                            break;
+                        }
                         // A step-level error (watchdog timeout, task panic) means this one item's
                         // lease is abandoned and recoverable via 'argus resume'; it must not take
                         // down the other workers still making progress in this pool, so it is
@@ -2616,13 +2665,31 @@ where
     while let Some(task_res) = join_set.join_next().await {
         match task_res {
             Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err),
+            Ok(Err(err)) => {
+                signal_handle.abort();
+                return Err(err);
+            }
             Err(join_err) => {
+                signal_handle.abort();
                 return Err(argus_core::ArgusError::invariant(format!(
                     "worker task panicked or aborted: {join_err}"
                 )));
             }
         }
+    }
+
+    signal_handle.abort();
+
+    // Cleanly release any in-flight leased work items back to Pending
+    let now = now_millis()?;
+    let released = queue.release_in_flight_leases_for_run(run_id, now)?;
+    if released > 0 {
+        tracing::info!(
+            policy = category,
+            run_id = %run_id,
+            released = released,
+            "[{category}] Voluntarily released {released} in-flight work item lease(s) back to pending state."
+        );
     }
 
     let summary = format_work_summary(
@@ -2632,6 +2699,12 @@ where
         failed.load(Ordering::SeqCst),
         limit,
     );
+
+    if shutdown_requested.load(Ordering::SeqCst) {
+        return Err(argus_core::ArgusError::invariant(format!(
+            "{category_title} work interrupted by shutdown signal; cleanly released {released} in-flight lease(s). {summary}. Run 'argus resume' or re-run 'argus work' to continue."
+        )));
+    }
 
     if breaker_tripped.load(Ordering::SeqCst) {
         let abort_clause = if fail_fast {
@@ -7287,4 +7360,147 @@ mod tests {
         assert!(work_help.contains("--preset <local|ci>"));
         assert!(work_help.contains("--fail-fast"));
     }
+
+    #[tokio::test]
+    async fn worker_pool_shutdown_and_restart_recovery_validation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            argus_storage::DurableQueue::open(&temporary.path().join("state.redb")).unwrap(),
+        );
+        let snapshot = argus_core::SnapshotId::derive([b"recovery-snapshot".as_slice()]);
+        let configuration =
+            argus_core::ConfigurationId::derive([b"recovery-configuration".as_slice()]);
+        let run_id = argus_core::RunId::derive([b"recovery-run".as_slice()]);
+        queue
+            .create_run(&argus_storage::RunRecord {
+                id: run_id.clone(),
+                snapshot: snapshot.clone(),
+                configuration: configuration.clone(),
+                state: argus_storage::RunState::Active,
+                created_at_millis: 0,
+                updated_at_millis: 0,
+                finalized_at_millis: None,
+            })
+            .unwrap();
+
+        // Admit 4 work items
+        let coverage = argus_storage::CoverageKey {
+            snapshot: snapshot.to_string(),
+            configuration: configuration.to_string(),
+            adapter: "rust".to_owned(),
+            target_kind: "callable".to_owned(),
+            policy: "documentation-public-api@1".to_owned(),
+        };
+        let items: Vec<_> = (0_u32..4)
+            .map(|i| {
+                argus_storage::QueueWork::pending_for(
+                    argus_core::WorkItemId::derive([
+                        b"recovery-work".as_slice(),
+                        i.to_le_bytes().as_slice(),
+                    ]),
+                    format!("payload-{i}").into_bytes(),
+                    run_id.clone(),
+                    coverage.clone(),
+                )
+            })
+            .collect();
+        queue.admit_batch(&items, 0).unwrap();
+
+        // 1. Simulate worker pool executing partially: item 0 and 1 succeed, then simulated interruption
+        let queue_clone = queue.clone();
+        let q_worker = queue.clone();
+        let res = execute_concurrent_worker_pool(
+            "documentation",
+            "Documentation",
+            1,
+            Some(2), // Process only 2 items in first run
+            "test-provider",
+            "test-model",
+            queue_clone,
+            &run_id,
+            std::sync::Arc::new(()),
+            move |_worker| {
+                let q = q_worker.clone();
+                async move {
+                    // Lease the next available item and complete it
+                    if let Some(leased) = q.lease_next(1_000, 60_000).unwrap() {
+                        let outcome_key = format!("outcome-{}", leased.id);
+                        q.complete(&leased.id, &outcome_key, b"passed").unwrap();
+                        Ok(WorkerStepResult::Succeeded { work_id: leased.id })
+                    } else {
+                        Ok(WorkerStepResult::Idle)
+                    }
+                }
+            },
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(res.contains("2 succeeded"));
+
+        // Verify status after partial run
+        let status = queue.status(1_050).unwrap();
+        assert_eq!(status.succeeded, 2);
+        assert_eq!(status.pending, 2);
+        assert_eq!(status.leased, 0);
+
+        // 2. Simulate an in-flight lease being held when worker process interrupts
+        let _leased_work = queue.lease_next(1_100, 120_000).unwrap().unwrap();
+        assert_eq!(queue.status(1_150).unwrap().leased, 1);
+        assert_eq!(queue.status(1_150).unwrap().pending, 1);
+
+        // Voluntary release of in-flight lease (as done on graceful shutdown / signal)
+        let released = queue.release_in_flight_leases_for_run(&run_id, 1_160).unwrap();
+        assert_eq!(released, 1);
+        assert_eq!(queue.status(1_170).unwrap().leased, 0);
+        assert_eq!(queue.status(1_170).unwrap().pending, 2);
+
+        // 3. Resume / continue execution: process remaining 2 items to completion
+        let q_worker2 = queue.clone();
+        let res2 = execute_concurrent_worker_pool(
+            "documentation",
+            "Documentation",
+            1,
+            None, // No limit, drain remaining
+            "test-provider",
+            "test-model",
+            queue.clone(),
+            &run_id,
+            std::sync::Arc::new(()),
+            move |_worker| {
+                let q = q_worker2.clone();
+                async move {
+                    if let Some(leased) = q.lease_next(2_000, 60_000).unwrap() {
+                        let outcome_key = format!("outcome-{}", leased.id);
+                        q.complete(&leased.id, &outcome_key, b"passed").unwrap();
+                        Ok(WorkerStepResult::Succeeded { work_id: leased.id })
+                    } else {
+                        Ok(WorkerStepResult::Idle)
+                    }
+                }
+            },
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(res2.contains("2 succeeded"));
+
+        // Verify final state: all 4 items succeeded, zero failed, zero duplicate outcomes
+        let final_status = queue.status(3_000).unwrap();
+        assert_eq!(final_status.succeeded, 4);
+        assert_eq!(final_status.pending, 0);
+        assert_eq!(final_status.leased, 0);
+        assert_eq!(final_status.failed, 0);
+
+        let records = queue.run_records(&run_id).unwrap();
+        assert_eq!(records.work.len(), 4);
+        assert_eq!(records.outcomes.len(), 4);
+        let mut seen_keys = std::collections::BTreeSet::new();
+        for outcome in &records.outcomes {
+            assert!(seen_keys.insert(outcome.key.clone()), "duplicate outcome detected");
+        }
+    }
 }
+

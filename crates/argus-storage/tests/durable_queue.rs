@@ -107,6 +107,100 @@ fn restart_recovers_expired_lease_without_duplicate_work() {
 }
 
 #[test]
+fn voluntary_lease_release_enables_immediate_reacquisition_without_timeout() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("state.redb");
+    let queue = DurableQueue::open(&path).unwrap();
+    let item = work("voluntary-release");
+    assert!(queue.admit(&item).unwrap());
+
+    // Acquire lease for 100_000ms duration at timestamp 1_000
+    let initial = queue.lease_next(1_000, 100_000).unwrap().unwrap();
+    assert_eq!(initial.attempt_number, 1);
+
+    // At timestamp 1_050, normally unavailable
+    assert!(queue.lease_next(1_050, 100_000).unwrap().is_none());
+
+    // Voluntarily release during graceful shutdown
+    assert!(queue.release_lease(&item.id, 1_060).unwrap());
+
+    // Can immediately be re-leased at timestamp 1_070 (long before 101_000 deadline)
+    let reacquired = queue.lease_next(1_070, 100_000).unwrap().unwrap();
+    assert_eq!(reacquired.id, item.id);
+    assert_eq!(reacquired.attempt_number, 2);
+
+    // Releasing an item that is not leased returns Ok(false)
+    assert!(!queue.release_lease(&WorkItemId::derive([b"non-existent".as_slice()]), 1_080).unwrap());
+}
+
+#[test]
+fn run_in_flight_lease_release_releases_all_active_leases_for_target_run() {
+    let temporary = tempfile::tempdir().unwrap();
+    let queue = DurableQueue::open(&temporary.path().join("state.redb")).unwrap();
+    let run1 = run("run-1", 0);
+    let run2 = run("run-2", 0);
+    queue.create_run(&run1).unwrap();
+    queue.create_run(&run2).unwrap();
+
+    let coverage1 = CoverageKey {
+        snapshot: run1.snapshot.to_string(),
+        configuration: run1.configuration.to_string(),
+        adapter: "rust".to_owned(),
+        target_kind: "callable".to_owned(),
+        policy: "documentation-public-api@1".to_owned(),
+    };
+    let coverage2 = CoverageKey {
+        snapshot: run2.snapshot.to_string(),
+        configuration: run2.configuration.to_string(),
+        adapter: "rust".to_owned(),
+        target_kind: "callable".to_owned(),
+        policy: "documentation-public-api@1".to_owned(),
+    };
+
+    let w1 = QueueWork::pending_for(
+        WorkItemId::derive([b"item-1".as_slice()]),
+        Vec::new(),
+        run1.id.clone(),
+        coverage1.clone(),
+    );
+    let w2 = QueueWork::pending_for(
+        WorkItemId::derive([b"item-2".as_slice()]),
+        Vec::new(),
+        run1.id.clone(),
+        coverage1,
+    );
+    let w3 = QueueWork::pending_for(
+        WorkItemId::derive([b"item-3".as_slice()]),
+        Vec::new(),
+        run2.id.clone(),
+        coverage2,
+    );
+
+    queue.admit(&w1).unwrap();
+    queue.admit(&w2).unwrap();
+    queue.admit(&w3).unwrap();
+
+    // Lease all 3 items
+    let _l1 = queue.lease_next(1_000, 50_000).unwrap().unwrap();
+    let _l2 = queue.lease_next(1_000, 50_000).unwrap().unwrap();
+    let _l3 = queue.lease_next(1_000, 50_000).unwrap().unwrap();
+
+    // Release only in-flight leases for run1
+    let released_count = queue.release_in_flight_leases_for_run(&run1.id, 1_010).unwrap();
+    assert_eq!(released_count, 2);
+
+    // run1 items can be re-leased immediately
+    let next1 = queue.lease_next(1_020, 50_000).unwrap().unwrap();
+    let next2 = queue.lease_next(1_020, 50_000).unwrap().unwrap();
+    let reacquired_ids: std::collections::BTreeSet<_> = [next1.id, next2.id].into_iter().collect();
+    let expected_ids: std::collections::BTreeSet<_> = [w1.id, w2.id].into_iter().collect();
+    assert_eq!(reacquired_ids, expected_ids);
+
+    // run2 item is STILL leased until its timeout (so no 3rd item can be leased)
+    assert!(queue.lease_next(1_030, 50_000).unwrap().is_none());
+}
+
+#[test]
 fn outcome_replay_is_idempotent_and_conflicts_are_rejected() {
     let temporary = tempfile::tempdir().unwrap();
     let queue = DurableQueue::open(&temporary.path().join("state.redb")).unwrap();
