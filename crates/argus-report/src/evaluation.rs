@@ -104,7 +104,9 @@ impl DocumentationEvaluation {
                     ));
                 }
                 None => {
-                    violations.push("precision was unmeasured (no accepted or rejected findings)".to_owned());
+                    violations.push(
+                        "precision was unmeasured (no accepted or rejected findings)".to_owned(),
+                    );
                 }
                 _ => {}
             }

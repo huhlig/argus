@@ -111,7 +111,9 @@ impl CorrectnessEvaluation {
                     ));
                 }
                 None => {
-                    violations.push("precision was unmeasured (no accepted or rejected findings)".to_owned());
+                    violations.push(
+                        "precision was unmeasured (no accepted or rejected findings)".to_owned(),
+                    );
                 }
                 _ => {}
             }
@@ -263,7 +265,8 @@ pub fn evaluate_correctness(
                                 .iter()
                                 .any(|issue| &issue.id == expected_issue)
                             {
-                                accepted_issues.insert((report.run_id.clone(), expected_issue.clone()));
+                                accepted_issues
+                                    .insert((report.run_id.clone(), expected_issue.clone()));
                             }
                         }
                     }
@@ -279,7 +282,10 @@ pub fn evaluate_correctness(
     let precision = if accepted_findings + rejected_findings == 0 {
         None
     } else {
-        Some(rate(accepted_findings, accepted_findings + rejected_findings))
+        Some(rate(
+            accepted_findings,
+            accepted_findings + rejected_findings,
+        ))
     };
 
     let total_expected = corpus.expected_issues.len() * reports.len();

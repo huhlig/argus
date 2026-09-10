@@ -19,25 +19,48 @@ use crate::{
 use argus_core::{CapabilityStatus, TargetId};
 use std::collections::BTreeMap;
 
+/// Record of a language adapter failure during target discovery.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdapterFailure {
+    /// Identity of the failed adapter.
     pub adapter: AdapterIdentity,
+    /// Partition where the failure occurred.
     pub partition: DiscoveryPartition,
 }
 
+/// Consolidated discovery inventory collected from all registered language adapters.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CombinedInventory {
+    /// Normalized inventories produced by adapters.
     pub inventories: Vec<AdapterInventory>,
+    /// Failures encountered during adapter discovery.
     pub failures: Vec<AdapterFailure>,
+    /// Conflicting target ownership claims between adapters.
     pub conflicts: Vec<ConflictRecord>,
 }
 
+/// Registry of [`LanguageAdapter`] implementations used for codebase target discovery.
+///
+/// # Examples
+///
+/// ```
+/// use argus_language::AdapterRegistry;
+///
+/// let registry = AdapterRegistry::default();
+/// assert!(registry.is_empty());
+/// ```
 #[derive(Default)]
 pub struct AdapterRegistry {
     adapters: BTreeMap<String, Box<dyn LanguageAdapter>>,
 }
 
 impl AdapterRegistry {
+    /// Registers a language adapter implementation.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - Adapter name or version is blank.
+    /// - An adapter with the same name has already been registered.
     pub fn register(
         &mut self,
         adapter: impl LanguageAdapter + 'static,

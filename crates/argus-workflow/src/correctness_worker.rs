@@ -14,8 +14,8 @@
 
 use crate::{
     CorrectnessReviewAdmission, CorrectnessReviewMaterialization, CorrectnessRuntimeIdentity,
-    DocumentationWorkerRuntime, RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryManifest, RecoveryStore,
-    WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, correctness_actor_registry,
+    DocumentationWorkerRuntime, RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryError, RecoveryManifest,
+    RecoveryStore, WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, correctness_actor_registry,
     open_checkpoint_store,
 };
 use argus_core::{ArgusError, RunId as AuditRunId, WorkItemId};
@@ -49,6 +49,7 @@ pub struct CorrectnessWorker {
     workflow_data: Arc<WorkflowDataStore>,
     runtime: DocumentationWorkerRuntime,
     config: CorrectnessWorkerConfig,
+    checkpoint_store: Arc<dyn CheckpointStore>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,22 +83,39 @@ impl CorrectnessWorker {
                 "correctness worker adapter and policy must not be empty",
             ));
         }
+        let checkpoint_store = Arc::new(open_checkpoint_store(&config.state_directory).map_err(
+            |error| {
+                ArgusError::invariant("cannot open correctness checkpoint store").with_source(error)
+            },
+        )?);
         Ok(Self {
             queue,
             workflow_data,
             runtime,
             config,
+            checkpoint_store,
         })
     }
 
     pub async fn run_next(&self, now_millis: u64) -> Result<CorrectnessWorkerResult, ArgusError> {
-        let Some(leased) = self.queue.lease_next_for_partition(
-            now_millis,
-            self.config.lease_duration_millis,
-            &self.config.identity.audit_run,
-            &self.config.adapter,
-            &self.config.policy,
-        )?
+        let queue = self.queue.clone();
+        let audit_run = self.config.identity.audit_run.clone();
+        let adapter = self.config.adapter.clone();
+        let policy = self.config.policy.clone();
+        let lease_duration_millis = self.config.lease_duration_millis;
+        let Some(leased) = tokio::task::spawn_blocking(move || {
+            queue.lease_next_for_partition(
+                now_millis,
+                lease_duration_millis,
+                &audit_run,
+                &adapter,
+                &policy,
+            )
+        })
+        .await
+        .map_err(|error| {
+            ArgusError::invariant("correctness lease task failed").with_source(error)
+        })??
         else {
             return Ok(CorrectnessWorkerResult::Idle);
         };
@@ -105,19 +123,30 @@ impl CorrectnessWorker {
             Ok(()) => Ok(CorrectnessWorkerResult::Succeeded { work_id: leased.id }),
             Err(error) => {
                 let message = error.to_string();
-                if self
-                    .queue
-                    .get(&leased.id)?
-                    .is_some_and(|work| work.state == QueueState::Succeeded)
-                {
+                let queue = self.queue.clone();
+                let succeeded_already = {
+                    let leased_id = leased.id.clone();
+                    tokio::task::spawn_blocking(move || queue.get(&leased_id))
+                        .await
+                        .map_err(|error| {
+                            ArgusError::invariant("correctness lookup task failed")
+                                .with_source(error)
+                        })??
+                };
+                if succeeded_already.is_some_and(|work| work.state == QueueState::Succeeded) {
                     return Ok(CorrectnessWorkerResult::Succeeded { work_id: leased.id });
                 }
-                let state = self.queue.fail_attempt(
-                    &leased.id,
-                    now_millis,
-                    message.clone(),
-                    self.config.maximum_attempts,
-                )?;
+                let queue = self.queue.clone();
+                let work_id = leased.id.clone();
+                let fail_message = message.clone();
+                let maximum_attempts = self.config.maximum_attempts;
+                let state = tokio::task::spawn_blocking(move || {
+                    queue.fail_attempt(&work_id, now_millis, fail_message, maximum_attempts)
+                })
+                .await
+                .map_err(|error| {
+                    ArgusError::invariant("correctness fail-attempt task failed").with_source(error)
+                })??;
                 Ok(match state {
                     QueueState::Pending => CorrectnessWorkerResult::RetryScheduled {
                         work_id: leased.id,
@@ -155,11 +184,16 @@ impl CorrectnessWorker {
             loop {
                 interval.tick().await;
                 let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                queue.heartbeat(
-                    &work_id,
-                    leased_at_millis.saturating_add(elapsed),
-                    lease_duration_millis,
-                )?;
+                let now = leased_at_millis.saturating_add(elapsed);
+                let heartbeat_queue = queue.clone();
+                let heartbeat_work_id = work_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    heartbeat_queue.heartbeat(&heartbeat_work_id, now, lease_duration_millis)
+                })
+                .await
+                .map_err(|error| {
+                    ArgusError::invariant("correctness heartbeat task failed").with_source(error)
+                })??;
             }
             #[allow(unreachable_code)]
             Ok::<(), ArgusError>(())
@@ -178,6 +212,15 @@ impl CorrectnessWorker {
 
     async fn execute(&self, leased: &LeasedWork) -> Result<(), ArgusError> {
         let (admission, materialized, langchart_run_id) = self.restore_work(leased)?;
+        tracing::info!(
+            policy = "correctness",
+            work_id = %leased.id,
+            target_id = %admission.unit.target.target,
+            target_scope = ?admission.unit.target.class,
+            "Processing correctness review for {:?} target `{}`",
+            admission.unit.target.class,
+            admission.unit.target.target
+        );
         let diagnostic_run_id = langchart_run_id.as_ref().to_owned();
         let prepared = self.prepare_runtime(leased, &materialized, &langchart_run_id)?;
         let checkpoint = prepared
@@ -201,7 +244,7 @@ impl CorrectnessWorker {
         let mut instance = WorkflowInstance::new(
             langchart_run_id,
             prepared.compiled,
-            self.runtime.broker.clone(),
+            self.runtime.create_broker(),
             self.runtime.event_sink.clone(),
             prepared.actors,
         )
@@ -239,8 +282,13 @@ impl CorrectnessWorker {
             ArgusError::invariant("correctness workflow execution failed").with_source(error)
         })?;
         if status != RunStatus::Completed {
+            let detail = self
+                .runtime
+                .failure_diagnostics
+                .get(&diagnostic_run_id)
+                .map_or_else(String::new, |message| format!(": {message}"));
             return Err(ArgusError::invariant(format!(
-                "correctness workflow ended with {status:?}"
+                "correctness workflow ended with {status:?}{detail}"
             )));
         }
         self.require_durable_result(leased, &diagnostic_run_id)
@@ -259,8 +307,7 @@ impl CorrectnessWorker {
     > {
         let admission: CorrectnessReviewAdmission = serde_json::from_slice(&leased.payload)
             .map_err(|error| {
-                ArgusError::invalid_input("invalid correctness review admission")
-                    .with_source(error)
+                ArgusError::invalid_input("invalid correctness review admission").with_source(error)
             })?;
         if admission.unit.work_item != leased.id {
             return Err(ArgusError::invariant(
@@ -320,28 +367,51 @@ impl CorrectnessWorker {
         let workflow = recovery.store_target_review().map_err(|error| {
             ArgusError::invariant("cannot store correctness workflow").with_source(error)
         })?;
-        let manifest = RecoveryManifest {
-            schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
-            workflow_data_schema_version: WORKFLOW_DATA_SCHEMA_VERSION,
-            langchart_run_id: langchart_run_id.as_ref().to_owned(),
-            audit_snapshot: self.config.identity.audit_snapshot.clone(),
-            audit_run: self.config.identity.audit_run.clone(),
-            work_id: leased.id.clone(),
-            actors: recovery.actor_identities(&workflow).map_err(|error| {
-                ArgusError::invariant("cannot resolve correctness actor identities")
-                    .with_source(error)
-            })?,
-            workflow,
-            provider: self.runtime.executor.expected_identity().clone(),
-            provider_policy: self.runtime.executor.policy().clone(),
-            policy_version: materialized.unit.policy_version.clone(),
-            prompt_version: self.config.identity.provenance.prompt_version.clone(),
-            evidence_revision: materialized.package.package.revision,
-            langchart_runtime_version: "0.1.0".to_owned(),
+        let manifest = match recovery.load_manifest(langchart_run_id.as_ref()) {
+            Ok(mut existing) => {
+                existing.workflow = workflow;
+                existing.actors =
+                    recovery
+                        .actor_identities(&existing.workflow)
+                        .map_err(|error| {
+                            ArgusError::invariant("cannot resolve correctness actor identities")
+                                .with_source(error)
+                        })?;
+                existing
+            }
+            Err(RecoveryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                let manifest = RecoveryManifest {
+                    schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
+                    workflow_data_schema_version: WORKFLOW_DATA_SCHEMA_VERSION,
+                    langchart_run_id: langchart_run_id.as_ref().to_owned(),
+                    audit_snapshot: self.config.identity.audit_snapshot.clone(),
+                    audit_run: self.config.identity.audit_run.clone(),
+                    work_id: leased.id.clone(),
+                    actors: recovery.actor_identities(&workflow).map_err(|error| {
+                        ArgusError::invariant("cannot resolve correctness actor identities")
+                            .with_source(error)
+                    })?,
+                    workflow,
+                    provider: self.runtime.executor.expected_identity().clone(),
+                    provider_policy: self.runtime.executor.policy().clone(),
+                    policy_version: materialized.unit.policy_version.clone(),
+                    prompt_version: self.config.identity.provenance.prompt_version.clone(),
+                    evidence_revision: materialized.package.package.revision,
+                    langchart_runtime_version: "0.1.0".to_owned(),
+                };
+                recovery.write_manifest(&manifest).map_err(|error| {
+                    ArgusError::invariant("cannot store correctness recovery manifest")
+                        .with_source(error)
+                })?;
+                manifest
+            }
+            Err(error) => {
+                return Err(
+                    ArgusError::invariant("cannot load correctness recovery manifest")
+                        .with_source(error),
+                );
+            }
         };
-        recovery.write_manifest(&manifest).map_err(|error| {
-            ArgusError::invariant("cannot store correctness recovery manifest").with_source(error)
-        })?;
         let compiled = Arc::new(
             recovery
                 .load_compiled(&manifest.workflow)
@@ -353,7 +423,7 @@ impl CorrectnessWorker {
             self.queue.clone(),
             self.workflow_data.clone(),
             materialized,
-            self.runtime.executor.clone(),
+            self.runtime.executor.scoped_for_review(),
             self.config.identity.clone(),
         )
         .map_err(|error| {
@@ -362,16 +432,10 @@ impl CorrectnessWorker {
         let actors = registry.reconstruct(&manifest).map_err(|error| {
             ArgusError::invariant("cannot reconstruct correctness actors").with_source(error)
         })?;
-        let checkpoint_store = Arc::new(
-            open_checkpoint_store(&self.config.state_directory).map_err(|error| {
-                ArgusError::invariant("cannot open correctness checkpoint store")
-                    .with_source(error)
-            })?,
-        );
         Ok(PreparedCorrectnessRuntime {
             compiled,
             actors,
-            checkpoint_store,
+            checkpoint_store: self.checkpoint_store.clone(),
         })
     }
 
@@ -430,10 +494,7 @@ fn langchart_run_id(audit_run: &AuditRunId, work_id: &WorkItemId, retry_generati
         hasher.update(b"\0retry\0");
         hasher.update(&retry_generation.to_be_bytes());
     }
-    RunId::new(format!(
-        "argus-correctness-{}",
-        hasher.finalize().to_hex()
-    ))
+    RunId::new(format!("argus-correctness-{}", hasher.finalize().to_hex()))
 }
 
 struct CorrectnessContextResolver {

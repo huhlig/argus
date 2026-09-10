@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{CargoMetadataAdapter, RustEdition, RustSyntaxProvider};
+use crate::{
+    CargoMetadataAdapter, NativeRustRelationshipProvider, RustEdition, RustSyntaxProvider,
+};
 use argus_core::{
     CapabilityStatus, ConfigurationId, EvidenceId, EvidenceKind, EvidenceOrigin,
     EvidenceProvenance, EvidenceRecord, InventoryState, Relation, RelationId, RelationProvenance,
@@ -56,6 +58,7 @@ impl RustWorkspaceAdapter {
             .iter()
             .filter_map(cargo_entry)
             .collect::<Vec<_>>();
+        let mut semantic_targets = cargo_inventory.targets.clone();
         let mut seen_targets = BTreeSet::new();
         let mut seen_relations = BTreeSet::new();
         sink.begin(self.identity(), source.snapshot_id().clone())?;
@@ -92,6 +95,7 @@ impl RustWorkspaceAdapter {
                 }
                 if seen_targets.insert(target.id.clone()) {
                     new_targets.insert(target.id.clone());
+                    semantic_targets.push(target.clone());
                     sink.target(target)?;
                 } else {
                     sink.conflict(ConflictRecord {
@@ -115,6 +119,34 @@ impl RustWorkspaceAdapter {
                 if seen_relations.insert(relation.id.clone()) {
                     sink.relation(relation)?;
                 }
+            }
+        }
+        let semantic = NativeRustRelationshipProvider::new(self.configuration.clone())
+            .infer(source, &semantic_targets)?;
+        sink.partition(DiscoveryPartition {
+            name: "rust-native-relationships".to_owned(),
+            status: if semantic.ambiguous_names.is_empty() {
+                CapabilityStatus::Complete
+            } else {
+                CapabilityStatus::Partial
+            },
+            diagnostic: (!semantic.ambiguous_names.is_empty()).then(|| {
+                format!(
+                    "{} ambiguous Rust symbol names were omitted from inferred relationships: {}",
+                    semantic.ambiguous_names.len(),
+                    semantic
+                        .ambiguous_names
+                        .iter()
+                        .take(16)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }),
+        })?;
+        for relation in semantic.relations {
+            if seen_relations.insert(relation.id.clone()) {
+                sink.relation(relation)?;
             }
         }
         sink.finish()
@@ -234,6 +266,15 @@ impl LanguageAdapter for RustWorkspaceAdapter {
                     "syntax".to_owned(),
                     "documentation-association".to_owned(),
                     "module-discovery".to_owned(),
+                ],
+            },
+            AdapterProvider {
+                identity: "ra_ap_syntax-native-relations".to_owned(),
+                role: ProviderRole::Relationship,
+                capabilities: vec![
+                    "unique-symbol-references".to_owned(),
+                    "unique-symbol-calls".to_owned(),
+                    "trait-implementations".to_owned(),
                 ],
             },
         ]

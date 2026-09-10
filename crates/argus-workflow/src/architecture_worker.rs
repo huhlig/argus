@@ -13,12 +13,20 @@
 // limitations under the License.
 
 use crate::{
-    ArchitectureReviewAdmission, ArchitectureReviewMaterialization, ArchitectureRuntimeIdentity,
-    DocumentationWorkerRuntime, RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryManifest, RecoveryStore,
+    ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ArchitectureAssessmentContract,
+    ArchitectureConstituentAssessmentFact, ArchitectureConstituentEvidence,
+    ArchitectureConstituentStatus, ArchitectureReviewAdmission, ArchitectureReviewMaterialization,
+    ArchitectureRuntimeIdentity, DocumentationWorkerRuntime, EffectiveOutcome,
+    RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryError, RecoveryManifest, RecoveryStore,
     WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, architecture_actor_registry,
     open_checkpoint_store,
 };
-use argus_core::{ArgusError, RunId as AuditRunId, WorkItemId};
+use argus_core::{
+    ArgusError, ContentHash, EvidenceId, EvidenceKind, EvidenceOrigin, RunId as AuditRunId,
+    WorkItemId,
+};
+use argus_evidence::{DataClassification, EvidenceDisposition, FramedEvidence};
+use argus_policies::{ArchitectureAssessment, ArchitectureResultStatus, ConstituentHealthSummary};
 use argus_storage::{DurableQueue, LeasedWork, QueueEventKind, QueueState};
 use async_trait::async_trait;
 use langchart_adapters::{
@@ -31,7 +39,11 @@ use langchart_model::{
     validation::CompiledWorkflow,
 };
 use langchart_runtime::{AgentActor, InstanceCheckpoint, RunStatus, WorkflowInstance};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
@@ -49,6 +61,7 @@ pub struct ArchitectureWorker {
     workflow_data: Arc<WorkflowDataStore>,
     runtime: DocumentationWorkerRuntime,
     config: ArchitectureWorkerConfig,
+    checkpoint_store: Arc<dyn CheckpointStore>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,46 +95,95 @@ impl ArchitectureWorker {
                 "architecture worker adapter and policy must not be empty",
             ));
         }
+        let checkpoint_store = Arc::new(open_checkpoint_store(&config.state_directory).map_err(
+            |error| {
+                ArgusError::invariant("cannot open architecture checkpoint store")
+                    .with_source(error)
+            },
+        )?);
         Ok(Self {
             queue,
             workflow_data,
             runtime,
             config,
+            checkpoint_store,
         })
     }
 
     pub async fn run_next(&self, now_millis: u64) -> Result<ArchitectureWorkerResult, ArgusError> {
-        let Some(leased) = self.queue.lease_next_for_partition(
-            now_millis,
-            self.config.lease_duration_millis,
-            &self.config.identity.audit_run,
-            &self.config.adapter,
-            &self.config.policy,
-        )?
+        let queue = self.queue.clone();
+        let audit_run = self.config.identity.audit_run.clone();
+        let adapter = self.config.adapter.clone();
+        let policy = self.config.policy.clone();
+        let lease_duration_millis = self.config.lease_duration_millis;
+        let Some(leased) = tokio::task::spawn_blocking(move || {
+            let prerequisite_states = queue
+                .run_records(&audit_run)?
+                .work
+                .into_iter()
+                .map(|work| (work.id, work.state))
+                .collect::<BTreeMap<_, _>>();
+            queue.lease_next_for_partition_matching(
+                now_millis,
+                lease_duration_millis,
+                &audit_run,
+                &adapter,
+                &policy,
+                |work| {
+                    serde_json::from_slice::<ArchitectureReviewAdmission>(&work.payload).map_or(
+                        true,
+                        |admission| {
+                            admission.unit.prerequisite_work.iter().all(|work_id| {
+                                prerequisite_states.get(work_id).is_none_or(|state| {
+                                    matches!(
+                                        state,
+                                        QueueState::Succeeded
+                                            | QueueState::Failed
+                                            | QueueState::Cancelled
+                                    )
+                                })
+                            })
+                        },
+                    )
+                },
+            )
+        })
+        .await
+        .map_err(|error| {
+            ArgusError::invariant("architecture lease task failed").with_source(error)
+        })??
         else {
             return Ok(ArchitectureWorkerResult::Idle);
         };
         match self.execute_with_heartbeats(&leased, now_millis).await {
-            Ok(()) => Ok(ArchitectureWorkerResult::Succeeded {
-                work_id: leased.id,
-            }),
+            Ok(()) => Ok(ArchitectureWorkerResult::Succeeded { work_id: leased.id }),
             Err(error) => {
                 let message = error.to_string();
-                if self
-                    .queue
-                    .get(&leased.id)?
-                    .is_some_and(|work| work.state == QueueState::Succeeded)
-                {
-                    return Ok(ArchitectureWorkerResult::Succeeded {
-                        work_id: leased.id,
-                    });
+                let queue = self.queue.clone();
+                let succeeded_already = {
+                    let leased_id = leased.id.clone();
+                    tokio::task::spawn_blocking(move || queue.get(&leased_id))
+                        .await
+                        .map_err(|error| {
+                            ArgusError::invariant("architecture lookup task failed")
+                                .with_source(error)
+                        })??
+                };
+                if succeeded_already.is_some_and(|work| work.state == QueueState::Succeeded) {
+                    return Ok(ArchitectureWorkerResult::Succeeded { work_id: leased.id });
                 }
-                let state = self.queue.fail_attempt(
-                    &leased.id,
-                    now_millis,
-                    message.clone(),
-                    self.config.maximum_attempts,
-                )?;
+                let queue = self.queue.clone();
+                let work_id = leased.id.clone();
+                let fail_message = message.clone();
+                let maximum_attempts = self.config.maximum_attempts;
+                let state = tokio::task::spawn_blocking(move || {
+                    queue.fail_attempt(&work_id, now_millis, fail_message, maximum_attempts)
+                })
+                .await
+                .map_err(|error| {
+                    ArgusError::invariant("architecture fail-attempt task failed")
+                        .with_source(error)
+                })??;
                 Ok(match state {
                     QueueState::Pending => ArchitectureWorkerResult::RetryScheduled {
                         work_id: leased.id,
@@ -159,11 +221,16 @@ impl ArchitectureWorker {
             loop {
                 interval.tick().await;
                 let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                queue.heartbeat(
-                    &work_id,
-                    leased_at_millis.saturating_add(elapsed),
-                    lease_duration_millis,
-                )?;
+                let now = leased_at_millis.saturating_add(elapsed);
+                let heartbeat_queue = queue.clone();
+                let heartbeat_work_id = work_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    heartbeat_queue.heartbeat(&heartbeat_work_id, now, lease_duration_millis)
+                })
+                .await
+                .map_err(|error| {
+                    ArgusError::invariant("architecture heartbeat task failed").with_source(error)
+                })??;
             }
             #[allow(unreachable_code)]
             Ok::<(), ArgusError>(())
@@ -182,6 +249,16 @@ impl ArchitectureWorker {
 
     async fn execute(&self, leased: &LeasedWork) -> Result<(), ArgusError> {
         let (admission, materialized, langchart_run_id) = self.restore_work(leased)?;
+        tracing::info!(
+            policy = "architecture",
+            work_id = %leased.id,
+            target_id = %admission.unit.target.target,
+            target_scope = ?admission.unit.scope,
+            "Processing architecture review for {:?} target `{}` (Scope: {:?})",
+            admission.unit.target.class,
+            admission.unit.target.target,
+            admission.unit.scope
+        );
         let diagnostic_run_id = langchart_run_id.as_ref().to_owned();
         let prepared = self.prepare_runtime(leased, &materialized, &langchart_run_id)?;
         let checkpoint = prepared
@@ -205,7 +282,7 @@ impl ArchitectureWorker {
         let mut instance = WorkflowInstance::new(
             langchart_run_id,
             prepared.compiled,
-            self.runtime.broker.clone(),
+            self.runtime.create_broker(),
             self.runtime.event_sink.clone(),
             prepared.actors,
         )
@@ -243,8 +320,13 @@ impl ArchitectureWorker {
             ArgusError::invariant("architecture workflow execution failed").with_source(error)
         })?;
         if status != RunStatus::Completed {
+            let detail = self
+                .runtime
+                .failure_diagnostics
+                .get(&diagnostic_run_id)
+                .map_or_else(String::new, |message| format!(": {message}"));
             return Err(ArgusError::invariant(format!(
-                "architecture workflow ended with {status:?}"
+                "architecture workflow ended with {status:?}{detail}"
             )));
         }
         self.require_durable_result(leased, &diagnostic_run_id)
@@ -282,7 +364,8 @@ impl ArchitectureWorker {
                 "architecture worker identity does not own the leased work",
             ));
         }
-        let materialized = ArchitectureReviewMaterialization::restore(&self.queue, &admission)?;
+        let mut materialized = ArchitectureReviewMaterialization::restore(&self.queue, &admission)?;
+        self.attach_constituent_evidence(&admission, &mut materialized)?;
         if materialized.package.package.snapshot != self.config.identity.audit_snapshot {
             return Err(ArgusError::invariant(
                 "architecture package is outside the worker snapshot",
@@ -312,6 +395,199 @@ impl ArchitectureWorker {
         Ok((admission, materialized, langchart_run_id))
     }
 
+    fn attach_constituent_evidence(
+        &self,
+        admission: &ArchitectureReviewAdmission,
+        materialized: &mut ArchitectureReviewMaterialization,
+    ) -> Result<(), ArgusError> {
+        if admission.unit.prerequisite_work.is_empty() {
+            return Ok(());
+        }
+        let records = self.queue.run_records(&self.config.identity.audit_run)?;
+        let work = records
+            .work
+            .iter()
+            .map(|item| (item.id.clone(), item))
+            .collect::<BTreeMap<_, _>>();
+        let artifacts = records
+            .artifacts
+            .iter()
+            .map(|artifact| (artifact.reference.as_str(), artifact))
+            .collect::<HashMap<_, _>>();
+        let mut facts = Vec::with_capacity(admission.unit.prerequisite_work.len());
+        for prerequisite in &admission.unit.prerequisite_work {
+            let item = work.get(prerequisite).ok_or_else(|| {
+                ArgusError::invariant("architecture prerequisite work is missing")
+            })?;
+            let child: ArchitectureReviewAdmission = serde_json::from_slice(&item.payload)
+                .map_err(|error| {
+                    ArgusError::invalid_input("invalid architecture prerequisite admission")
+                        .with_source(error)
+                })?;
+            let (status, summary, candidate_count) = match item.state {
+                QueueState::Succeeded => {
+                    let outcome = records
+                        .outcomes
+                        .iter()
+                        .find(|outcome| outcome.work_id == item.id)
+                        .ok_or_else(|| {
+                            ArgusError::invariant(
+                                "succeeded architecture prerequisite has no outcome",
+                            )
+                        })?;
+                    let effective: EffectiveOutcome = serde_json::from_slice(&outcome.payload)
+                        .map_err(|error| {
+                            ArgusError::invalid_input("invalid architecture prerequisite outcome")
+                                .with_source(error)
+                        })?;
+                    let artifact =
+                        artifacts
+                            .get(effective.result_ref.as_str())
+                            .ok_or_else(|| {
+                                ArgusError::invariant(
+                                    "architecture prerequisite assessment artifact is missing",
+                                )
+                            })?;
+                    if artifact.kind != ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND {
+                        return Err(ArgusError::invariant(
+                            "architecture prerequisite outcome has the wrong artifact kind",
+                        ));
+                    }
+                    let assessment: ArchitectureAssessment =
+                        serde_json::from_slice(&artifact.payload).map_err(|error| {
+                            ArgusError::invalid_input(
+                                "invalid architecture prerequisite assessment",
+                            )
+                            .with_source(error)
+                        })?;
+                    let status = match assessment.result.status {
+                        ArchitectureResultStatus::Pass => ArchitectureConstituentStatus::Passed,
+                        ArchitectureResultStatus::Deficient => {
+                            ArchitectureConstituentStatus::Deficient
+                        }
+                        ArchitectureResultStatus::UnableToVerify => {
+                            ArchitectureConstituentStatus::UnableToVerify
+                        }
+                    };
+                    (
+                        status,
+                        assessment.result.summary,
+                        assessment.result.candidates.len(),
+                    )
+                }
+                QueueState::Failed => (
+                    ArchitectureConstituentStatus::Failed,
+                    item.last_error
+                        .clone()
+                        .unwrap_or_else(|| "constituent review failed".to_owned()),
+                    0,
+                ),
+                QueueState::Cancelled => (
+                    ArchitectureConstituentStatus::Cancelled,
+                    "constituent review was cancelled".to_owned(),
+                    0,
+                ),
+                QueueState::Pending | QueueState::Leased => {
+                    return Err(ArgusError::invariant(
+                        "architecture prerequisite was leased before reaching a terminal state",
+                    ));
+                }
+            };
+            facts.push(ArchitectureConstituentAssessmentFact {
+                work_item: prerequisite.clone(),
+                target: child.unit.target.target,
+                scope: child.unit.scope,
+                status,
+                summary,
+                candidate_count,
+            });
+        }
+        facts.sort_by(|left, right| left.work_item.cmp(&right.work_item));
+        let health = ConstituentHealthSummary {
+            total_constituents: facts.len(),
+            succeeded_constituents: facts
+                .iter()
+                .filter(|fact| {
+                    matches!(
+                        fact.status,
+                        ArchitectureConstituentStatus::Passed
+                            | ArchitectureConstituentStatus::Deficient
+                    )
+                })
+                .count(),
+            failed_constituents: facts
+                .iter()
+                .filter(|fact| {
+                    matches!(
+                        fact.status,
+                        ArchitectureConstituentStatus::Failed
+                            | ArchitectureConstituentStatus::Cancelled
+                    )
+                })
+                .count(),
+            unable_to_verify_constituents: facts
+                .iter()
+                .filter(|fact| fact.status == ArchitectureConstituentStatus::UnableToVerify)
+                .count(),
+        };
+        let aggregate = ArchitectureConstituentEvidence {
+            schema_version: 1,
+            target: admission.unit.target.target.clone(),
+            scope: admission.unit.scope,
+            constituents: facts,
+            constituent_health: health,
+        };
+        let bytes = serde_json::to_vec(&aggregate).map_err(|error| {
+            ArgusError::invariant("cannot serialize architecture constituent evidence")
+                .with_source(error)
+        })?;
+        let hash = ContentHash::digest(&bytes);
+        let id = EvidenceId::derive([
+            b"architecture-constituent-evidence-v1".as_slice(),
+            admission.unit.target.target.as_str().as_bytes(),
+            bytes.as_slice(),
+        ]);
+        materialized
+            .context
+            .frame
+            .untrusted_evidence
+            .push(FramedEvidence {
+                hash,
+                id,
+                kind: EvidenceKind::ArchitectureSummary,
+                origin: EvidenceOrigin::Inference,
+                target: Some(admission.unit.target.target.clone()),
+                location: None,
+                classification: DataClassification::Internal,
+                disposition: EvidenceDisposition::Included,
+                summary: "Deterministic roll-up of terminal constituent architecture reviews"
+                    .to_owned(),
+                detail: Some(String::from_utf8(bytes).map_err(|error| {
+                    ArgusError::invariant("architecture constituent evidence is not UTF-8")
+                        .with_source(error)
+                })?),
+                untrusted: true,
+            });
+        materialized
+            .context
+            .frame
+            .untrusted_evidence
+            .sort_by(|left, right| left.hash.as_str().cmp(right.hash.as_str()));
+        materialized.context.canonical_json = serde_json::to_vec(&materialized.context.frame)
+            .map_err(|error| {
+                ArgusError::invariant("cannot serialize enriched architecture context")
+                    .with_source(error)
+            })?;
+        materialized.context.hash = ContentHash::digest(&materialized.context.canonical_json);
+        materialized.contract = Arc::new(ArchitectureAssessmentContract::from_context(
+            admission.unit.work_item.clone(),
+            admission.unit.target.clone(),
+            admission.unit.scope,
+            &materialized.context.frame,
+        )?);
+        Ok(())
+    }
+
     fn prepare_runtime(
         &self,
         leased: &LeasedWork,
@@ -324,28 +600,51 @@ impl ArchitectureWorker {
         let workflow = recovery.store_target_review().map_err(|error| {
             ArgusError::invariant("cannot store architecture workflow").with_source(error)
         })?;
-        let manifest = RecoveryManifest {
-            schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
-            workflow_data_schema_version: WORKFLOW_DATA_SCHEMA_VERSION,
-            langchart_run_id: langchart_run_id.as_ref().to_owned(),
-            audit_snapshot: self.config.identity.audit_snapshot.clone(),
-            audit_run: self.config.identity.audit_run.clone(),
-            work_id: leased.id.clone(),
-            actors: recovery.actor_identities(&workflow).map_err(|error| {
-                ArgusError::invariant("cannot resolve architecture actor identities")
-                    .with_source(error)
-            })?,
-            workflow,
-            provider: self.runtime.executor.expected_identity().clone(),
-            provider_policy: self.runtime.executor.policy().clone(),
-            policy_version: materialized.unit.policy_version.clone(),
-            prompt_version: self.config.identity.provenance.prompt_version.clone(),
-            evidence_revision: materialized.package.package.revision,
-            langchart_runtime_version: "0.1.0".to_owned(),
+        let manifest = match recovery.load_manifest(langchart_run_id.as_ref()) {
+            Ok(mut existing) => {
+                existing.workflow = workflow;
+                existing.actors =
+                    recovery
+                        .actor_identities(&existing.workflow)
+                        .map_err(|error| {
+                            ArgusError::invariant("cannot resolve architecture actor identities")
+                                .with_source(error)
+                        })?;
+                existing
+            }
+            Err(RecoveryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                let manifest = RecoveryManifest {
+                    schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
+                    workflow_data_schema_version: WORKFLOW_DATA_SCHEMA_VERSION,
+                    langchart_run_id: langchart_run_id.as_ref().to_owned(),
+                    audit_snapshot: self.config.identity.audit_snapshot.clone(),
+                    audit_run: self.config.identity.audit_run.clone(),
+                    work_id: leased.id.clone(),
+                    actors: recovery.actor_identities(&workflow).map_err(|error| {
+                        ArgusError::invariant("cannot resolve architecture actor identities")
+                            .with_source(error)
+                    })?,
+                    workflow,
+                    provider: self.runtime.executor.expected_identity().clone(),
+                    provider_policy: self.runtime.executor.policy().clone(),
+                    policy_version: materialized.unit.policy_version.clone(),
+                    prompt_version: self.config.identity.provenance.prompt_version.clone(),
+                    evidence_revision: materialized.package.package.revision,
+                    langchart_runtime_version: "0.1.0".to_owned(),
+                };
+                recovery.write_manifest(&manifest).map_err(|error| {
+                    ArgusError::invariant("cannot store architecture recovery manifest")
+                        .with_source(error)
+                })?;
+                manifest
+            }
+            Err(error) => {
+                return Err(
+                    ArgusError::invariant("cannot load architecture recovery manifest")
+                        .with_source(error),
+                );
+            }
         };
-        recovery.write_manifest(&manifest).map_err(|error| {
-            ArgusError::invariant("cannot store architecture recovery manifest").with_source(error)
-        })?;
         let compiled = Arc::new(
             recovery
                 .load_compiled(&manifest.workflow)
@@ -357,7 +656,7 @@ impl ArchitectureWorker {
             self.queue.clone(),
             self.workflow_data.clone(),
             materialized,
-            self.runtime.executor.clone(),
+            self.runtime.executor.scoped_for_review(),
             self.config.identity.clone(),
         )
         .map_err(|error| {
@@ -366,16 +665,10 @@ impl ArchitectureWorker {
         let actors = registry.reconstruct(&manifest).map_err(|error| {
             ArgusError::invariant("cannot reconstruct architecture actors").with_source(error)
         })?;
-        let checkpoint_store = Arc::new(
-            open_checkpoint_store(&self.config.state_directory).map_err(|error| {
-                ArgusError::invariant("cannot open architecture checkpoint store")
-                    .with_source(error)
-            })?,
-        );
         Ok(PreparedArchitectureRuntime {
             compiled,
             actors,
-            checkpoint_store,
+            checkpoint_store: self.checkpoint_store.clone(),
         })
     }
 
@@ -434,10 +727,7 @@ fn langchart_run_id(audit_run: &AuditRunId, work_id: &WorkItemId, retry_generati
         hasher.update(b"\0retry\0");
         hasher.update(&retry_generation.to_be_bytes());
     }
-    RunId::new(format!(
-        "argus-architecture-{}",
-        hasher.finalize().to_hex()
-    ))
+    RunId::new(format!("argus-architecture-{}", hasher.finalize().to_hex()))
 }
 
 pub struct ArchitectureContextResolver {

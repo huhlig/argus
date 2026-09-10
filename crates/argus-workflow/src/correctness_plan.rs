@@ -122,10 +122,8 @@ impl CorrectnessReviewMaterialization {
         let package = PackageArtifact {
             hash: stored_package.content_hash,
             package: serde_json::from_slice(&stored_package.payload).map_err(|error| {
-                argus_core::ArgusError::invalid_input(
-                    "invalid stored correctness evidence package",
-                )
-                .with_source(error)
+                argus_core::ArgusError::invalid_input("invalid stored correctness evidence package")
+                    .with_source(error)
             })?,
         };
         package.validate_identity()?;
@@ -316,8 +314,8 @@ impl CorrectnessReviewBatch {
                     )
                     .with_source(error)
                 })?;
-            let package = queue
-                .store_artifact(CORRECTNESS_EVIDENCE_PACKAGE_ARTIFACT_KIND, &package_bytes)?;
+            let package =
+                queue.store_artifact(CORRECTNESS_EVIDENCE_PACKAGE_ARTIFACT_KIND, &package_bytes)?;
             if package.content_hash != materialized.package.hash {
                 return Err(argus_core::ArgusError::invariant(
                     "stored correctness evidence package identity mismatch",

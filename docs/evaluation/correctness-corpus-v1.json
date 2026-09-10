@@ -66,11 +66,27 @@
       "dimensions": [
         "boundary_conditions"
       ]
+    },
+    {
+      "id": "documented-stub-todo",
+      "target": "dfa99f82049afb4d4826a072a5a4ec838c2907f7eccc39e585c02ee7d867ea58",
+      "dimensions": [
+        "failure_paths"
+      ]
+    },
+    {
+      "id": "documented-scope-gap",
+      "target": "451b66aabf3b28f2cf24774b2aa37d6174dbeeb97b4f7e1491060b04ef638b23",
+      "dimensions": [
+        "invariants"
+      ]
     }
   ],
   "known_clean_targets": [
     "343b45268831f402cae417878fcb47a6f680622b885d40f3cbfadb5a43cc7715",
     "5cb78cfe41a5b3d86688ffafcb454c8137f6372a2bd60e3d7048b27c372816a2",
-    "ba8c46a5b23ad26738bd46ae9f11955e65ec7c4d1053955dcb635e8b261e8f2f"
+    "ba8c46a5b23ad26738bd46ae9f11955e65ec7c4d1053955dcb635e8b261e8f2f",
+    "32158dd0dc53a58d7592d9f1f11501c203ac9afd2cbb7b6f69093bf027f6a11b"
   ]
 }
+

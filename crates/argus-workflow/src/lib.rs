@@ -50,9 +50,12 @@ pub use architecture_outcome_actor::{
 };
 pub use architecture_plan::{
     ARCHITECTURE_EVIDENCE_PACKAGE_ARTIFACT_KIND, ARCHITECTURE_REVIEW_CONTEXT_ARTIFACT_KIND,
-    ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION, ArchitectureEvidenceCatalog,
+    ARCHITECTURE_REVIEW_PLAN_SCHEMA_VERSION, ARCHITECTURE_SCOPE_EVIDENCE_SCHEMA_VERSION,
+    ArchitectureConstituentAssessmentFact, ArchitectureConstituentEvidence,
+    ArchitectureConstituentStatus, ArchitectureEvidenceCatalog, ArchitectureRelationFact,
     ArchitectureReviewAdmission, ArchitectureReviewBatch, ArchitectureReviewMaterialization,
     ArchitectureReviewPlan, ArchitectureReviewPlanner, ArchitectureReviewUnit,
+    ArchitectureScopeEvidence, ArchitectureTargetFact,
 };
 pub use architecture_review::{
     ArchitectureAssessmentContract, ArchitectureReviewTransportValidator,
@@ -66,23 +69,20 @@ pub use architecture_worker::{
 pub use candidate_actor::{CandidateRecorderActor, FindingWorkSchedulerActor};
 pub use checkpoint::{CHECKPOINT_DATABASE_FILE, CheckpointOpenError, open_checkpoint_store};
 pub use correctness_outcome_actor::{
-    CORRECTNESS_ASSESSMENT_ARTIFACT_KIND, CorrectnessOutcomeActor,
-    DurableCorrectnessOutcomeActor,
+    CORRECTNESS_ASSESSMENT_ARTIFACT_KIND, CorrectnessOutcomeActor, DurableCorrectnessOutcomeActor,
 };
 pub use correctness_plan::{
     CORRECTNESS_EVIDENCE_PACKAGE_ARTIFACT_KIND, CORRECTNESS_REVIEW_CONTEXT_ARTIFACT_KIND,
-    CORRECTNESS_REVIEW_PLAN_SCHEMA_VERSION, CorrectnessEvidenceCatalog,
-    CorrectnessReviewAdmission, CorrectnessReviewBatch, CorrectnessReviewMaterialization,
-    CorrectnessReviewPlan, CorrectnessReviewPlanner, CorrectnessReviewUnit,
+    CORRECTNESS_REVIEW_PLAN_SCHEMA_VERSION, CorrectnessEvidenceCatalog, CorrectnessReviewAdmission,
+    CorrectnessReviewBatch, CorrectnessReviewMaterialization, CorrectnessReviewPlan,
+    CorrectnessReviewPlanner, CorrectnessReviewUnit,
 };
 pub use correctness_review::{
     CorrectnessAssessmentContract, CorrectnessReviewTransportValidator,
     correctness_assessment_draft_schema,
 };
 pub use correctness_runtime::{CorrectnessRuntimeIdentity, correctness_actor_registry};
-pub use correctness_worker::{
-    CorrectnessWorker, CorrectnessWorkerConfig, CorrectnessWorkerResult,
-};
+pub use correctness_worker::{CorrectnessWorker, CorrectnessWorkerConfig, CorrectnessWorkerResult};
 pub use documentation_broker::documentation_worker_runtime;
 pub use documentation_outcome_actor::{
     DOCUMENTATION_ASSESSMENT_ARTIFACT_KIND, DocumentationOutcomeActor,

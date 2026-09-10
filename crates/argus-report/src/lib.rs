@@ -16,10 +16,14 @@
 
 mod architecture;
 mod architecture_evaluation;
+pub mod backlog;
 mod correctness;
 mod correctness_evaluation;
 mod evaluation;
 
+pub use backlog::{
+    BacklogCategory, BacklogItem, BacklogReport, classify_backlog_finding, extract_backlog_report,
+};
 pub use architecture::{
     ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ARCHITECTURE_REPORT_SCHEMA_VERSION,
     ArchitectureFindingCluster, ArchitectureFindingOccurrence, ArchitectureReport,
@@ -56,7 +60,12 @@ use argus_policies::{
 use argus_storage::{OutcomeRecord, QueueState, QueueWork, StoredArtifact};
 use argus_workflow::{DOCUMENTATION_ASSESSMENT_ARTIFACT_KIND, EffectiveOutcome, OutcomeKind};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+    fs,
+    path::Path,
+};
 
 pub const DOCUMENTATION_REPORT_SCHEMA_VERSION: u32 = 1;
 
@@ -240,11 +249,48 @@ impl DocumentationReport {
         );
         if !self.finding_clusters.is_empty() {
             output.push_str("\n## Finding clusters\n");
+            let target_locations: BTreeMap<TargetId, String> = self
+                .assessments
+                .iter()
+                .map(|item| {
+                    (
+                        item.assessment.target.target.clone(),
+                        extract_target_location(&item.assessment),
+                    )
+                })
+                .collect();
             for cluster in &self.finding_clusters {
+                let rep_citations = citations(&cluster.representative.citations);
+                let location_str = if rep_citations != "none" {
+                    rep_citations
+                } else {
+                    let fallback_locs = cluster
+                        .occurrences
+                        .iter()
+                        .filter_map(|o| target_locations.get(&o.target))
+                        .filter(|s| !s.is_empty())
+                        .cloned()
+                        .collect::<BTreeSet<_>>();
+                    if fallback_locs.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        fallback_locs.into_iter().collect::<Vec<_>>().join(", ")
+                    }
+                };
+                let target_ids = cluster
+                    .occurrences
+                    .iter()
+                    .map(|occurrence| format!("`{}`", occurrence.target))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 write!(
                     output,
-                    "\n### {}\n\nCluster: `{}`  \nOccurrences: `{}`  \nDuplicates: `{}`  \nSeverity observations: {}  \nConfidence observations: {}\n\n{}\n",
+                    "\n### {}\n\nLocation: {}  \nTarget: {}  \nCluster: `{}`  \nOccurrences: `{}`  \nDuplicates: `{}`  \nSeverity observations: {}  \nConfidence observations: {}\n\n{}\n",
                     escape_markdown(&cluster.representative.title),
+                    location_str,
+                    target_ids,
                     cluster.id,
                     cluster.occurrences.len(),
                     cluster.occurrences.len().saturating_sub(1),
@@ -547,10 +593,16 @@ fn render_assessment(output: &mut String, item: &DocumentationReportAssessment) 
         DocumentationResult::CandidateFindings { .. } => "candidate findings",
         DocumentationResult::UnableToVerify { .. } => "unable to verify",
     };
+    let target_loc = extract_target_location(assessment);
+    let location_line = if target_loc.is_empty() {
+        String::new()
+    } else {
+        format!("Location: {}  \n", target_loc)
+    };
     write!(
         output,
-        "\n## Target `{}`\n\nResult: **{}**  \nClass: `{:?}`  \nVisibility: `{:?}`\n\n### Rubric\n\n| Dimension | Status | Rationale | Evidence |\n| --- | --- | --- | --- |\n",
-        assessment.target.target, result, assessment.target.class, assessment.target.visibility,
+        "\n## Target `{}`\n\n{}Result: **{}**  \nClass: `{:?}`  \nVisibility: `{:?}`\n\n### Rubric\n\n| Dimension | Status | Rationale | Evidence |\n| --- | --- | --- | --- |\n",
+        assessment.target.target, location_line, result, assessment.target.class, assessment.target.visibility,
     )
     .expect("writing to a String cannot fail");
     for dimension in &assessment.dimensions {
@@ -626,6 +678,21 @@ fn citations(values: &[EvidenceCitation]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn extract_target_location(assessment: &DocumentationAssessment) -> String {
+    let mut locs = BTreeSet::new();
+    for dim in &assessment.dimensions {
+        for cit in &dim.citations {
+            if let Some(loc) = &cit.location {
+                locs.insert(loc.start.map_or_else(
+                    || format!("`{}:{}-{}`", loc.path.as_str(), loc.bytes.start, loc.bytes.end),
+                    |start| format!("`{}:{}:{}`", loc.path.as_str(), start.line, start.column),
+                ));
+            }
+        }
+    }
+    locs.into_iter().collect::<Vec<_>>().join(", ")
 }
 
 fn escape_markdown(value: &str) -> String {
@@ -914,5 +981,49 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn markdown_renders_locations_and_targets_for_clusters_and_targets() {
+        use argus_core::{ByteSpan, LineColumn, SourceLocation, SourcePath};
+        let fixture = fixture();
+        let mut report = DocumentationReport::build(
+            fixture.run,
+            POLICY,
+            &fixture.work,
+            &fixture.outcomes,
+            &fixture.artifacts,
+        )
+        .unwrap();
+        let target_id = report.assessments[0].assessment.target.target.clone();
+        let citation = EvidenceCitation {
+            evidence: EvidenceId::derive([b"loc-evidence".as_slice()]),
+            target: target_id.clone(),
+            location: Some(SourceLocation {
+                path: SourcePath::new("crates/example/src/lib.rs").unwrap(),
+                bytes: ByteSpan::new(0, 100).unwrap(),
+                start: Some(LineColumn { line: 10, column: 1 }),
+                end: Some(LineColumn { line: 15, column: 1 }),
+            }),
+        };
+        let candidate = DocumentationCandidate {
+            title: "Missing error contract".to_owned(),
+            description: "Errors are not documented.".to_owned(),
+            severity: Severity::Medium,
+            confidence: Confidence::from_basis_points(8_000).unwrap(),
+            dimensions: std::collections::BTreeSet::from([DocumentationDimension::Errors]),
+            citations: vec![citation.clone()],
+        };
+        report.assessments[0].assessment.result = DocumentationResult::CandidateFindings {
+            findings: vec![candidate],
+        };
+        report.assessments[0].assessment.dimensions[0].citations = vec![citation];
+        report.finding_clusters = cluster_findings(&[report.assessments[0].clone()]).unwrap();
+
+        let md = report.to_markdown();
+        assert!(md.contains("## Finding clusters"));
+        assert!(md.contains(&format!("Target: `{target_id}`")));
+        assert!(md.contains("Location: `crates/example/src/lib.rs:10:1`"));
+        assert!(md.contains(&format!("## Target `{target_id}`\n\nLocation: `crates/example/src/lib.rs:10:1`")));
     }
 }

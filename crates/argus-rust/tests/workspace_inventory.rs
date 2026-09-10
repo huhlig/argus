@@ -165,6 +165,118 @@ fn ids_for_name<'a>(
 }
 
 #[test]
+fn emits_conservative_native_calls_references_and_trait_implementations() {
+    let mut source = source();
+    source.files.insert(
+        SourcePath::new("src/lib.rs").unwrap(),
+        br#"
+pub trait Store {}
+pub struct Record;
+impl Store for Record {}
+pub fn helper() {}
+pub fn run() { helper(); let _record = Record; }
+"#
+        .to_vec(),
+    );
+    source
+        .files
+        .remove(&SourcePath::new("src/model.rs").unwrap());
+    let adapter = RustWorkspaceAdapter::new(
+        METADATA.as_bytes().to_vec(),
+        ConfigurationId::derive([b"native-relations".as_slice()]),
+        RustEdition::Edition2024,
+    );
+    let inventory = normalize_inventory(&source, adapter.inventory(&source).unwrap()).unwrap();
+    let run = ids_for_name(&inventory, "run").unwrap();
+    let helper = ids_for_name(&inventory, "helper").unwrap();
+    let record = ids_for_name(&inventory, "Record").unwrap();
+    let store = ids_for_name(&inventory, "Store").unwrap();
+
+    assert!(inventory.relations.iter().any(|relation| {
+        relation.source == *run
+            && relation.target == *helper
+            && relation.kind == "rust:calls"
+            && relation.provenance.resolution == argus_core::ResolutionQuality::Inferred
+    }));
+    assert!(inventory.relations.iter().any(|relation| {
+        relation.source == *run && relation.target == *record && relation.kind == "rust:references"
+    }));
+    assert!(inventory.relations.iter().any(|relation| {
+        relation.source == *record
+            && relation.target == *store
+            && relation.kind == "rust:implements"
+    }));
+    assert!(inventory.partitions.iter().any(|partition| {
+        partition.name == "rust-native-relationships"
+            && partition.status == argus_core::CapabilityStatus::Complete
+    }));
+}
+
+#[test]
+fn ambiguous_native_symbol_names_are_reported_and_not_emitted() {
+    let mut source = source();
+    source.files.insert(
+        SourcePath::new("src/lib.rs").unwrap(),
+        b"mod a { pub fn helper() {} }\nmod b { pub fn helper() {} }\npub fn run() { helper(); }\n"
+            .to_vec(),
+    );
+    source
+        .files
+        .remove(&SourcePath::new("src/model.rs").unwrap());
+    let adapter = RustWorkspaceAdapter::new(
+        METADATA.as_bytes().to_vec(),
+        ConfigurationId::derive([b"ambiguous-native-relations".as_slice()]),
+        RustEdition::Edition2024,
+    );
+    let inventory = normalize_inventory(&source, adapter.inventory(&source).unwrap()).unwrap();
+    let run = ids_for_name(&inventory, "run").unwrap();
+    let helper_ids = inventory
+        .targets
+        .iter()
+        .filter(|target| target.name == "helper")
+        .map(|target| target.id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(helper_ids.len(), 2);
+    assert!(!inventory.relations.iter().any(|relation| {
+        relation.source == *run
+            && helper_ids.contains(&relation.target)
+            && relation.kind == "rust:calls"
+    }));
+    let partition = inventory
+        .partitions
+        .iter()
+        .find(|partition| partition.name == "rust-native-relationships")
+        .unwrap();
+    assert_eq!(partition.status, argus_core::CapabilityStatus::Partial);
+    assert!(partition.diagnostic.as_deref().unwrap().contains("helper"));
+}
+
+#[test]
+fn comments_and_string_literals_do_not_create_native_relationships() {
+    let mut source = source();
+    source.files.insert(
+        SourcePath::new("src/lib.rs").unwrap(),
+        b"pub fn helper() {}\npub fn run() { let _text = \"helper()\"; /* helper() */ }\n".to_vec(),
+    );
+    source
+        .files
+        .remove(&SourcePath::new("src/model.rs").unwrap());
+    let adapter = RustWorkspaceAdapter::new(
+        METADATA.as_bytes().to_vec(),
+        ConfigurationId::derive([b"literal-native-relations".as_slice()]),
+        RustEdition::Edition2024,
+    );
+    let inventory = normalize_inventory(&source, adapter.inventory(&source).unwrap()).unwrap();
+    let run = ids_for_name(&inventory, "run").unwrap();
+    let helper = ids_for_name(&inventory, "helper").unwrap();
+    assert!(!inventory.relations.iter().any(|relation| {
+        relation.source == *run
+            && relation.target == *helper
+            && matches!(relation.kind.as_str(), "rust:references" | "rust:calls")
+    }));
+}
+
+#[test]
 fn reports_configuration_and_macro_gaps_in_adapter_coverage() {
     let mut source = source();
     source.files.insert(
@@ -287,5 +399,5 @@ fn streams_large_multi_package_inventory_in_dependency_order() {
     adapter.inventory_into(&source, &mut sink).unwrap();
     assert_eq!(sink.target_count, PACKAGE_COUNT * 4);
     assert_eq!(sink.relation_count, PACKAGE_COUNT * 3);
-    assert_eq!(sink.partition_count, PACKAGE_COUNT + 1);
+    assert_eq!(sink.partition_count, PACKAGE_COUNT + 2);
 }

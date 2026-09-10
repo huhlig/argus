@@ -15,8 +15,9 @@
 use crate::{read_jsonl, write_reconciled};
 use argus_core::{Confidence, FindingId, RunId, Severity, TargetId, WorkItemId};
 use argus_policies::{
-    ArchitectureAssessment, ArchitectureCandidate, ArchitectureDimension, ArchitectureFindingKind,
-    ArchitectureResultStatus, ArchitectureScope,
+    ArchitectureAssessment, ArchitectureCandidate, ArchitectureDimension,
+    ArchitectureEvidenceCitation, ArchitectureFindingKind, ArchitectureResultStatus,
+    ArchitectureScope, ArchitectureVerificationStatus,
 };
 use argus_storage::{OutcomeRecord, QueueState, QueueWork, StoredArtifact};
 use argus_workflow::EffectiveOutcome;
@@ -36,7 +37,11 @@ pub struct ArchitectureReportSummary {
     pub pending: usize,
     pub leased: usize,
     pub passed: usize,
-    pub candidate_findings: usize,
+    pub candidate_assessments: usize,
+    pub corroborated_candidates: usize,
+    pub disputed_candidates: usize,
+    pub rejected_candidates: usize,
+    pub unverifiable_candidates: usize,
     pub unable_to_verify: usize,
     pub failed: usize,
     pub cancelled: usize,
@@ -69,6 +74,7 @@ pub struct ArchitectureFindingOccurrence {
 pub struct ArchitectureFindingCluster {
     pub id: FindingId,
     pub representative: ArchitectureCandidate,
+    pub verification: ArchitectureVerificationStatus,
     pub occurrences: usize,
 }
 
@@ -132,7 +138,10 @@ impl ArchitectureReport {
         }
 
         let mut assessments = Vec::new();
-        let mut clusters: BTreeMap<FindingId, (ArchitectureCandidate, usize)> = BTreeMap::new();
+        let mut clusters: BTreeMap<
+            FindingId,
+            (ArchitectureCandidate, ArchitectureVerificationStatus, usize),
+        > = BTreeMap::new();
 
         for item in work {
             if item.coverage.policy != policy_version {
@@ -159,7 +168,7 @@ impl ArchitectureReport {
                                 "pass"
                             }
                             ArchitectureResultStatus::Deficient => {
-                                summary.candidate_findings += 1;
+                                summary.candidate_assessments += 1;
                                 "deficient"
                             }
                             ArchitectureResultStatus::UnableToVerify => {
@@ -175,6 +184,29 @@ impl ArchitectureReport {
                         });
 
                         for candidate in &assessment.result.candidates {
+                            let verification = assessment
+                                .verifications
+                                .iter()
+                                .find(|verification| verification.candidate_id == candidate.id)
+                                .ok_or_else(|| {
+                                    argus_core::ArgusError::invariant(
+                                        "architecture candidate is missing terminal verification",
+                                    )
+                                })?;
+                            match verification.status {
+                                ArchitectureVerificationStatus::Corroborated => {
+                                    summary.corroborated_candidates += 1;
+                                }
+                                ArchitectureVerificationStatus::Disputed => {
+                                    summary.disputed_candidates += 1;
+                                }
+                                ArchitectureVerificationStatus::Rejected => {
+                                    summary.rejected_candidates += 1;
+                                }
+                                ArchitectureVerificationStatus::UnableToVerify => {
+                                    summary.unverifiable_candidates += 1;
+                                }
+                            }
                             summary.finding_occurrences += 1;
                             let key = CanonicalArchitectureFindingKey {
                                 id: candidate.id.clone(),
@@ -190,24 +222,31 @@ impl ArchitectureReport {
 
                             let entry = clusters
                                 .entry(finding_id)
-                                .or_insert_with(|| (candidate.clone(), 0));
-                            entry.1 += 1;
+                                .or_insert_with(|| (candidate.clone(), verification.status, 0));
+                            if entry.1 != verification.status {
+                                entry.1 = ArchitectureVerificationStatus::Disputed;
+                            }
+                            entry.2 += 1;
                         }
                     } else {
-                        summary.passed += 1;
+                        return Err(argus_core::ArgusError::invariant(format!(
+                            "succeeded architecture work `{}` is missing a valid assessment outcome",
+                            item.id
+                        )));
                     }
                 }
             }
         }
 
         let mut finding_clusters = Vec::new();
-        for (id, (representative, occurrences)) in clusters {
+        for (id, (representative, verification, occurrences)) in clusters {
             if occurrences > 1 {
                 summary.duplicate_findings += occurrences - 1;
             }
             finding_clusters.push(ArchitectureFindingCluster {
                 id,
                 representative,
+                verification,
                 occurrences,
             });
         }
@@ -230,13 +269,17 @@ impl ArchitectureReport {
         writeln!(out, "\nPolicy: `{}`", self.policy_version).unwrap();
         writeln!(
             out,
-            "Summary: {} total, {} passed, {} candidate findings, {} unable-to-verify, {} failed, {} cancelled ({} workspace, {} package, {} module scopes)",
+            "Summary: {} total, {} passed, {} candidate assessments, {} unable-to-verify, {} failed, {} cancelled ({} corroborated, {} disputed, {} rejected, {} candidate unable-to-verify; {} workspace, {} package, {} module scopes)",
             self.summary.total,
             self.summary.passed,
-            self.summary.candidate_findings,
+            self.summary.candidate_assessments,
             self.summary.unable_to_verify,
             self.summary.failed,
             self.summary.cancelled,
+            self.summary.corroborated_candidates,
+            self.summary.disputed_candidates,
+            self.summary.rejected_candidates,
+            self.summary.unverifiable_candidates,
             self.summary.workspace_scopes,
             self.summary.package_scopes,
             self.summary.module_scopes,
@@ -244,7 +287,7 @@ impl ArchitectureReport {
         .unwrap();
 
         if !self.finding_clusters.is_empty() {
-            writeln!(out, "\n## Structural Findings\n").unwrap();
+            writeln!(out, "\n## Structural Candidates\n").unwrap();
             for cluster in &self.finding_clusters {
                 let rep = &cluster.representative;
                 let dims = rep
@@ -259,9 +302,12 @@ impl ArchitectureReport {
                     cluster.id, rep.defect_kind, rep.severity, dims
                 )
                 .unwrap();
+                let loc_str = architecture_citations(&rep.citations);
+                writeln!(out, "- **Location**: {loc_str}").unwrap();
                 writeln!(out, "- **Scope**: {:?}", rep.scope).unwrap();
                 writeln!(out, "- **Target**: `{}`", rep.target).unwrap();
                 writeln!(out, "- **Confidence**: {:?}", rep.confidence).unwrap();
+                writeln!(out, "- **Verification**: {:?}", cluster.verification).unwrap();
                 writeln!(out, "- **Occurrences**: {}", cluster.occurrences).unwrap();
                 writeln!(out, "- **Explanation**: {}", rep.explanation).unwrap();
                 if !rep.observed_facts.is_empty() {
@@ -281,6 +327,41 @@ impl ArchitectureReport {
     }
 }
 
+fn architecture_citations(values: &[ArchitectureEvidenceCitation]) -> String {
+    if values.is_empty() {
+        return "none".to_owned();
+    }
+    values
+        .iter()
+        .map(|citation| {
+            citation.location.as_ref().map_or_else(
+                || format!("`{}`", citation.evidence),
+                |location| {
+                    location.start.map_or_else(
+                        || {
+                            format!(
+                                "`{}:{}-{}`",
+                                location.path.as_str(),
+                                location.bytes.start,
+                                location.bytes.end
+                            )
+                        },
+                        |start| {
+                            format!(
+                                "`{}:{}:{}`",
+                                location.path.as_str(),
+                                start.line,
+                                start.column
+                            )
+                        },
+                    )
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[allow(clippy::similar_names)]
 pub fn write_architecture_bundle_reports(
     destination: &Path,
@@ -295,8 +376,7 @@ pub fn write_architecture_bundle_reports(
     let outcomes: Vec<OutcomeRecord> = read_jsonl(&outcomes_path)?;
     let artifacts: Vec<StoredArtifact> = read_jsonl(&artifacts_path)?;
 
-    let report =
-        ArchitectureReport::build(run_id, policy_version, &work, &outcomes, &artifacts)?;
+    let report = ArchitectureReport::build(run_id, policy_version, &work, &outcomes, &artifacts)?;
 
     let md_path = destination.join("architecture-report.md");
     write_reconciled(&md_path, report.to_markdown().as_bytes())?;
@@ -335,4 +415,87 @@ pub fn architecture_report_from_queue(
         &records.outcomes,
         &records.artifacts,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argus_storage::CoverageKey;
+
+    #[test]
+    fn succeeded_architecture_work_without_assessment_fails_closed() {
+        let run = RunId::derive([b"architecture-report-run".as_slice()]);
+        let mut work = QueueWork::pending_for(
+            WorkItemId::derive([b"missing-assessment".as_slice()]),
+            Vec::new(),
+            run.clone(),
+            CoverageKey {
+                snapshot: "snapshot".to_owned(),
+                configuration: "configuration".to_owned(),
+                adapter: "rust".to_owned(),
+                target_kind: "module".to_owned(),
+                policy: "architecture-code-derived@1".to_owned(),
+            },
+        );
+        work.state = QueueState::Succeeded;
+
+        let error =
+            ArchitectureReport::build(run, "architecture-code-derived@1", &[work], &[], &[])
+                .unwrap_err();
+        assert!(error.to_string().contains("missing a valid assessment"));
+    }
+
+    #[test]
+    fn markdown_renders_location_and_target_for_architecture_clusters() {
+        use argus_core::{ByteSpan, LineColumn, SourceLocation, SourcePath};
+
+        let run_id = RunId::derive([b"test-arch-run".as_slice()]);
+        let target_id = TargetId::derive([b"arch-target-1".as_slice()]);
+        let citation = ArchitectureEvidenceCitation {
+            evidence: argus_core::EvidenceId::derive([b"arch-ev-1".as_slice()]),
+            kind: argus_core::EvidenceKind::Source,
+            location: Some(SourceLocation {
+                path: SourcePath::new("crates/example/src/arch.rs").unwrap(),
+                bytes: ByteSpan::new(20, 80).unwrap(),
+                start: Some(LineColumn { line: 3, column: 1 }),
+                end: Some(LineColumn { line: 7, column: 1 }),
+            }),
+            related_targets: vec![target_id.clone()],
+        };
+        let candidate = ArchitectureCandidate {
+            id: "arch-cand-1".to_owned(),
+            severity: Severity::High,
+            defect_kind: ArchitectureFindingKind::StructuralDefect,
+            dimensions: std::collections::BTreeSet::from([ArchitectureDimension::BoundaryAnalysis]),
+            confidence: Confidence::from_basis_points(8_500).unwrap(),
+            explanation: "Inverted dependency layer detected.".to_owned(),
+            citations: vec![citation],
+            target: target_id.clone(),
+            scope: ArchitectureScope::Module,
+            observed_facts: vec!["calls lower level directly".to_owned()],
+            inferred_intent: Some("abstraction bypass".to_owned()),
+        };
+        let cluster = ArchitectureFindingCluster {
+            id: FindingId::derive([b"arch-cluster-1".as_slice()]),
+            representative: candidate,
+            verification: ArchitectureVerificationStatus::Corroborated,
+            occurrences: 1,
+        };
+        let report = ArchitectureReport {
+            schema_version: ARCHITECTURE_REPORT_SCHEMA_VERSION,
+            run_id,
+            policy_version: "architecture-code-derived@1".to_owned(),
+            summary: ArchitectureReportSummary {
+                total: 1,
+                corroborated_candidates: 1,
+                finding_clusters: 1,
+                ..Default::default()
+            },
+            finding_clusters: vec![cluster],
+            assessments: Vec::new(),
+        };
+        let md = report.to_markdown();
+        assert!(md.contains("- **Location**: `crates/example/src/arch.rs:3:1`"));
+        assert!(md.contains(&format!("- **Target**: `{target_id}`")));
+    }
 }

@@ -16,44 +16,84 @@ use argus_core::{CapabilityStatus, EvidenceRecord, Relation, SnapshotId, SourceP
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// Unique identity and version for a language adapter.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AdapterIdentity {
+    /// Human-readable adapter name (e.g. "rust", "python").
     pub name: String,
+    /// Adapter implementation version.
     pub version: String,
 }
 
+/// Functional role played by a provider within an adapter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderRole {
+    /// Discovers project configuration, workspace layout, or package manifests.
     Project,
+    /// Performs syntactic parsing and AST construction.
     Syntax,
+    /// Performs semantic analysis, type checking, and symbol resolution.
     Semantic,
+    /// Interfaces with the build system or compiler output.
     Build,
+    /// Discovers or wraps external tool integrations (linters, analyzers).
     Tool,
+    /// Discovers cross-target relationships and dependency edges.
     Relationship,
 }
 
+/// Description of an underlying capability provider bundled within an adapter.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AdapterProvider {
+    /// Identity string of the provider.
     pub identity: String,
+    /// Functional role of this provider.
     pub role: ProviderRole,
+    /// Capabilities exposed by this provider (e.g. "declarations", "types").
     pub capabilities: Vec<String>,
 }
 
+/// Read-only access abstraction to source files within a snapshot.
 pub trait SourceAccess: Send + Sync {
+    /// Returns the snapshot identifier backing this source view.
     fn snapshot_id(&self) -> &SnapshotId;
+    /// Checks whether the snapshot contains a file at the given relative path.
     fn contains(&self, path: &SourcePath) -> bool;
+    /// Reads the raw file bytes for a relative path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path does not exist or reading fails.
     fn read(&self, path: &SourcePath) -> Result<Vec<u8>, argus_core::ArgusError>;
 }
 
+/// Common trait implemented by language-specific code analyzers.
+///
+/// Adapters inspect source code within a snapshot and produce an [`AdapterInventory`]
+/// containing targets, relations, discovery partitions, and evidence.
 pub trait LanguageAdapter: Send + Sync {
+    /// Returns the identity of this adapter.
     fn identity(&self) -> AdapterIdentity;
+    /// Lists the internal providers bundled within this adapter.
     fn providers(&self) -> Vec<AdapterProvider>;
+    /// Discovers targets, relations, and capabilities across the snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`argus_core::ArgusError`] if inventory generation fails.
     fn inventory(
         &self,
         source: &dyn SourceAccess,
     ) -> Result<AdapterInventory, argus_core::ArgusError>;
 
+    /// Streams inventory discovery items into an [`InventorySink`].
+    ///
+    /// The default implementation calls [`inventory`](Self::inventory) and feeds the sink sequentially.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if inventory discovery or sink operations fail.
     fn inventory_into(
         &self,
         source: &dyn SourceAccess,
@@ -80,22 +120,31 @@ pub trait LanguageAdapter: Send + Sync {
     }
 }
 
+/// Streaming sink interface for receiving inventory discovery events.
 pub trait InventorySink {
+    /// Initializes the sink with adapter identity and snapshot.
     fn begin(
         &mut self,
         adapter: AdapterIdentity,
         snapshot: SnapshotId,
     ) -> Result<(), argus_core::ArgusError>;
+    /// Emits a discovery partition record.
     fn partition(&mut self, partition: DiscoveryPartition) -> Result<(), argus_core::ArgusError>;
+    /// Emits a discovered target.
     fn target(&mut self, target: Target) -> Result<(), argus_core::ArgusError>;
+    /// Emits an evidence record. Default implementation is a no-op.
     fn evidence(&mut self, _evidence: EvidenceRecord) -> Result<(), argus_core::ArgusError> {
         Ok(())
     }
+    /// Emits a relation edge between targets.
     fn relation(&mut self, relation: Relation) -> Result<(), argus_core::ArgusError>;
+    /// Emits a conflict detected during discovery.
     fn conflict(&mut self, conflict: ConflictRecord) -> Result<(), argus_core::ArgusError>;
+    /// Finalizes the inventory sink.
     fn finish(&mut self) -> Result<(), argus_core::ArgusError>;
 }
 
+/// In-memory sink that collects streamed inventory items into an [`AdapterInventory`].
 #[derive(Default)]
 pub struct CollectingInventorySink {
     adapter: Option<AdapterIdentity>,
@@ -108,6 +157,11 @@ pub struct CollectingInventorySink {
 }
 
 impl CollectingInventorySink {
+    /// Consumes the sink and constructs the consolidated [`AdapterInventory`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`InventorySink::begin`] was never called.
     pub fn into_inventory(self) -> Result<AdapterInventory, argus_core::ArgusError> {
         Ok(AdapterInventory {
             adapter: self.adapter.ok_or_else(|| {
@@ -171,32 +225,61 @@ impl InventorySink for CollectingInventorySink {
     }
 }
 
+/// Capability status and diagnostics for a partition of discovery work.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryPartition {
+    /// Human-readable name of the partition (e.g. subsystem or file group).
     pub name: String,
+    /// Capability status reported for this partition.
     pub status: CapabilityStatus,
+    /// Optional diagnostic message when status is partial or failed.
     pub diagnostic: Option<String>,
 }
 
+/// Record of an unresolved conflict or ambiguity between discovery providers.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConflictRecord {
+    /// Target or symbol subject to the conflict.
     pub subject: String,
+    /// Names of providers involved in the conflict.
     pub providers: Vec<String>,
+    /// Detailed description of the disagreement or ambiguity.
     pub detail: String,
 }
 
+/// Complete discovery output produced by a language adapter for a snapshot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AdapterInventory {
+    /// Identity of the adapter that produced this inventory.
     pub adapter: AdapterIdentity,
+    /// Snapshot against which this inventory was generated.
     pub snapshot: SnapshotId,
+    /// Capability partitions evaluated during discovery.
     pub partitions: Vec<DiscoveryPartition>,
+    /// Discovered targets (functions, structs, modules, etc.).
     pub targets: Vec<Target>,
+    /// Discovered evidence records attached to targets.
     #[serde(default)]
     pub evidence: Vec<EvidenceRecord>,
+    /// Discovered semantic or syntactic relations between targets.
     pub relations: Vec<Relation>,
+    /// Ambiguities or conflicting interpretations encountered across providers.
     pub conflicts: Vec<ConflictRecord>,
 }
 
+/// Validates, sorts, and canonicalizes an [`AdapterInventory`] against the source snapshot.
+///
+/// Ensures target IDs are unique and reference valid snapshot files, validates all relations
+/// connect existing targets, and orders targets, relations, evidence, and partitions deterministically.
+///
+/// # Errors
+///
+/// Returns [`argus_core::ArgusError`] if:
+/// - The inventory's snapshot does not match the source view.
+/// - Duplicate target IDs or invalid locations are encountered.
+/// - Relations refer to unknown target IDs.
+/// - Evidence references unknown targets or external paths.
+/// - Partition records are empty or lack diagnostics on failure.
 pub fn normalize_inventory(
     source: &dyn SourceAccess,
     mut inventory: AdapterInventory,

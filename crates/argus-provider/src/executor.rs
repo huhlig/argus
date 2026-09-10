@@ -21,11 +21,19 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::Semaphore;
 
+/// Pluggable validator that checks model JSON output against a target JSON schema.
 pub trait OutputValidator: Send + Sync {
+    /// Validates `output` against `schema`, returning `Ok(())` on success or an error explanation string.
     fn validate(&self, schema: &Value, output: &Value) -> Result<(), String>;
 }
 
+/// Destination sink for telemetry emitted during model execution.
 pub trait ProviderTelemetrySink: Send + Sync {
+    /// Publishes an updated telemetry snapshot for the specified provider identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if publication fails.
     fn publish(
         &self,
         identity: &ProviderIdentity,
@@ -42,42 +50,67 @@ where
     }
 }
 
+/// Configuration policy governing retry and prompt-repair behavior on invalid JSON output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RepairPolicy {
+    /// Maximum number of corrective repair round-trips to attempt before failing.
     pub max_repair_attempts: u32,
 }
 
+/// Cumulative execution telemetry and operational health metrics for a provider.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderTelemetry {
+    /// Most recent health check result.
     pub last_health: Option<ProviderHealth>,
+    /// Total inference requests initiated.
     pub requests: u64,
+    /// Total successful requests that passed validation.
     pub successes: u64,
+    /// Total failed requests (network, budget, or unrecoverable output).
     pub failures: u64,
+    /// Number of corrective repair prompts dispatched.
     pub repair_attempts: u64,
+    /// Cumulative round-trip latency in milliseconds across all calls.
     pub provider_call_millis: u64,
+    /// Cumulative input tokens consumed.
     pub input_tokens: u64,
+    /// Cumulative output tokens generated.
     pub output_tokens: u64,
+    /// Cumulative estimated cost in micro-USD ($0.000001).
     pub estimated_cost_microusd: u64,
+    /// Responses that lacked token usage reporting.
     pub unreported_token_responses: u64,
+    /// Responses that lacked estimated cost reporting.
     pub unreported_cost_responses: u64,
+    /// Requests currently waiting for a concurrency permit.
     pub waiting: u64,
+    /// Peak number of concurrent requests waiting for a permit.
     pub peak_waiting: u64,
+    /// Requests currently executing against the model provider.
     pub in_flight: u64,
+    /// Peak number of concurrent requests in flight.
     pub peak_in_flight: u64,
 }
 
+/// Governed execution harness wrapping a [`ModelProvider`] with concurrency, budget, and validation controls.
 pub struct ProviderExecutor {
     provider: Arc<dyn ModelProvider>,
     expected_identity: ProviderIdentity,
     policy: ProviderPolicy,
     repair: RepairPolicy,
     validator: Arc<dyn OutputValidator>,
-    concurrency: Semaphore,
+    concurrency: Arc<Semaphore>,
     telemetry: Mutex<ProviderTelemetry>,
     telemetry_sink: Option<Arc<dyn ProviderTelemetrySink>>,
 }
 
 impl ProviderExecutor {
+    /// Creates a new provider executor, authorizing the provider against policy and verifying identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if the provider fails policy authorization, identity verification,
+    /// or if the provider's advertised identity does not match `expected_identity`.
     pub fn new(
         provider: Arc<dyn ModelProvider>,
         expected_identity: ProviderIdentity,
@@ -95,9 +128,9 @@ impl ProviderExecutor {
         Ok(Self {
             provider,
             expected_identity,
-            concurrency: Semaphore::new(
+            concurrency: Arc::new(Semaphore::new(
                 usize::try_from(policy.limits.max_concurrency).unwrap_or(usize::MAX),
-            ),
+            )),
             policy,
             repair,
             validator,
@@ -106,12 +139,39 @@ impl ProviderExecutor {
         })
     }
 
+    /// Attaches an optional telemetry sink for streaming telemetry metrics.
     #[must_use]
     pub fn with_telemetry_sink(mut self, sink: Arc<dyn ProviderTelemetrySink>) -> Self {
         self.telemetry_sink = Some(sink);
         self
     }
 
+    /// Returns a child executor scoped for an individual work item review.
+    ///
+    /// The scoped executor shares the provider adapter, expected identity, validation,
+    /// policy configuration, repair policy, concurrency semaphore, and telemetry sink,
+    /// but tracks budget consumption (request count, token count) independently for the
+    /// single work item lifecycle.
+    #[must_use]
+    pub fn scoped_for_review(&self) -> Arc<Self> {
+        Arc::new(Self {
+            provider: self.provider.clone(),
+            expected_identity: self.expected_identity.clone(),
+            policy: self.policy.clone(),
+            repair: self.repair,
+            validator: self.validator.clone(),
+            concurrency: self.concurrency.clone(),
+            telemetry: Mutex::new(ProviderTelemetry::default()),
+            telemetry_sink: self.telemetry_sink.clone(),
+        })
+    }
+
+    /// Executes a model request through the configured provider subject to policy, budget, and validation rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] if concurrency permits cannot be acquired, execution fails,
+    /// budget is exceeded, or output cannot be repaired to conform to the expected schema.
     pub async fn execute(&self, request: ModelRequest) -> Result<ModelResponse, ProviderError> {
         self.execute_with_provider(self.provider.as_ref(), request)
             .await
@@ -237,21 +297,25 @@ impl ProviderExecutor {
         }
     }
 
+    /// Returns a point-in-time snapshot of provider execution telemetry.
     #[must_use]
     pub fn telemetry(&self) -> ProviderTelemetry {
         lock(&self.telemetry).clone()
     }
 
+    /// Returns the capabilities advertised by the underlying provider.
     #[must_use]
     pub fn capabilities(&self) -> &ProviderCapabilities {
         self.provider.capabilities()
     }
 
+    /// Returns the expected provider and model identity.
     #[must_use]
     pub const fn expected_identity(&self) -> &ProviderIdentity {
         &self.expected_identity
     }
 
+    /// Returns the governing provider policy.
     #[must_use]
     pub const fn policy(&self) -> &ProviderPolicy {
         &self.policy
@@ -297,9 +361,14 @@ impl ProviderExecutor {
             || request.max_output_tokens == 0
             || request.max_output_tokens > capabilities.max_output_tokens
             || u64::from(request.max_output_tokens) > self.policy.limits.max_output_tokens
+            || request
+                .estimated_input_tokens
+                .saturating_add(u64::from(request.max_output_tokens))
+                > u64::from(capabilities.context_window_tokens)
         {
             return Err(ProviderError::InvalidPolicy(
-                "request token bounds exceed the assigned provider or policy".to_owned(),
+                "request token bounds exceed the assigned provider context window or policy"
+                    .to_owned(),
             ));
         }
         Ok(())
@@ -837,5 +906,35 @@ mod tests {
         assert!(snapshots[0].1.provider_call_millis >= 1);
         assert_eq!(snapshots[0].1.input_tokens, 90);
         assert_eq!(snapshots[0].1.output_tokens, 20);
+    }
+
+    #[tokio::test]
+    async fn scoped_for_review_resets_budget_per_item_while_sharing_concurrency() {
+        let provider = fixture([
+            Ok(response(json!({"status": "pass"}), 0)),
+            Ok(response(json!({"status": "pass"}), 0)),
+        ]);
+        let parent = ProviderExecutor::new(
+            provider,
+            identity(),
+            policy(1), // max_requests: 1
+            RepairPolicy {
+                max_repair_attempts: 0,
+            },
+            status_validator(),
+        )
+        .unwrap();
+
+        // First scoped executor executes 1 request (satisfying its budget of 1)
+        let item1 = parent.scoped_for_review();
+        assert!(item1.execute(request()).await.is_ok());
+        assert!(matches!(
+            item1.execute(request()).await,
+            Err(ProviderError::BudgetExceeded(_))
+        ));
+
+        // Second scoped executor gets a fresh budget of 1 request
+        let item2 = parent.scoped_for_review();
+        assert!(item2.execute(request()).await.is_ok());
     }
 }

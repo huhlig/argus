@@ -253,6 +253,10 @@ pub enum DocumentationDimensionStatus {
 #[serde(rename_all = "snake_case")]
 pub enum DocumentationCoverage {
     Stated,
+    /// Documentation states something about the dimension but omits material detail
+    /// (e.g. a high-level claim without the mechanics behind it). Distinct from `Stated`
+    /// (materially complete) and `Omitted` (nothing said at all).
+    Partial,
     Omitted,
     UnableToVerify,
     NotApplicable,
@@ -597,21 +601,34 @@ impl DocumentationDimensionDraft {
                             DocumentationCoverage::Stated,
                             SourceMateriality::MaterialBehavior
                                 | SourceMateriality::NoMaterialBehavior
+                                | SourceMateriality::NotApplicable
                         ) | (
                             DocumentationCoverage::Omitted,
                             SourceMateriality::NoMaterialBehavior
+                                | SourceMateriality::NotApplicable
                         )
                     )
             }
             DocumentationComparison::Contradictory => {
                 self.status == DocumentationDimensionStatus::Deficient
-                    && self.documentation_coverage == DocumentationCoverage::Stated
+                    && matches!(
+                        self.documentation_coverage,
+                        DocumentationCoverage::Stated | DocumentationCoverage::Partial
+                    )
                     && self.source_materiality == SourceMateriality::MaterialBehavior
             }
             DocumentationComparison::MaterialOmission => {
                 self.status == DocumentationDimensionStatus::Deficient
-                    && self.documentation_coverage == DocumentationCoverage::Omitted
-                    && self.source_materiality == SourceMateriality::MaterialBehavior
+                    && matches!(
+                        self.documentation_coverage,
+                        DocumentationCoverage::Omitted | DocumentationCoverage::Partial
+                    )
+                    && matches!(
+                        self.source_materiality,
+                        SourceMateriality::MaterialBehavior
+                            | SourceMateriality::NoMaterialBehavior
+                            | SourceMateriality::NotApplicable
+                    )
             }
             DocumentationComparison::UnableToVerify => {
                 self.status == DocumentationDimensionStatus::UnableToVerify

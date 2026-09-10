@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use crate::{
-    ActorRegistry, ActorRegistryError, ArchitectureReviewMaterialization, CandidateRecorderActor,
-    DurableArchitectureOutcomeActor, EvidenceRequestEvaluatorActor, FindingWorkSchedulerActor,
-    OutcomeProvenance, WorkflowDataStore,
+    ActorRegistry, ActorRegistryError, ArchitectureAssessmentContract,
+    ArchitectureReviewMaterialization, CandidateRecorderActor, DurableArchitectureOutcomeActor,
+    EvidenceRequestEvaluatorActor, OutcomeProvenance, WorkflowDataStore, WorkflowDataWrite,
 };
 use argus_core::{EvidenceKind, RunId, SnapshotId};
 use argus_evidence::{DataClassification, EvidenceBudget, EvidenceExpansionPolicy};
@@ -28,14 +28,30 @@ use langchart_runtime::{
 use serde_json::json;
 use std::{collections::BTreeSet, sync::Arc};
 
+/// Runtime identity and configuration parameters for architecture review execution.
 #[derive(Clone, Debug)]
 pub struct ArchitectureRuntimeIdentity {
+    /// Snapshot ID of the source tree being audited.
     pub audit_snapshot: SnapshotId,
+    /// Audit run identifier.
     pub audit_run: RunId,
+    /// Provenance metadata tracking prompt version, actor ID, and actor version.
     pub provenance: OutcomeProvenance,
+    /// Token budget cap for review model output generation.
     pub max_output_tokens: u32,
 }
 
+/// Builds and populates an [`ActorRegistry`] with the actors required for architecture review.
+///
+/// Registers actors for the standard architecture review pipeline:
+/// - `argus.prepare-evidence`: Prepares architecture evidence from materialized targets and relationships.
+/// - `argus.review`: Prompts the review model using the provider executor.
+/// - `argus.evaluate-evidence-request`: Handles requests for evidence scope expansion.
+/// - `argus.record-candidate`: Records intermediate candidate findings into the workflow store.
+/// - `argus.record-outcome`: Stores validated assessments and commits final outcomes to [`DurableQueue`].
+///
+/// # Errors
+/// Returns [`ActorRegistryError`] if actor identity validation fails or duplicate factories are registered.
 pub fn architecture_actor_registry(
     queue: Arc<DurableQueue>,
     workflow_data: Arc<WorkflowDataStore>,
@@ -112,10 +128,10 @@ pub fn architecture_actor_registry(
     register(
         &mut registry,
         "argus.schedule-finding-work",
-        Arc::new(FindingWorkSchedulerActor::new(
-            workflow_data.clone(),
-            queue.clone(),
-        )),
+        Arc::new(VerifyArchitectureCandidatesActor {
+            workflow_data: workflow_data.clone(),
+            contract: materialized.contract.clone(),
+        }),
     )?;
     register(
         &mut registry,
@@ -171,6 +187,14 @@ impl AgentActor for PrepareArchitectureEvidenceActor {
         _envelope: CapabilityEnvelope,
         _broker: Arc<CapabilityBroker>,
     ) -> Result<AgentOutputEvent, AgentError> {
+        tracing::debug!(
+            actor = "PrepareArchitectureEvidenceActor",
+            run_id = %invocation.run_id,
+            state_id = %invocation.state_id,
+            target = %self.materialized.unit.target.target,
+            target_class = ?self.materialized.unit.target.class,
+            "Entering workflow state: PrepareArchitectureEvidenceActor"
+        );
         let store = self.workflow_data.clone();
         let run_id = invocation.run_id.as_ref().to_owned();
         let record = tokio::task::spawn_blocking(move || store.load(&run_id))
@@ -187,6 +211,10 @@ impl AgentActor for PrepareArchitectureEvidenceActor {
                 "prepared architecture evidence identity mismatch".to_owned(),
             ));
         }
+        tracing::debug!(
+            actor = "PrepareArchitectureEvidenceActor",
+            "Exiting workflow state: PrepareArchitectureEvidenceActor -> evidence.prepared"
+        );
         Ok(AgentOutputEvent {
             event_type: "evidence.prepared".to_owned(),
             payload: json!({
@@ -253,6 +281,82 @@ impl AgentActor for DecisionRelayActor {
 }
 
 struct DisabledEvidenceExpansionActor;
+
+struct VerifyArchitectureCandidatesActor {
+    workflow_data: Arc<WorkflowDataStore>,
+    contract: Arc<ArchitectureAssessmentContract>,
+}
+
+#[async_trait]
+impl AgentActor for VerifyArchitectureCandidatesActor {
+    async fn run(
+        &self,
+        invocation: AgentInvocation,
+        _envelope: CapabilityEnvelope,
+        _broker: Arc<CapabilityBroker>,
+    ) -> Result<AgentOutputEvent, AgentError> {
+        let store = self.workflow_data.clone();
+        let run_id = invocation.run_id.as_ref().to_owned();
+        let record = tokio::task::spawn_blocking(move || store.load(&run_id))
+            .await
+            .map_err(|error| AgentError::Internal(format!("workflow data task failed: {error}")))?
+            .map_err(|error| AgentError::Internal(error.to_string()))?
+            .ok_or_else(|| AgentError::Internal("workflow data record is missing".to_owned()))?;
+        if !record.data.verification_results.is_empty() {
+            return Ok(verification_event(&record.data.verification_results));
+        }
+        let decision = record
+            .data
+            .primary_decisions
+            .last()
+            .filter(|decision| decision.evidence_revision == record.data.evidence_revision)
+            .ok_or_else(|| {
+                AgentError::Internal("current primary decision is missing".to_owned())
+            })?;
+        let assessment = self
+            .contract
+            .bind_decision(decision)
+            .map_err(AgentError::Internal)?;
+        let results = assessment
+            .result
+            .candidates
+            .iter()
+            .map(|candidate| {
+                serde_json::to_string(&self.contract.verify_candidate(candidate))
+                    .map_err(|error| AgentError::Internal(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut proposed = record.data;
+        proposed.verification_results = results;
+        let store = self.workflow_data.clone();
+        let run_id = invocation.run_id.as_ref().to_owned();
+        let write = tokio::task::spawn_blocking(move || {
+            store.compare_and_swap(&run_id, record.revision, proposed)
+        })
+        .await
+        .map_err(|error| AgentError::Internal(format!("workflow data task failed: {error}")))?
+        .map_err(|error| AgentError::Internal(error.to_string()))?;
+        let effective = match write {
+            WorkflowDataWrite::Updated(record) | WorkflowDataWrite::Existing(record) => record,
+            WorkflowDataWrite::Inserted(_) => {
+                return Err(AgentError::Internal(
+                    "verification actor unexpectedly inserted workflow data".to_owned(),
+                ));
+            }
+        };
+        Ok(verification_event(&effective.data.verification_results))
+    }
+}
+
+fn verification_event(results: &[String]) -> AgentOutputEvent {
+    AgentOutputEvent {
+        event_type: "finding_work.scheduled".to_owned(),
+        payload: json!({
+            "work_ids": [],
+            "verification_results": results,
+        }),
+    }
+}
 
 #[async_trait]
 impl AgentActor for DisabledEvidenceExpansionActor {

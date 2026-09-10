@@ -15,7 +15,7 @@
 | [Phase 8](#13-phase-8--model-providers-and-langchart-review-workflow)          | Model Providers and Langchart Review Workflow          | **Complete**    | 6/6          | Provider transports, Langchart workflow, replay-safe recovery. Accepted 2026-08-24.                                |
 | [Phase 9](#14-phase-9--documentation-review-vertical-slice)                    | Documentation Review Vertical Slice                    | **In Progress** | 4/5          | Feature-complete: 14 rubrics, evaluator, reporting, adjudication CLI. Pending human threshold setting.             |
 | [Phase 10](#15-phase-10--correctness-review-vertical-slice)                    | Correctness Review Vertical Slice                      | **In Progress** | 4/5          | Feature-complete: 9 rubrics, defect kinds, evaluator, reporting, CLI dispatch. Pending human threshold setting.    |
-| [Phase 11](#16-phase-11--code-derived-architecture-review)                     | Code-Derived Architecture Review                       | **In Progress** | 4/5          | Feature-complete: 6 dimensions, scopes, evaluator, reporting, CLI dispatch. Pending human threshold setting.    |
+| [Phase 11](#16-phase-11--code-derived-architecture-review)                     | Code-Derived Architecture Review                       | **In Progress** | 4/5          | v1 engineering is complete: bounded graph evidence, progressive roll-up, terminal verification, and reports. Human qualification remains. |
 | [Phase 12](#17-phase-12--end-to-end-hardening-and-mvp-exit)                    | End-to-End Hardening and MVP Exit                      | **Not Started** | 0/9          | Full self-audit, CI non-interactive exit, soak testing, MVP exit criteria.                                         |
 | [Phase 13](#phase-13--second-source-language-adapter-not-started)              | Second Source-Language Adapter                         | **Not Started** | Post-MVP     | Python or TypeScript adapter.                                                                                      |
 | [Phase 14](#phase-14--design-documents-and-conformance-not-started)            | Design Documents and Conformance                       | **Not Started** | Post-MVP     | Index ADRs/PRDs, design-to-code conformance.                                                                       |
@@ -563,12 +563,14 @@ Deliver the first complete repository-wide semantic policy.
   (`crates/argus-policies/src/documentation.rs`).
 - [x] Presence, purpose, behavior, inputs, outputs, errors, panics, safety, side effects, invariants, examples,
   accuracy, currency, and value rubrics (all 14 rubrics implemented).
+- [x] Documented gap and stub tracking rules: mandatory `TODO` comment requirement in doc comments and inline notes.
 - [x] Claim extraction and claim-to-evidence mapping.
 - [x] Pass, candidate finding, and unable-to-verify assessments.
 - [x] Finding canonicalization and duplicate clustering.
 - [x] Markdown and JSON/JSONL reports (`crates/argus-report`).
 - [x] Seeded documentation-defect corpus and human adjudication capture (`docs/evaluation/documentation-corpus-v1.json`,
-  `argus adjudicate`).
+  `docs/evaluation/documentation-corpus-v1-workspace`, with 16 expected issues and 4 clean controls).
+- [x] Baseline quality thresholds configuration (`docs/evaluation/documentation-thresholds-v1.json`).
 - [x] Evaluation reporting CLI (`argus evaluate documentation`).
 
 ### CLI Slice
@@ -620,10 +622,13 @@ Add conservative correctness analysis without lowering evidence or verification 
 - [x] Target rubrics for functions, methods, types, implementations, modules, and tests (`argus_policies::correctness`).
 - [x] Evidence-backed failure-path, invariant, state-transition, error-handling, resource-lifecycle, concurrency,
   persistence, boundary-condition, and unsafe-assumption analysis.
+- [x] Gap, inconsistency, stub, and unimplemented aspect inspection with non-exemption for documented defects.
 - [x] Relationship-group review where isolated targets are insufficient.
 - [x] Candidate verification workflow with isolated context.
 - [x] Configurable corroboration, disagreement, escalation, and human-review requirements.
-- [x] Seeded correctness corpus, including relational and adversarial cases (`docs/evaluation/correctness-corpus-v1.json`, `docs/evaluation/correctness-corpus-v1-workspace`).
+- [x] Seeded correctness corpus, including relational, adversarial, stub, and scope gap cases (`docs/evaluation/correctness-corpus-v1.json`,
+  `docs/evaluation/correctness-corpus-v1-workspace`, with 11 expected issues and 4 clean controls).
+- [x] Baseline quality thresholds configuration (`docs/evaluation/correctness-thresholds-v1.json`).
 
 ### Deliverable
 
@@ -655,7 +660,7 @@ independently.
 
 ## 16. Phase 11 — Code-Derived Architecture Review
 
-**Status**: In Progress (Feature Complete, Pending Quality Threshold Sign-Off)
+**Status**: In Progress (Engineering Complete; Live-Model Qualification Pending)
 
 ### Objective
 
@@ -665,9 +670,9 @@ Turn exhaustive lower-level review into repository-level architectural understan
 
 - [x] Module, crate, and workspace aggregate workflows (`argus-workflow::architecture_*`).
 - [x] Dependency structure, cycles, public surfaces, ownership, cohesion, and boundary analysis (`argus-policies::architecture`).
-- [x] Cross-crate and cross-cutting pattern detection.
-- [x] Responsibility summaries grounded in targets and relationships.
-- [x] Explicit propagation of constituent failures, partial capabilities, and unable-to-verify states (`ConstituentHealthSummary`).
+- [x] Cross-crate Cargo dependencies and validated captured semantic relations are available to aggregate reviews.
+- [x] Progressive module-to-package-to-workspace responsibility summaries.
+- [x] Propagate lower-scope review failures and unable-to-verify results.
 - [x] Architecture report sections and navigable links to supporting targets and findings (`argus-report::architecture`).
 
 ### Deliverable
@@ -678,9 +683,9 @@ review results (documented in `docs/architecture-evaluation.md`, pending human r
 ### Acceptance Criteria
 
 - [x] Aggregate reviews do not require replaying every source file or lower-level transcript.
-- [x] Architecture findings identify supporting relations, constituent assessments, and evidence.
+- [x] Architecture candidates identify supporting relations and evidence and receive terminal verification states.
 - [x] The report distinguishes observed structure from inferred intent.
-- [x] Failed or partial constituent coverage is visible in aggregate confidence and coverage.
+- [x] Inventory and lower-scope execution failures are reflected in aggregate confidence.
 - [ ] Human evaluation confirms that the report explains meaningful cross-crate structure and at least the seeded
   architectural defects.
 
@@ -691,6 +696,14 @@ review results (documented in `docs/architecture-evaluation.md`, pending human r
   but formal human adjudication on seeded runs to set the policy quality threshold is pending operator review.
 - **Full Model Execution Dogfooding**: Core workflow simulations pass with simulated actors; running a full live model
   audit over Argus and Mnemosyne requires configured provider credentials and operator threshold sign-off.
+- **Progressive Aggregation**: `architecture-code-derived@1` leases module work first, then package work, then workspace
+  work. Terminal child summaries and failed/unable-to-verify health are deterministically folded into the parent context.
+- **Candidate Verification**: Every stored architecture candidate receives a terminal evidence-verification state.
+  Direct structural defects with complete evidence are corroborated; inferred risks are disputed; incomplete evidence
+  remains unable to verify. Invalid candidates fail closed before outcome storage.
+- **Qualification Gate**: CI thresholds can require minimum run and adjudication counts, maximum unadjudicated findings,
+  precision, recall, duplicate rate, unable-to-verify rate, and repeated-run stability. Selecting the actual thresholds
+  still requires live-model runs and human adjudication.
 
 ### Primary Risk
 

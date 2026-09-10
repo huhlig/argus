@@ -3,14 +3,36 @@
 Phase 9 quality evaluation is separate from an ordinary repository audit. The seeded corpus is
 provided by `argus_test_support::seeded_documentation_fixture` and comprehensively tests all 14
 documentation rubrics (presence, purpose, behavior, inputs, outputs, errors, panics, safety,
-side effects, invariants, examples, accuracy, currency, and value) plus known-clean controls.
+side effects, invariants, examples, accuracy, currency, and value), including targeted enforcement
+for documented stubs and gaps, plus 4 known-clean controls (16 expected issues total).
 Corpus and evaluation records are independently schema-versioned; changing ground truth requires
 a new corpus version.
 The serialized corpus is checked in at `docs/evaluation/documentation-corpus-v1.json` and is tested
-against the fixture builder to prevent drift.
+against the fixture builder to prevent drift. Baseline quality thresholds are checked in at
+`docs/evaluation/documentation-thresholds-v1.json`.
 Its executable Cargo workspace is checked in at
 `docs/evaluation/documentation-corpus-v1-workspace`. The corpus uses logical target IDs, which are
 independent of snapshot, analysis configuration, VCS state, and source byte offsets.
+
+### Documented Gaps, Stubs, and Mandatory `TODO` Rule
+
+The documentation review policy enforces strict tracking of future work, stubs, and incomplete
+behavior:
+- **Mandatory `TODO` Comment Rule**: Any documentation, doc comment, or inline comment that describes,
+  acknowledges, or notes gaps, inconsistencies, stubs, or unimplemented aspects in a target
+  declaration or implementation MUST explicitly include `TODO` in the comments (e.g. `// TODO: ...`
+  or `/// TODO: ...`).
+- **Defect Classification**: Acknowledging or describing a stub, mock behavior, incomplete scope, or
+  unimplemented handling in documentation or comments without an explicit `TODO` designation is
+  classified as a documentation defect under the relevant dimension (`behavior`, `value`, `purpose`,
+  or `accuracy`) and must emit a candidate finding.
+- **Seeded Defect Cases**:
+  - `documented-stub-missing-todo`: Public API function documented as a stub/mock without an explicit
+    `TODO` comment.
+  - `documented-gap-missing-todo`: Public API function documenting an unimplemented error/retry path
+    without an explicit `TODO` comment.
+  - `known-clean-stub-with-todo`: Control verifying that documenting a stub or gap is clean when paired
+    with an explicit `TODO` comment.
 
 Human decisions use the generic `HumanAdjudication` record and existing `AdjudicationState` rather
 than a documentation-specific verdict. Records are append-only per run and finding. Revision writes
@@ -72,7 +94,7 @@ Evaluate one run, or pass additional run IDs to measure stability, optionally en
 ```text
 argus evaluate documentation \
   --corpus docs/evaluation/documentation-corpus-v1.json \
-  [--thresholds .argus/config/thresholds.json] \
+  [--thresholds docs/evaluation/documentation-thresholds-v1.json] \
   [--format markdown|json] \
   <run-id> [<run-id> ...]
 ```
@@ -83,6 +105,6 @@ Create each repeated evaluation run from the executable corpus workspace:
 cd docs/evaluation/documentation-corpus-v1-workspace
 argus prime --adapter rust
 argus audit --pipeline documentation
-argus work documentation --profile <profile-name-or-path> --limit 14
+argus work documentation --profile <profile-name-or-path> --limit 16
 argus finalize <run-id>
 ```

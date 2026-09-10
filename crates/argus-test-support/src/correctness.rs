@@ -45,10 +45,13 @@ pub fn seeded_correctness_fixture() -> SeededCorrectnessFixture {
     let torn_persistence = seeded_target("torn-persistence");
     let unsound_pointer_assumption = seeded_target("unsound-pointer-assumption");
     let integer_overflow_boundary = seeded_target("integer-overflow-boundary");
+    let documented_stub_todo = seeded_target("documented-stub-todo");
+    let documented_scope_gap = seeded_target("documented-scope-gap");
 
     let known_clean_checked_math = seeded_target("known-clean-checked-math");
     let known_clean_error_handling = seeded_target("known-clean-error-handling");
     let known_clean_boundary = seeded_target("known-clean-boundary");
+    let known_clean_implemented_feature = seeded_target("known-clean-implemented-feature");
 
     SeededCorrectnessFixture {
         corpus: CorrectnessEvaluationCorpus {
@@ -102,11 +105,22 @@ pub fn seeded_correctness_fixture() -> SeededCorrectnessFixture {
                     target: integer_overflow_boundary.clone(),
                     dimensions: BTreeSet::from([CorrectnessDimension::BoundaryConditions]),
                 },
+                ExpectedCorrectnessIssue {
+                    id: "documented-stub-todo".to_owned(),
+                    target: documented_stub_todo.clone(),
+                    dimensions: BTreeSet::from([CorrectnessDimension::FailurePaths]),
+                },
+                ExpectedCorrectnessIssue {
+                    id: "documented-scope-gap".to_owned(),
+                    target: documented_scope_gap.clone(),
+                    dimensions: BTreeSet::from([CorrectnessDimension::Invariants]),
+                },
             ],
             known_clean_targets: vec![
                 known_clean_checked_math.clone(),
                 known_clean_error_handling.clone(),
                 known_clean_boundary.clone(),
+                known_clean_implemented_feature.clone(),
             ],
         },
         sources: vec![
@@ -234,6 +248,44 @@ pub fn known_clean_boundary(items: &[u8], index: usize) -> Option<u8> {
 }
 ",
             },
+            SeededCorrectnessSource {
+                target: documented_stub_todo,
+                logical_name: "documented_stub_todo",
+                source: r#"// 10. DocumentedStub: intentional todo!() in production code
+/// Validates transaction signature against network authority.
+///
+/// Note: Signature verification is currently a stub and panics with todo!().
+pub fn documented_stub_todo(signature: &[u8]) -> bool {
+    // TODO: implement cryptographic signature verification
+    let _ = signature;
+    todo!("cryptographic signature verification is not yet implemented")
+}
+"#,
+            },
+            SeededCorrectnessSource {
+                target: documented_scope_gap,
+                logical_name: "documented_scope_gap",
+                source: r#"// 11. ScopeGap: dummy return value violating security invariant
+/// Evaluates user permission scope against resource requirements.
+///
+/// Full permission evaluation is incomplete; currently allows all requests.
+#[must_use]
+pub fn documented_scope_gap(user_id: u64, resource: &str) -> bool {
+    // Stub: placeholder always returns true
+    let _ = (user_id, resource);
+    true
+}
+"#,
+            },
+            SeededCorrectnessSource {
+                target: known_clean_implemented_feature,
+                logical_name: "known_clean_implemented_feature",
+                source: r"#[must_use]
+pub fn known_clean_implemented_feature(user_id: u64, allowed_users: &[u64]) -> bool {
+    allowed_users.contains(&user_id)
+}
+",
+            },
         ],
     }
 }
@@ -249,9 +301,12 @@ fn seeded_target(name: &str) -> TargetId {
         "torn-persistence" => ("callable", "torn_persistence"),
         "unsound-pointer-assumption" => ("callable", "unsound_pointer_assumption"),
         "integer-overflow-boundary" => ("callable", "integer_overflow_boundary"),
+        "documented-stub-todo" => ("callable", "documented_stub_todo"),
+        "documented-scope-gap" => ("callable", "documented_scope_gap"),
         "known-clean-checked-math" => ("callable", "known_clean_checked_math"),
         "known-clean-error-handling" => ("callable", "known_clean_error_handling"),
         "known-clean-boundary" => ("callable", "known_clean_boundary"),
+        "known-clean-implemented-feature" => ("callable", "known_clean_implemented_feature"),
         _ => unreachable!("unknown seeded correctness target"),
     };
     TargetId::derive([

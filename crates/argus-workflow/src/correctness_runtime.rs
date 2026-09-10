@@ -28,14 +28,30 @@ use langchart_runtime::{
 use serde_json::json;
 use std::{collections::BTreeSet, sync::Arc};
 
+/// Runtime identity and configuration parameters for correctness review execution.
 #[derive(Clone, Debug)]
 pub struct CorrectnessRuntimeIdentity {
+    /// Snapshot ID of the source tree being audited.
     pub audit_snapshot: SnapshotId,
+    /// Audit run identifier.
     pub audit_run: RunId,
+    /// Provenance metadata tracking prompt version, actor ID, and actor version.
     pub provenance: OutcomeProvenance,
+    /// Token budget cap for review model output generation.
     pub max_output_tokens: u32,
 }
 
+/// Builds and populates an [`ActorRegistry`] with the actors required for correctness review.
+///
+/// Registers actors for the standard correctness review pipeline:
+/// - `argus.prepare-evidence`: Prepares correctness evidence from materialized targets.
+/// - `argus.review`: Prompts the review model using the provider executor.
+/// - `argus.evaluate-evidence-request`: Handles requests for evidence scope expansion.
+/// - `argus.record-candidate`: Records intermediate candidate findings into the workflow store.
+/// - `argus.record-outcome`: Stores validated assessments and commits final outcomes to [`DurableQueue`].
+///
+/// # Errors
+/// Returns [`ActorRegistryError`] if actor identity validation fails or duplicate factories are registered.
 pub fn correctness_actor_registry(
     queue: Arc<DurableQueue>,
     workflow_data: Arc<WorkflowDataStore>,
@@ -171,6 +187,14 @@ impl AgentActor for PrepareCorrectnessEvidenceActor {
         _envelope: CapabilityEnvelope,
         _broker: Arc<CapabilityBroker>,
     ) -> Result<AgentOutputEvent, AgentError> {
+        tracing::debug!(
+            actor = "PrepareCorrectnessEvidenceActor",
+            run_id = %invocation.run_id,
+            state_id = %invocation.state_id,
+            target = %self.materialized.unit.target.target,
+            target_class = ?self.materialized.unit.target.class,
+            "Entering workflow state: PrepareCorrectnessEvidenceActor"
+        );
         let store = self.workflow_data.clone();
         let run_id = invocation.run_id.as_ref().to_owned();
         let record = tokio::task::spawn_blocking(move || store.load(&run_id))
@@ -187,6 +211,10 @@ impl AgentActor for PrepareCorrectnessEvidenceActor {
                 "prepared correctness evidence identity mismatch".to_owned(),
             ));
         }
+        tracing::debug!(
+            actor = "PrepareCorrectnessEvidenceActor",
+            "Exiting workflow state: PrepareCorrectnessEvidenceActor -> evidence.prepared"
+        );
         Ok(AgentOutputEvent {
             event_type: "evidence.prepared".to_owned(),
             payload: json!({

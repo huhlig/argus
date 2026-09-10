@@ -17,8 +17,10 @@ use crate::{
     ProviderError, ProviderHealth, StructuredOutputSupport,
 };
 use async_trait::async_trait;
+use futures::StreamExt;
 use langchart_adapters::llm::{
-    FinishReason, LlmAdapter, LlmError, LlmRequest, Message, ResponseFormat,
+    FinishReason, LlmAdapter, LlmError, LlmEventStream, LlmRequest, LlmResponse, LlmStreamEvent,
+    Message, ResponseFormat,
 };
 use langchart_llm_generic::GenericLlmAdapter;
 use langchart_llm_watsonx::{WatsonxAdapter, WatsonxConfig, WatsonxCredentials};
@@ -89,14 +91,17 @@ impl LangchartModelProvider {
             validate_secret("OpenAI-compatible API key", &api_key)?;
             builder = builder.openai_api_key(api_key);
         }
-        if let Some(seconds) = request_timeout_seconds {
-            if seconds == 0 {
-                return Err(ProviderError::InvalidProfile(
-                    "provider request timeout must be positive".to_owned(),
-                ));
-            }
-            builder = builder.timeout(Duration::from_secs(seconds));
+        let seconds = request_timeout_seconds.unwrap_or(1800);
+        if seconds == 0 {
+            return Err(ProviderError::InvalidProfile(
+                "provider request timeout must be positive".to_owned(),
+            ));
         }
+        let timeout = Duration::from_secs(seconds);
+        builder = builder
+            .timeout(timeout)
+            .first_byte_timeout(timeout)
+            .stream_idle_timeout(timeout);
         let adapter = builder
             .build()
             .map_err(|error| ProviderError::InvalidProfile(error.to_string()))?;
@@ -184,6 +189,17 @@ impl LangchartModelProvider {
             .map_err(|error| ProviderError::InvalidProfile(error.to_string()))?;
         Self::new(capabilities, Arc::new(adapter))
     }
+
+    pub fn bedrock(
+        capabilities: ProviderCapabilities,
+        config: crate::BedrockConfig,
+        credentials: crate::BedrockCredentials,
+    ) -> Result<Self, ProviderError> {
+        require_deployment(&capabilities, DeploymentMode::Online, "bedrock")?;
+        let adapter = crate::BedrockAdapter::new(config, credentials)
+            .map_err(|error| ProviderError::InvalidProfile(error.to_string()))?;
+        Self::new(capabilities, Arc::new(adapter))
+    }
 }
 
 fn require_deployment(
@@ -235,8 +251,8 @@ fn validate_endpoint(value: &str, deployment: DeploymentMode) -> Result<Url, Pro
         ));
     }
     match deployment {
-        DeploymentMode::Local if !is_loopback(&endpoint) => Err(ProviderError::InvalidProfile(
-            "local provider endpoint must use localhost or a loopback address".to_owned(),
+        DeploymentMode::Local if !is_loopback_or_private(&endpoint) => Err(ProviderError::InvalidProfile(
+            "local provider endpoint must use localhost, loopback, or a private network address".to_owned(),
         )),
         DeploymentMode::Online if endpoint.scheme() != "https" => Err(
             ProviderError::InvalidProfile("online provider endpoint must use HTTPS".to_owned()),
@@ -248,10 +264,15 @@ fn validate_endpoint(value: &str, deployment: DeploymentMode) -> Result<Url, Pro
     }
 }
 
-fn is_loopback(endpoint: &Url) -> bool {
+fn is_loopback_or_private(endpoint: &Url) -> bool {
     match endpoint.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Domain(host)) => {
+            let lower = host.to_ascii_lowercase();
+            lower == "localhost"
+                || lower.strip_suffix(".local").is_some()
+                || lower.strip_suffix(".internal").is_some()
+        }
+        Some(Host::Ipv4(address)) => address.is_loopback() || address.is_private(),
         Some(Host::Ipv6(address)) => address.is_loopback(),
         None => false,
     }
@@ -267,6 +288,7 @@ fn validate_secret(name: &str, value: &str) -> Result<(), ProviderError> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[async_trait]
 impl ModelProvider for LangchartModelProvider {
     fn capabilities(&self) -> &ProviderCapabilities {
@@ -290,51 +312,71 @@ impl ModelProvider for LangchartModelProvider {
     }
 
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ProviderError> {
-        let response_format = match self.capabilities.structured_output {
-            StructuredOutputSupport::None => ResponseFormat::Text,
-            StructuredOutputSupport::BestEffort => ResponseFormat::JsonObject,
-            StructuredOutputSupport::SchemaConstrained => ResponseFormat::JsonSchema {
+        let strategy = StructuredOutputStrategy::for_provider(
+            &self.capabilities.identity.provider,
+            self.capabilities.structured_output,
+        );
+        let response_format = match strategy {
+            StructuredOutputStrategy::PromptGuidedText => ResponseFormat::Text,
+            StructuredOutputStrategy::NativeJsonObject => ResponseFormat::JsonObject,
+            StructuredOutputStrategy::NativeJsonSchema => ResponseFormat::JsonSchema {
                 name: "argus_review".to_owned(),
                 description: Some("Argus policy review decision".to_owned()),
                 schema: request.structured_output_schema.clone(),
                 strict: true,
             },
         };
-        let system_content = match self.capabilities.structured_output {
-            StructuredOutputSupport::SchemaConstrained => {
-                "Return only JSON matching the supplied response schema.".to_owned()
-            }
-            StructuredOutputSupport::None | StructuredOutputSupport::BestEffort => format!(
-                "Return only JSON matching this schema: {}",
-                request.structured_output_schema
-            ),
-        };
-        let response = self
+        let system_content = structured_system_content(strategy, &request.structured_output_schema);
+        let user_content =
+            structured_user_content(request.prompt, &self.capabilities.identity.model);
+        let messages = structured_messages(
+            system_content.clone(),
+            user_content.clone(),
+            &self.capabilities.identity.provider,
+            &self.capabilities.identity.model,
+        );
+        tracing::debug!(
+            provider = %self.capabilities.identity.provider,
+            model = %self.capabilities.identity.model,
+            system_prompt = %system_content,
+            prompt = %user_content,
+            "Sending prompt to LLM provider"
+        );
+        let stream = self
             .adapter
-            .complete(LlmRequest {
+            .complete_stream(LlmRequest {
                 model_policy: ModelPolicy {
                     profile: None,
                     model: Some(self.capabilities.identity.model.clone()),
                     temperature: Some(0.0),
-                    max_tokens: Some(request.max_output_tokens),
+                    max_tokens: Some(
+                        request
+                            .max_output_tokens
+                            .min(self.capabilities.max_output_tokens),
+                    ),
                 },
-                messages: vec![
-                    Message::System {
-                        content: system_content,
-                    },
-                    Message::User {
-                        content: request.prompt,
-                    },
-                ],
+                messages,
                 tools: Vec::new(),
                 response_format,
             })
             .await
             .map_err(map_error)?;
-        if response.model != self.capabilities.identity.model_version {
+        let response = drive_llm_stream(stream).await?;
+        tracing::debug!(
+            provider = %self.capabilities.identity.provider,
+            model = %self.capabilities.identity.model,
+            response_model = %response.model,
+            content = response.content.as_deref().unwrap_or(""),
+            finish_reason = ?response.finish_reason,
+            "Received response from LLM provider"
+        );
+        if response.model != self.capabilities.identity.model
+            && response.model != self.capabilities.identity.model_version
+            && self.capabilities.identity.model_version != "latest"
+        {
             return Err(ProviderError::SubstitutionDenied(format!(
-                "transport returned model `{}` instead of pinned `{}`",
-                response.model, self.capabilities.identity.model_version
+                "transport returned model `{}` instead of expected `{}`",
+                response.model, self.capabilities.identity.model
             )));
         }
         match response.finish_reason {
@@ -368,7 +410,7 @@ impl ModelProvider for LangchartModelProvider {
         let content = response.content.ok_or_else(|| {
             ProviderError::InvalidOutput("model response has no JSON content".to_owned())
         })?;
-        let output = parse_json_response(&content).map_err(|error| {
+        let output = sanitize_and_parse_model_output(&content).map_err(|error| {
             ProviderError::InvalidOutput(format!("model response is not valid JSON: {error}"))
         })?;
         Ok(ModelResponse {
@@ -383,15 +425,261 @@ impl ModelProvider for LangchartModelProvider {
     }
 }
 
-fn parse_json_response(content: &str) -> Result<serde_json::Value, serde_json::Error> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StructuredOutputStrategy {
+    NativeJsonSchema,
+    NativeJsonObject,
+    PromptGuidedText,
+}
+
+impl StructuredOutputStrategy {
+    #[must_use]
+    pub fn for_provider(provider: &str, support: StructuredOutputSupport) -> Self {
+        // langchart-llm-watsonx supports ResponseFormat::JsonObject but explicitly rejects
+        // ResponseFormat::JsonSchema (LlmError::UnsupportedResponseFormat), so watsonx is
+        // capped at NativeJsonObject regardless of the configured support level.
+        if provider == "watsonx" {
+            return match support {
+                StructuredOutputSupport::None => Self::PromptGuidedText,
+                StructuredOutputSupport::BestEffort
+                | StructuredOutputSupport::SchemaConstrained => Self::NativeJsonObject,
+            };
+        }
+        match support {
+            StructuredOutputSupport::None => Self::PromptGuidedText,
+            StructuredOutputSupport::BestEffort => match provider {
+                "bedrock" | "anthropic" => Self::PromptGuidedText,
+                _ => Self::NativeJsonObject,
+            },
+            StructuredOutputSupport::SchemaConstrained => match provider {
+                "bedrock" | "anthropic" => Self::PromptGuidedText,
+                _ => Self::NativeJsonSchema,
+            },
+        }
+    }
+}
+
+fn structured_system_content(
+    strategy: StructuredOutputStrategy,
+    schema: &serde_json::Value,
+) -> String {
+    match strategy {
+        StructuredOutputStrategy::NativeJsonSchema => {
+            "Return only JSON matching the supplied response schema.".to_owned()
+        }
+        StructuredOutputStrategy::NativeJsonObject | StructuredOutputStrategy::PromptGuidedText => {
+            format!("Return only JSON matching this schema: {schema}")
+        }
+    }
+}
+
+fn structured_user_content(mut prompt: String, model: &str) -> String {
+    if model.to_ascii_lowercase().starts_with("qwen3") {
+        prompt.insert_str(0, "/no_think\n");
+    }
+    prompt
+}
+
+fn structured_messages(
+    system_content: String,
+    user_content: String,
+    provider: &str,
+    model: &str,
+) -> Vec<Message> {
+    let mut messages = vec![
+        Message::System {
+            content: system_content,
+        },
+        Message::User {
+            content: user_content,
+        },
+    ];
+    if provider == "lemonade" && model.to_ascii_lowercase().starts_with("qwen3") {
+        messages.push(Message::Assistant {
+            content: "<think>\n\n</think>\n\n".to_owned(),
+        });
+    }
+    messages
+}
+
+fn sanitize_and_parse_model_output(content: &str) -> Result<serde_json::Value, serde_json::Error> {
     let trimmed = content.trim();
-    let json = trimmed
+
+    // 1. Strip reasoning / thinking blocks: <think>...</think>
+    let unthought =
+        if let (Some(start), Some(end)) = (trimmed.find("<think>"), trimmed.find("</think>")) {
+            let before = &trimmed[..start];
+            let after = &trimmed[end + "</think>".len()..];
+            format!("{}{}", before.trim(), after.trim())
+        } else {
+            trimmed.to_owned()
+        };
+
+    let text = unthought.trim();
+
+    // 2. Strip whole-response markdown fences: ```json ... ``` or ``` ... ```
+    let json = text
         .strip_prefix("```json")
+        .or_else(|| text.strip_prefix("```"))
         .and_then(|fenced| fenced.strip_suffix("```"))
-        .map_or(trimmed, str::trim);
+        .map_or(text, str::trim);
+
+    // 3. Try strict JSON parse first
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+        return Ok(value);
+    }
+
+    // 4. Try lenient JSON5 parse
+    if let Ok(value) = json5::from_str::<serde_json::Value>(json) {
+        return Ok(value);
+    }
+
+    // 5. Repair common model formatting issues (unquoted keys, trailing commas)
+    let repaired = repair_json_syntax(json);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&repaired) {
+        return Ok(value);
+    }
+
     serde_json::from_str(json)
 }
 
+fn repair_json_syntax(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 64);
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+    let mut escape = false;
+
+    while let Some(c) = chars.next() {
+        if escape {
+            out.push(c);
+            escape = false;
+            continue;
+        }
+
+        if c == '\\' && in_string {
+            out.push(c);
+            escape = true;
+            continue;
+        }
+
+        if c == '"' {
+            in_string = !in_string;
+            out.push(c);
+            continue;
+        }
+
+        if in_string {
+            out.push(c);
+            continue;
+        }
+
+        // Single quotes converted to double quotes for strings
+        if c == '\'' {
+            out.push('"');
+            continue;
+        }
+
+        // Strip single-line comments // ...
+        if c == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            for nc in chars.by_ref() {
+                if nc == '\n' {
+                    out.push('\n');
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // Strip trailing commas before } or ]
+        if c == ',' {
+            let mut whitespace = String::new();
+            let mut found_closer = false;
+            while let Some(&next_c) = chars.peek() {
+                if next_c.is_whitespace() {
+                    whitespace.push(chars.next().unwrap());
+                } else if next_c == '}' || next_c == ']' {
+                    found_closer = true;
+                    break;
+                } else {
+                    break;
+                }
+            }
+            if found_closer {
+                out.push_str(&whitespace);
+            } else {
+                out.push(',');
+                out.push_str(&whitespace);
+            }
+            continue;
+        }
+
+        // Quote unquoted alphanumeric/ident keys before a colon
+        if c.is_alphanumeric() || c == '_' || c == '-' {
+            let mut ident = String::new();
+            ident.push(c);
+            while let Some(&next_c) = chars.peek() {
+                if next_c.is_alphanumeric() || next_c == '_' || next_c == '-' {
+                    ident.push(chars.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+
+            // Check if following token is ':'
+            let mut whitespace = String::new();
+            while let Some(&next_c) = chars.peek() {
+                if next_c.is_whitespace() {
+                    whitespace.push(chars.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+
+            if chars.peek() == Some(&':') {
+                out.push('"');
+                out.push_str(&ident);
+                out.push('"');
+            } else if ident == "true" || ident == "false" || ident == "null" {
+                out.push_str(&ident);
+            } else if ident.chars().all(|ch| ch.is_ascii_digit() || ch == '.') {
+                out.push_str(&ident);
+            } else {
+                out.push_str(&ident);
+            }
+            out.push_str(&whitespace);
+            continue;
+        }
+
+        out.push(c);
+    }
+
+    out
+}
+
+/// Drains a normalized LLM event stream, preferring true incremental streaming when the
+/// adapter supports it (its `stream_idle_timeout` then bounds the gap between deltas, a
+/// tighter hang signal than the total generation deadline alone) and transparently accepting
+/// the trait's buffered two-event fallback when it does not. Either way, only the terminal
+/// `ResponseCompleted` event carries a durable response; earlier deltas are provisional.
+async fn drive_llm_stream(mut stream: LlmEventStream) -> Result<LlmResponse, ProviderError> {
+    let mut delta_chars = 0usize;
+    while let Some(event) = stream.next().await {
+        match event.map_err(map_error)? {
+            LlmStreamEvent::ResponseCompleted { response } => return Ok(response),
+            LlmStreamEvent::TextDelta { delta } | LlmStreamEvent::ReasoningDelta { delta } => {
+                delta_chars += delta.chars().count();
+                tracing::trace!(chars_received = delta_chars, "LLM stream delta received");
+            }
+            _ => {}
+        }
+    }
+    Err(ProviderError::Unavailable(
+        "LLM stream ended before a completed response was received".to_owned(),
+    ))
+}
+
+#[allow(clippy::match_wildcard_for_single_variants)]
 fn map_error(error: LlmError) -> ProviderError {
     match error {
         LlmError::ContextLengthExceeded => {
@@ -411,35 +699,8 @@ fn map_error(error: LlmError) -> ProviderError {
                 "adapter `{adapter}` cannot honor required response format `{requested}`"
             ))
         }
-        LlmError::Transport {
-            stage,
-            retryable,
-            cause,
-        } => ProviderError::Unavailable(format!(
-            "transport error during {stage:?} (retryable={retryable}): {cause}"
-        )),
-        LlmError::Http {
-            status,
-            retry_after: _,
-            request_id: _,
-            body_metadata: _,
-        } => ProviderError::Unavailable(format!("provider returned HTTP {status}")),
-        LlmError::Decode {
-            status,
-            cause,
-            likely_truncated,
-            ..
-        } => ProviderError::InvalidOutput(format!(
-            "failed to decode HTTP {status} response (truncated={likely_truncated}): {cause}"
-        )),
-        LlmError::IncompleteStream {
-            received_bytes,
-            finish_event_seen,
-        } => ProviderError::InvalidOutput(format!(
-            "stream ended prematurely ({received_bytes} bytes received, finish event seen: {finish_event_seen})"
-        )),
         LlmError::Provider(message) => ProviderError::Unavailable(message),
-        LlmError::Timeout => ProviderError::Unavailable("provider request timed out".to_owned()),
+        other => ProviderError::Unavailable(other.to_string()),
     }
 }
 
@@ -666,6 +927,19 @@ mod tests {
             Err(ProviderError::SubstitutionDenied(_))
         ));
 
+        let mut caps = capabilities();
+        caps.identity.model = "Qwen3.6-35B-A3B-GGUF".to_owned();
+        caps.identity.model_version = "latest".to_owned();
+        let latest_provider = LangchartModelProvider::new(
+            caps,
+            adapter(
+                ["Qwen3.6-35B-A3B-GGUF"],
+                [Ok(response("{}", "Qwen3.6-35B-A3B-GGUF"))],
+            ),
+        )
+        .unwrap();
+        assert!(latest_provider.complete(request()).await.is_ok());
+
         let invalid = LangchartModelProvider::new(
             capabilities(),
             adapter(
@@ -794,5 +1068,103 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn sanitize_and_parse_model_output_handles_varied_formats() {
+        // 1. Clean JSON
+        let clean = r#"{"status": "pass", "claims": []}"#;
+        let parsed = sanitize_and_parse_model_output(clean).unwrap();
+        assert_eq!(parsed["status"], "pass");
+
+        // 2. Markdown fence with json tag
+        let fenced = "```json\n{\n  \"status\": \"pass\",\n  \"claims\": []\n}\n```";
+        let parsed = sanitize_and_parse_model_output(fenced).unwrap();
+        assert_eq!(parsed["status"], "pass");
+
+        // 3. Markdown fence without tag
+        let generic_fenced = "```\n{\n  \"status\": \"candidate_findings\"\n}\n```";
+        let parsed = sanitize_and_parse_model_output(generic_fenced).unwrap();
+        assert_eq!(parsed["status"], "candidate_findings");
+
+        // 4. Thinking tags from DeepSeek/Qwen/Nova CoT models
+        let thinking = "<think>\nLet's evaluate documentation thoroughly.\nDone.\n</think>\n```json\n{\"status\": \"pass\"}\n```";
+        let parsed = sanitize_and_parse_model_output(thinking).unwrap();
+        assert_eq!(parsed["status"], "pass");
+
+        // 5. Surrounding whitespace around fence
+        let padded = "   \n```json\n{\"status\": \"unable_to_verify\"}\n```\n   ";
+        let parsed = sanitize_and_parse_model_output(padded).unwrap();
+        assert_eq!(parsed["status"], "unable_to_verify");
+
+        // 6. Lenient JSON: unquoted keys, comments, trailing commas
+        let lenient = "{\n  status: 'pass',\n  // note\n  claims: [],\n}";
+        let parsed = sanitize_and_parse_model_output(lenient).unwrap();
+        assert_eq!(parsed["status"], "pass");
+    }
+
+    #[test]
+    fn structured_output_strategy_selection() {
+        assert_eq!(
+            StructuredOutputStrategy::for_provider("bedrock", StructuredOutputSupport::BestEffort),
+            StructuredOutputStrategy::PromptGuidedText
+        );
+        assert_eq!(
+            StructuredOutputStrategy::for_provider(
+                "anthropic",
+                StructuredOutputSupport::BestEffort
+            ),
+            StructuredOutputStrategy::PromptGuidedText
+        );
+        assert_eq!(
+            StructuredOutputStrategy::for_provider("lemonade", StructuredOutputSupport::BestEffort),
+            StructuredOutputStrategy::NativeJsonObject
+        );
+        assert_eq!(
+            StructuredOutputStrategy::for_provider(
+                "openai",
+                StructuredOutputSupport::SchemaConstrained
+            ),
+            StructuredOutputStrategy::NativeJsonSchema
+        );
+        // langchart-llm-watsonx supports ResponseFormat::JsonObject but explicitly rejects
+        // ResponseFormat::JsonSchema, so watsonx is capped at NativeJsonObject even when the
+        // profile declares SchemaConstrained support.
+        assert_eq!(
+            StructuredOutputStrategy::for_provider("watsonx", StructuredOutputSupport::BestEffort),
+            StructuredOutputStrategy::NativeJsonObject
+        );
+        assert_eq!(
+            StructuredOutputStrategy::for_provider(
+                "watsonx",
+                StructuredOutputSupport::SchemaConstrained
+            ),
+            StructuredOutputStrategy::NativeJsonObject
+        );
+        assert_eq!(
+            StructuredOutputStrategy::for_provider("watsonx", StructuredOutputSupport::None),
+            StructuredOutputStrategy::PromptGuidedText
+        );
+    }
+
+    #[test]
+    fn qwen3_structured_requests_disable_thinking() {
+        let schema = serde_json::json!({"type": "object"});
+        let system = structured_system_content(StructuredOutputStrategy::NativeJsonObject, &schema);
+        let qwen = structured_user_content(
+            "Review the supplied evidence.".to_owned(),
+            "Qwen3.6-35B-A3B-GGUF",
+        );
+        let other =
+            structured_user_content("Review the supplied evidence.".to_owned(), "Bonsai-8B-gguf");
+        assert!(!system.contains("/no_think"));
+        assert!(qwen.starts_with("/no_think\n"));
+        assert!(!other.contains("/no_think"));
+        let messages = structured_messages(system, qwen, "lemonade", "Qwen3.6-35B-A3B-GGUF");
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(
+            messages.last(),
+            Some(Message::Assistant { content }) if content == "<think>\n\n</think>\n\n"
+        ));
     }
 }

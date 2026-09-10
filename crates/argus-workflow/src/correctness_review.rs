@@ -218,15 +218,45 @@ impl PolicyAssessmentContract for CorrectnessAssessmentContract {
                 Ok(json!({
                     "title": finding.title,
                     "description": finding.description,
-                    "defect_kind": finding.defect_kind,
-                    "failure_path": finding.failure_path,
                     "severity": finding.severity,
                     "confidence_basis_points": finding.confidence.basis_points(),
                 }))
             })
             .collect()
     }
+
+    fn instructions(&self) -> &str {
+        CORRECTNESS_INSTRUCTIONS
+    }
 }
+
+const CORRECTNESS_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded source evidence for correctness.
+You MUST evaluate all 9 standard correctness dimensions:
+1. failure_paths: Handling of unexpected or exceptional execution paths.
+2. invariants: Preservation of class, struct, or functional invariants across operations.
+3. state_transitions: Correctness and safety of lifecycle and state changes.
+4. error_handling: Completeness and accuracy of error reporting, recovery, and propagation.
+5. resource_lifecycle: Allocation, cleanup, and leak prevention for memory, handles, or locks.
+6. concurrency: Thread safety, atomicity, synchronization, and race condition prevention.
+7. persistence: Serialization, data durability, and schema integrity constraints.
+8. unsafe_assumptions: Implicit or unverified preconditions, bounds, or caller assumptions.
+9. boundary_conditions: Edge cases, empty inputs, limits, overflows, and off-by-one behavior.
+
+Gaps, Inconsistencies, Stubs, and Unimplemented Aspects:
+- You MUST actively inspect the code for any gaps, inconsistencies, stubs, and unimplemented aspects:
+  * Stubs & unimplemented aspects: `todo!()`, `unimplemented!()`, placeholder or mock return values, empty or incomplete function/handler bodies, and partial implementations that do not fulfill declared contracts.
+  * Gaps: Missing behavior that the documentation specifies or that is implied by the function's scope, missing branches, unhandled error variants, missing state transitions, dropped operations, and incomplete validations.
+  * Inconsistencies: Contradictory state handling, asymmetric operations, conflicting invariant checks, and mismatched preconditions/postconditions.
+- Surfacing and Reporting Rule:
+  * Gaps, inconsistencies, stubs, and unimplemented aspects in the code MUST ALWAYS be surfaced and reported as deficient dimensions and candidate findings, including when they are documented, commented, or intentional (e.g. marked with comments like `// TODO`, `// stub`, or described in doc comments/specifications).
+  * Being documented means the item is not necessarily broken or erroneous code, but it is an indication of future work that MUST be surfaced so it can be documented at the top level and placed in the backlog if not already there.
+  * Never classify an unimplemented aspect, stub, gap, or inconsistency as satisfied or omit it simply because it is documented; always surface it as a candidate finding so it remains visible for backlog tracking and top-level documentation.
+
+Decision Rules:
+- For each dimension, provide dimension name, status ("satisfied", "deficient", "unable_to_verify", or "not_applicable"), rationale, and source evidence citation IDs.
+- If ANY dimension is deficient, emit `review.candidate_found` with the assessment containing the candidate findings for each defect found.
+- Emit `review.pass` ONLY when all 9 dimensions are evaluated and none are deficient.
+- `review.failed` is strictly reserved for internal analysis execution errors and must NEVER be used to report code defects or bugs."#;
 
 #[must_use]
 #[allow(clippy::too_many_lines)]
@@ -238,6 +268,9 @@ pub fn correctness_assessment_draft_schema() -> Value {
         "properties": {
             "dimensions": {
                 "type": "array",
+                "minItems": 9,
+                "maxItems": 9,
+                "description": "All 9 standard correctness dimensions must be evaluated.",
                 "items": {
                     "type": "object",
                     "required": ["dimension", "status", "rationale", "evidence"],
@@ -303,7 +336,7 @@ pub fn correctness_assessment_draft_schema() -> Value {
                                 "failure_path": { "type": "string" },
                                 "severity": {
                                     "type": "string",
-                                    "enum": ["critical", "high", "medium", "low", "info"]
+                                    "enum": ["note", "low", "medium", "high", "critical"]
                                 },
                                 "confidence_basis_points": {
                                     "type": "integer",
@@ -339,4 +372,141 @@ pub fn correctness_assessment_draft_schema() -> Value {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argus_core::{
+        ApplicabilityState, EvidenceId, EvidenceKind, InventoryState, PolicyId, Severity, TargetId,
+        TargetVisibility, WorkItemId,
+    };
+    use argus_policies::{
+        CorrectnessCandidateDraft, CorrectnessDefectKind, CorrectnessDimension,
+        CorrectnessDimensionDraft, CorrectnessDimensionStatus, CorrectnessTargetClass,
+        CorrectnessTargetProfile,
+    };
+    use argus_provider::OutputValidator;
+    use std::collections::BTreeSet;
+
+    fn fixture() -> (CorrectnessAssessmentBinding, CorrectnessAssessmentDraft) {
+        let evidence_id = EvidenceId::derive([b"evidence-1".as_slice()]);
+        let target_id = TargetId::derive([b"crate::module::func".as_slice()]);
+        let citation = CorrectnessEvidenceCitation {
+            evidence: evidence_id.clone(),
+            target: target_id.clone(),
+            location: None,
+        };
+        let target = CorrectnessTargetProfile {
+            target: target_id,
+            class: CorrectnessTargetClass::Callable,
+            visibility: TargetVisibility::Public,
+            inventory: InventoryState::Represented,
+        };
+        let binding = CorrectnessAssessmentBinding {
+            work_item: WorkItemId::derive([b"work-1".as_slice()]),
+            target,
+            policy: PolicyId::derive([b"correctness-code-derived@1".as_slice()]),
+            policy_version: "1.0.0".to_owned(),
+            applicability: ApplicabilityState::Applicable,
+            evidence_revision: 1,
+            evidence: BTreeMap::from([(evidence_id.clone(), citation)]),
+            evidence_kinds: BTreeMap::from([(evidence_id.clone(), EvidenceKind::Source)]),
+        };
+
+        let dimensions = ALL_CORRECTNESS_DIMENSIONS
+            .into_iter()
+            .map(|dim| {
+                if dim == CorrectnessDimension::FailurePaths {
+                    CorrectnessDimensionDraft {
+                        dimension: dim,
+                        status: CorrectnessDimensionStatus::Deficient,
+                        rationale: "Unchecked boundary condition triggers panic".to_owned(),
+                        evidence: vec![evidence_id.clone()],
+                    }
+                } else {
+                    CorrectnessDimensionDraft {
+                        dimension: dim,
+                        status: CorrectnessDimensionStatus::Satisfied,
+                        rationale: "Satisfied".to_owned(),
+                        evidence: vec![evidence_id.clone()],
+                    }
+                }
+            })
+            .collect();
+
+        let draft = CorrectnessAssessmentDraft {
+            dimensions,
+            result: CorrectnessResultDraft::CandidateFindings {
+                findings: vec![CorrectnessCandidateDraft {
+                    title: "Panic on empty slice".to_owned(),
+                    description: "Indexing empty slice causes unrecoverable panic".to_owned(),
+                    defect_kind: CorrectnessDefectKind::DemonstratedDefect,
+                    failure_path: "input.len() == 0 -> indexing panic".to_owned(),
+                    severity: Severity::High,
+                    confidence_basis_points: 9000,
+                    dimensions: BTreeSet::from([CorrectnessDimension::FailurePaths]),
+                    evidence: vec![evidence_id],
+                }],
+            },
+        };
+        (binding, draft)
+    }
+
+    #[test]
+    fn generic_candidates_are_derived_from_correctness_assessment() {
+        let (binding, draft) = fixture();
+        let contract = CorrectnessAssessmentContract::new(binding);
+        let validator = CorrectnessReviewTransportValidator;
+        let schema = crate::review_decision_schema_for(&contract.schema());
+        let assessment = serde_json::to_value(draft).unwrap();
+        let output = json!({
+            "event_type": "review.candidate_found",
+            "payload": {"assessment": assessment}
+        });
+        validator.validate(&schema, &output).unwrap();
+
+        let candidates = contract
+            .candidates(&output["payload"]["assessment"])
+            .unwrap();
+        assert_eq!(
+            candidates,
+            vec![json!({
+                "title": "Panic on empty slice",
+                "description": "Indexing empty slice causes unrecoverable panic",
+                "severity": "high",
+                "confidence_basis_points": 9000
+            })]
+        );
+
+        for candidate in &candidates {
+            crate::review_actor::validate_candidate_draft(candidate).unwrap();
+        }
+
+        let mut duplicated = output;
+        duplicated["payload"]["candidates"] = json!([]);
+        assert!(validator.validate(&schema, &duplicated).is_err());
+    }
+
+    #[test]
+    fn transport_schema_excludes_trusted_assessment_identity() {
+        let serialized = serde_json::to_string(&correctness_assessment_draft_schema()).unwrap();
+        for forbidden in [
+            "work_item",
+            "target",
+            "policy_version",
+            "evidence_revision",
+            "applicability",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn correctness_instructions_require_reporting_gaps_stubs_and_unimplemented_aspects_even_if_documented() {
+        assert!(CORRECTNESS_INSTRUCTIONS.contains("gaps, inconsistencies, stubs, and unimplemented aspects"));
+        assert!(CORRECTNESS_INSTRUCTIONS.contains("Missing behavior that the documentation specifies or that is implied by the function's scope"));
+        assert!(CORRECTNESS_INSTRUCTIONS.contains("MUST ALWAYS be surfaced and reported"));
+        assert!(CORRECTNESS_INSTRUCTIONS.contains("indication of future work that MUST be surfaced so it can be documented at the top level and placed in the backlog"));
+    }
 }

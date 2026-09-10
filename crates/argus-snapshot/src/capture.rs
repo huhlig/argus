@@ -19,10 +19,23 @@ use crate::{
 use argus_core::{ContentHash, SnapshotId, SourcePath, SourceTreeId};
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
+/// Configuration options controlling source snapshot capture.
+///
+/// # Examples
+///
+/// ```
+/// use argus_snapshot::CaptureOptions;
+///
+/// let options = CaptureOptions::default();
+/// assert_eq!(options.include_generated, false);
+/// ```
 #[derive(Clone, Debug)]
 pub struct CaptureOptions {
+    /// Host analysis configuration.
     pub configuration: AnalysisConfiguration,
+    /// Whether to capture generated source files.
     pub include_generated: bool,
+    /// Maximum allowed file size in bytes to include in the snapshot.
     pub maximum_file_bytes: u64,
 }
 
@@ -36,6 +49,15 @@ impl Default for CaptureOptions {
     }
 }
 
+/// Captures an immutable snapshot of a repository's source tree into the state directory.
+///
+/// Resolves and indexes tracked files, computes content digests, and produces a
+/// canonical [`SnapshotManifest`].
+///
+/// # Errors
+/// Returns [`ArgusError`](argus_core::ArgusError) if:
+/// - `repository_root` does not exist or is not a directory.
+/// - File discovery or content hashing encounters I/O errors.
 pub fn capture_snapshot(
     repository_root: &Path,
     state_root: &Path,

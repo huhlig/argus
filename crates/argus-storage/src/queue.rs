@@ -35,56 +35,136 @@ const ADJUDICATIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("adjudi
 const SCHEMA_KEY: &str = "schema_version";
 const EVENT_SEQUENCE_KEY: &str = "event_sequence";
 
+/// Lifecycle execution states of a work item in the durable queue.
+///
+/// State transitions follow a strict progression:
+/// - [`Pending`](QueueState::Pending) -> [`Leased`](QueueState::Leased)
+/// - [`Leased`](QueueState::Leased) -> [`Succeeded`](QueueState::Succeeded)
+/// - [`Leased`](QueueState::Leased) -> [`Failed`](QueueState::Failed)
+/// - [`Leased`](QueueState::Leased) -> [`Pending`](QueueState::Pending) (on lease expiry or retry)
+/// - [`Pending`](QueueState::Pending) / [`Leased`](QueueState::Leased) -> [`Cancelled`](QueueState::Cancelled)
+///
+/// Terminal states are `Succeeded`, `Failed`, and `Cancelled`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueState {
+    /// Work item is queued and awaiting an available worker lease.
     Pending,
+    /// Work item is currently leased to an active worker until its lease timeout.
     Leased,
+    /// Work item completed successfully and its outcome was committed.
     Succeeded,
+    /// Work item exceeded maximum retry attempts or failed fatally.
     Failed,
+    /// Work item was cancelled explicitly or via run cancellation.
     Cancelled,
 }
 
+/// A persistent work item tracked by [`DurableQueue`].
+///
+/// Represents an atomic unit of evaluation (e.g. a target review task) bound to
+/// a specific audit run and coverage slice.
+///
+/// # Invariants
+/// - Newly admitted work must be in [`QueueState::Pending`] with `attempt_count == 0` and no active lease.
+/// - Attempt counts are strictly monotonically increasing upon lease acquisition.
+/// - `lease_until_millis` is `Some` only when `state == QueueState::Leased`.
+///
+/// # Examples
+///
+/// ```
+/// use argus_core::WorkItemId;
+/// use argus_storage::{CoverageKey, QueueState, QueueWork};
+///
+/// let work = QueueWork::pending(
+///     WorkItemId::derive([b"target-1".as_slice()]),
+///     b"payload-data".to_vec(),
+/// );
+/// assert_eq!(work.state, QueueState::Pending);
+/// assert_eq!(work.attempt_count, 0);
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct QueueWork {
+    /// Unique identifier for this work item.
     pub id: WorkItemId,
+    /// Opaque serializable payload executed by the worker.
     pub payload: Vec<u8>,
+    /// Current lifecycle state in the queue.
     pub state: QueueState,
+    /// Number of times this work item has been leased for execution.
     pub attempt_count: u32,
+    /// Epoch timestamp in milliseconds until which the active lease is valid.
     pub lease_until_millis: Option<u64>,
+    /// Error message recorded from the most recent failed attempt, if any.
     pub last_error: Option<String>,
+    /// Partitioning key associating this work with an audit coverage dimension.
     pub coverage: CoverageKey,
+    /// Audit run to which this work item belongs.
     pub run: RunId,
 }
 
+/// Execution state of an audit run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
+    /// Run is active and processing work items.
     Active,
+    /// Run was cancelled; uncommitted work items are marked cancelled.
     Cancelled,
 }
 
+/// Persistent record tracking the metadata and lifecycle of an audit run.
+///
+/// # Invariants
+/// - New runs must be created with `state == RunState::Active`, `created_at_millis == updated_at_millis`,
+///   and `finalized_at_millis == None`.
+/// - Finalized runs cannot be resumed or cancelled.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RunRecord {
+    /// Unique identifier of the audit run.
     pub id: RunId,
+    /// Snapshot of the codebase being audited.
     pub snapshot: SnapshotId,
+    /// Configuration hash for the run.
     pub configuration: ConfigurationId,
+    /// Current lifecycle state.
     pub state: RunState,
+    /// Epoch timestamp in milliseconds when the run was created.
     pub created_at_millis: u64,
+    /// Epoch timestamp in milliseconds when the run record was last updated.
     pub updated_at_millis: u64,
+    /// Epoch timestamp in milliseconds when the run was finalized, if complete.
     pub finalized_at_millis: Option<u64>,
 }
 
+/// Multi-dimensional coverage key grouping work items and audit outcomes.
+///
+/// Distinguishes work by codebase snapshot, configuration, adapter, target kind, and policy.
+///
+/// # Examples
+///
+/// ```
+/// use argus_storage::CoverageKey;
+///
+/// let key = CoverageKey::unspecified();
+/// assert_eq!(key.policy, "unspecified");
+/// ```
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct CoverageKey {
+    /// Codebase snapshot identifier.
     pub snapshot: String,
+    /// Analysis configuration name or hash.
     pub configuration: String,
+    /// Language adapter name responsible for target discovery.
     pub adapter: String,
+    /// Kind of target being audited (e.g. module, function, type).
     pub target_kind: String,
+    /// Policy identifier being enforced.
     pub policy: String,
 }
 
 impl CoverageKey {
+    /// Creates a fallback coverage key with all dimensions set to `"unspecified"`.
     #[must_use]
     pub fn unspecified() -> Self {
         Self {
@@ -98,6 +178,7 @@ impl CoverageKey {
 }
 
 impl QueueWork {
+    /// Creates a pending work item with an unspecified run and coverage.
     #[must_use]
     pub fn pending(id: WorkItemId, payload: Vec<u8>) -> Self {
         Self::pending_for(
@@ -108,6 +189,7 @@ impl QueueWork {
         )
     }
 
+    /// Creates a pending work item in a specified coverage key with an unspecified run.
     #[must_use]
     pub fn pending_in(id: WorkItemId, payload: Vec<u8>, coverage: CoverageKey) -> Self {
         Self::pending_for(
@@ -118,6 +200,7 @@ impl QueueWork {
         )
     }
 
+    /// Creates a pending work item explicitly bound to a run and coverage partition.
     #[must_use]
     pub fn pending_for(
         id: WorkItemId,
@@ -138,101 +221,188 @@ impl QueueWork {
     }
 }
 
+/// An acquired work lease granting exclusive execution rights to a worker.
+///
+/// Workers must complete their work, record outcomes, or send heartbeats
+/// before `lease_until_millis` expires.
+///
+/// # Invariants
+/// - `attempt_number` is 1-indexed and reflects the current lease count for the work item.
+/// - `lease_until_millis` is a non-zero Unix epoch timestamp in milliseconds.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LeasedWork {
+    /// Unique identifier of the leased work item.
     pub id: WorkItemId,
+    /// Opaque serializable payload for execution.
     pub payload: Vec<u8>,
+    /// One-based attempt number for this lease.
     pub attempt_number: u32,
+    /// Epoch timestamp in milliseconds when this lease expires.
     pub lease_until_millis: u64,
 }
 
+/// Categorization of transactional queue lifecycle events.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueEventKind {
+    /// Work item was admitted to the queue.
     Admitted,
+    /// A lease was granted to a worker.
     Leased,
+    /// A lease extension heartbeat was recorded.
     Heartbeat,
+    /// Work was scheduled for retry after a failed attempt or lease expiration.
     RetryScheduled,
+    /// Work failed permanently after exceeding maximum retry attempts.
     Failed,
+    /// Work was cancelled explicitly or via run cancellation.
     Cancelled,
+    /// Work completed successfully and outcome was committed.
     Succeeded,
 }
 
+/// An immutable, append-only event recorded in the queue transaction journal.
+///
+/// Every state transition produces a `QueueEvent` with a monotonically increasing
+/// sequence number, providing a complete audit trail of all queue operations.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct QueueEvent {
+    /// Monotonically increasing sequence number for total event ordering.
     pub sequence: u64,
+    /// Identifier of the work item associated with this event.
     pub work_id: WorkItemId,
+    /// Lifecycle transition represented by this event.
     pub kind: QueueEventKind,
+    /// Epoch timestamp in milliseconds when the event was recorded.
     pub at_millis: u64,
+    /// Optional human-readable diagnostic or error detail.
     pub detail: Option<String>,
 }
 
+/// Committed evaluation outcome produced by completing a work item.
+///
+/// Outcomes are content-addressed by logical key and can reference supporting
+/// stored artifacts.
+///
+/// # Invariants
+/// - `key` must be non-empty and unique per outcome across the queue.
+/// - Referenced artifacts must already exist in the artifact table before committing.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OutcomeRecord {
+    /// Unique logical key identifying this outcome.
     pub key: String,
+    /// Work item that produced this outcome.
     pub work_id: WorkItemId,
+    /// Serialized evaluation assessment or result payload.
     pub payload: Vec<u8>,
+    /// Content addresses of supporting artifacts stored in the queue.
     #[serde(default)]
     pub artifact_references: Vec<String>,
 }
 
+/// Content-addressed binary artifact associated with an audit run or outcome.
+///
+/// Stores large evidence, model outputs, or report payloads referenced by [`OutcomeRecord`].
+///
+/// # Invariants
+/// - `reference` has the canonical format `artifact:{kind}:{content_hash}`.
+/// - `content_hash` must match the cryptographic digest of `payload`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StoredArtifact {
+    /// Canonical content-addressed reference key for retrieving the artifact.
     pub reference: String,
+    /// Classification or MIME type of the artifact (e.g. `evidence`, `model-output`).
     pub kind: String,
+    /// Digest hash verifying the integrity of `payload`.
     pub content_hash: ContentHash,
+    /// Raw payload bytes of the artifact.
     pub payload: Vec<u8>,
 }
 
+/// Complete snapshot of all records associated with a specific audit run.
+///
+/// Provides a consistent, read-only view of a run's work items, outcomes,
+/// referenced artifacts, and human adjudications for reporting.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunRecords {
+    /// All work items belonging to the run.
     pub work: Vec<QueueWork>,
+    /// All committed outcomes produced for the run.
     pub outcomes: Vec<OutcomeRecord>,
+    /// All stored artifacts referenced by the run's outcomes.
     pub artifacts: Vec<StoredArtifact>,
+    /// Human adjudications registered for findings in this run.
     pub adjudications: Vec<HumanAdjudication>,
 }
 
+/// Result of an outcome insertion or idempotent replay in [`DurableQueue`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutcomeWrite {
+    /// The outcome was inserted for the first time.
     Inserted(OutcomeRecord),
+    /// An identical outcome already existed for this key.
     Existing(OutcomeRecord),
 }
 
+/// Aggregate counts of work items grouped by lifecycle state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QueueStatus {
+    /// Number of items awaiting worker lease.
     pub pending: u64,
+    /// Number of items currently leased to workers.
     pub leased: u64,
+    /// Number of items successfully completed.
     pub succeeded: u64,
+    /// Number of items in fatal failure.
     pub failed: u64,
+    /// Number of items cancelled.
     pub cancelled: u64,
+    /// Number of leased items whose lease deadline has expired without completion.
     pub stalled: u64,
 }
 
+/// Real-time operational telemetry and health metrics for [`DurableQueue`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueueTelemetry {
+    /// Work item count breakdown by lifecycle state.
     pub status: QueueStatus,
+    /// Total number of journal events recorded across all runs.
     pub event_count: u64,
+    /// Total number of work retries scheduled.
     pub retry_count: u64,
+    /// Identifier of the most recently succeeded work item, if any.
     pub last_successful_work: Option<WorkItemId>,
+    /// Current size of the underlying database on disk in bytes.
     pub database_bytes: u64,
+    /// Aggregated telemetry summaries across all active providers.
     pub providers: Vec<ProviderTelemetrySummary>,
 }
 
+/// Point-in-time snapshot of telemetry published by an LLM provider session.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderTelemetrySnapshot {
+    /// Unique provider execution session identifier.
     pub session_id: String,
+    /// Identity of the provider model and service.
     pub provider: ProviderIdentity,
+    /// Epoch timestamp in milliseconds when the snapshot was captured.
     pub captured_at_millis: u64,
+    /// Token counts, request latency, and call metrics.
     pub telemetry: ProviderTelemetry,
 }
 
+/// Summarized telemetry metrics aggregated across all sessions for a provider.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderTelemetrySummary {
+    /// Identity of the provider.
     pub provider: ProviderIdentity,
+    /// Number of recorded sessions contributing to this summary.
     pub sessions: u64,
+    /// Cumulative token usage, latency, and call metrics.
     pub telemetry: ProviderTelemetry,
 }
 
+/// Durable publisher writing LLM provider telemetry directly into [`DurableQueue`].
 pub struct DurableProviderTelemetryPublisher {
     queue: Arc<DurableQueue>,
     session_id: String,
@@ -329,6 +499,10 @@ impl ProviderTelemetryAggregate {
 }
 
 impl DurableProviderTelemetryPublisher {
+    /// Creates a new telemetry publisher bound to a queue instance and session ID.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if `session_id` is empty or unnormalized.
     pub fn new(
         queue: Arc<DurableQueue>,
         session_id: impl Into<String>,
@@ -362,12 +536,36 @@ impl ProviderTelemetrySink for DurableProviderTelemetryPublisher {
 }
 
 impl QueueStatus {
+    /// Computes the total number of work items across all lifecycle states.
     #[must_use]
     pub const fn total(self) -> u64 {
         self.pending + self.leased + self.succeeded + self.failed + self.cancelled
     }
 }
 
+/// Persistent, transactional review queue backed by an embedded database (`redb`).
+///
+/// `DurableQueue` manages work items, leases, outcomes, artifacts, and checkpoints
+/// throughout an Argus audit run. All state transitions (enqueueing work, acquiring leases,
+/// completing attempts, storing artifacts, recording outcomes) are ACID-compliant and durable
+/// against process crashes and restarts.
+///
+/// # Invariants
+/// - Schema versioning is validated on initialization against internal schema metadata.
+/// - Attempt sequences and revision numbers are monotonically increasing per work item.
+/// - Outcomes and artifacts are content-addressed and immutable once committed.
+///
+/// # Examples
+///
+/// ```no_run
+/// use argus_storage::DurableQueue;
+/// use std::path::Path;
+///
+/// # fn run() -> Result<(), argus_core::ArgusError> {
+/// let queue = DurableQueue::open(Path::new(".argus/state/queue.redb"))?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct DurableQueue {
     database: Database,
@@ -375,6 +573,27 @@ pub struct DurableQueue {
 }
 
 impl DurableQueue {
+    /// Opens or creates a durable queue at the specified filesystem path.
+    ///
+    /// Parent directories will be created automatically if they do not exist.
+    ///
+    /// # Errors
+    /// Returns an [`ArgusError`](argus_core::ArgusError) if:
+    /// - Parent directory creation fails due to I/O or permission errors.
+    /// - The underlying database cannot be opened or is locked by another process.
+    /// - Database initialization or schema validation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use argus_storage::DurableQueue;
+    /// use std::path::Path;
+    ///
+    /// # fn run() -> Result<(), argus_core::ArgusError> {
+    /// let queue = DurableQueue::open(Path::new("/tmp/test_queue.redb"))?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn open(path: &Path) -> Result<Self, argus_core::ArgusError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(io_error("cannot create state directory"))?;
@@ -444,6 +663,16 @@ impl DurableQueue {
             .map_err(database_error("cannot commit schema transaction"))
     }
 
+    /// Creates a new audit run record in the queue.
+    ///
+    /// The run must be in [`RunState::Active`] with matching created and updated timestamps,
+    /// and must not be finalized. If an identical run already exists, returns `Ok(false)`.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - The run invariant is violated (not active or mismatched timestamps).
+    /// - A run with the same ID already exists with different attributes.
+    /// - Underlying database transaction fails.
     pub fn create_run(&self, run: &RunRecord) -> Result<bool, argus_core::ArgusError> {
         if run.state != RunState::Active
             || run.updated_at_millis != run.created_at_millis
@@ -483,6 +712,10 @@ impl DurableQueue {
         Ok(inserted)
     }
 
+    /// Retrieves a run record by its unique run ID.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if the database cannot be read or payload decoding fails.
     pub fn get_run(&self, id: &RunId) -> Result<Option<RunRecord>, argus_core::ArgusError> {
         let read = self
             .database
@@ -498,6 +731,14 @@ impl DurableQueue {
             .transpose()
     }
 
+    /// Resumes an active audit run, recovering any expired leases back to [`QueueState::Pending`].
+    ///
+    /// Returns the number of work items recovered and rescheduled for retry.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - The run ID is unknown or the run is finalized or cancelled.
+    /// - Updating the work table or appending recovery events fails.
     pub fn resume_run(&self, id: &RunId, now_millis: u64) -> Result<u64, argus_core::ArgusError> {
         let run = self
             .get_run(id)?
@@ -560,6 +801,85 @@ impl DurableQueue {
         Ok(u64::try_from(recovered_ids.len()).unwrap_or(u64::MAX))
     }
 
+    /// Reschedules all failed work items in an active run back to [`QueueState::Pending`].
+    ///
+    /// Resets their attempt counters to zero and clears previous errors, returning the count of retried items.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - The run is unknown or not active.
+    /// - Updating the work records or writing journal events fails.
+    pub fn retry_failed_run(
+        &self,
+        id: &RunId,
+        now_millis: u64,
+    ) -> Result<u64, argus_core::ArgusError> {
+        let run = self
+            .get_run(id)?
+            .ok_or_else(|| argus_core::ArgusError::invalid_input("unknown run"))?;
+        if run.state != RunState::Active || run.finalized_at_millis.is_some() {
+            return Err(argus_core::ArgusError::invariant(
+                "only active runs can retry failed work",
+            ));
+        }
+        let write = self
+            .database
+            .begin_write()
+            .map_err(database_error("cannot retry failed run work"))?;
+        let retried_ids = {
+            let mut table = write
+                .open_table(WORK)
+                .map_err(database_error("cannot open work table"))?;
+            let mut updates = Vec::new();
+            for entry in table
+                .iter()
+                .map_err(database_error("cannot scan run work"))?
+            {
+                let (key, value) = entry.map_err(database_error("cannot read run work"))?;
+                let mut work: QueueWork = decode(value.value())?;
+                if work.run == *id && work.state == QueueState::Failed {
+                    work.state = QueueState::Pending;
+                    work.attempt_count = 0;
+                    work.lease_until_millis = None;
+                    work.last_error = None;
+                    updates.push((key.value().to_owned(), work));
+                }
+            }
+            let ids = updates
+                .iter()
+                .map(|(_, work)| work.id.clone())
+                .collect::<Vec<_>>();
+            for (key, work) in updates {
+                let bytes = encode(&work)?;
+                table
+                    .insert(key.as_str(), bytes.as_slice())
+                    .map_err(database_error("cannot retry failed work"))?;
+            }
+            ids
+        };
+        for work_id in &retried_ids {
+            append_event(
+                &write,
+                work_id,
+                QueueEventKind::RetryScheduled,
+                now_millis,
+                Some("failed work explicitly retried during run resume".to_owned()),
+            )?;
+        }
+        write
+            .commit()
+            .map_err(database_error("cannot commit failed work retry"))?;
+        Ok(u64::try_from(retried_ids.len()).unwrap_or(u64::MAX))
+    }
+
+    /// Cancels an active audit run and marks all its pending or leased work items as [`QueueState::Cancelled`].
+    ///
+    /// Returns the number of work items transitioned to the cancelled state.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - The run is already finalized.
+    /// - Writing the cancelled state or recording events fails.
     pub fn cancel_run(&self, id: &RunId, at_millis: u64) -> Result<u64, argus_core::ArgusError> {
         let write = self
             .database
@@ -620,12 +940,23 @@ impl DurableQueue {
         Ok(u64::try_from(cancelled_ids.len()).unwrap_or(u64::MAX))
     }
 
-    /// Admits work once. Replaying byte-identical work is a no-op.
+    /// Admits work into the queue with a default timestamp. Replaying byte-identical work is a no-op.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if work invariants are violated or the run is inactive.
     pub fn admit(&self, work: &QueueWork) -> Result<bool, argus_core::ArgusError> {
         self.admit_at(work, 0)
     }
 
-    /// Admits work once and records the caller-supplied wall-clock time.
+    /// Admits work into the queue with a caller-supplied wall-clock timestamp.
+    ///
+    /// Returns `true` if newly admitted, or `false` if an identical work record already exists.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - `work` is not pending, has non-zero attempts, or has an active lease.
+    /// - The referenced run does not exist or is not active.
+    /// - A conflicting work item with the same ID but different payload/coverage already exists.
     pub fn admit_at(
         &self,
         work: &QueueWork,
@@ -673,10 +1004,15 @@ impl DurableQueue {
                 .map(|value| value.value().to_vec());
             match existing {
                 Some(existing) if existing == bytes => false,
-                Some(_) => {
-                    return Err(argus_core::ArgusError::invariant(
-                        "work ID payload conflict",
-                    ));
+                Some(existing) => {
+                    let decoded: QueueWork = decode(&existing)?;
+                    if decoded.payload == work.payload && decoded.coverage == work.coverage {
+                        false
+                    } else {
+                        return Err(argus_core::ArgusError::invariant(
+                            "work ID payload conflict",
+                        ));
+                    }
                 }
                 None => {
                     table
@@ -695,7 +1031,16 @@ impl DurableQueue {
         Ok(inserted)
     }
 
-    /// Atomically admits a batch; byte-identical existing items count as replays.
+    /// Atomically admits a batch of work items into the queue.
+    ///
+    /// Returns the number of newly inserted work items (excluding idempotent replays).
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - The batch contains duplicate work IDs.
+    /// - Any work item violates queue admission invariants.
+    /// - Any referenced run is missing or not active.
+    /// - A work item payload conflict is detected.
     pub fn admit_batch(
         &self,
         work: &[QueueWork],
@@ -746,10 +1091,15 @@ impl DurableQueue {
                     .map(|value| value.value().to_vec());
                 match existing {
                     Some(existing) if existing == bytes => {}
-                    Some(_) => {
-                        return Err(argus_core::ArgusError::invariant(
-                            "work ID payload conflict",
-                        ));
+                    Some(existing) => {
+                        let decoded: QueueWork = decode(&existing)?;
+                        if decoded.payload == item.payload && decoded.coverage == item.coverage {
+                            // Idempotent re-admission: payload & coverage match
+                        } else {
+                            return Err(argus_core::ArgusError::invariant(
+                                "work ID payload conflict",
+                            ));
+                        }
                     }
                     None => {
                         table
@@ -770,6 +1120,13 @@ impl DurableQueue {
         Ok(u64::try_from(inserted_ids.len()).unwrap_or(u64::MAX))
     }
 
+    /// Atomically leases the next available work item across any partition.
+    ///
+    /// Acquires pending work or work whose lease deadline has expired (`<= now_millis`).
+    /// Increments the work item's attempt counter and sets its lease expiration.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if database read/write or event logging fails.
     pub fn lease_next(
         &self,
         now_millis: u64,
@@ -794,6 +1151,32 @@ impl DurableQueue {
         }
         self.lease_next_matching(now_millis, lease_duration_millis, |work| {
             work.run == *run && work.coverage.adapter == adapter && work.coverage.policy == policy
+        })
+    }
+
+    /// Atomically leases the next available item in a partition that also satisfies `eligible`.
+    ///
+    /// Callers use this for policy-specific dependency gates. The predicate must only inspect
+    /// state captured before this call; it runs while the queue write transaction is open.
+    pub fn lease_next_for_partition_matching(
+        &self,
+        now_millis: u64,
+        lease_duration_millis: u64,
+        run: &RunId,
+        adapter: &str,
+        policy: &str,
+        eligible: impl Fn(&QueueWork) -> bool,
+    ) -> Result<Option<LeasedWork>, argus_core::ArgusError> {
+        if adapter.is_empty() || policy.is_empty() {
+            return Err(argus_core::ArgusError::invalid_input(
+                "queue lease partition adapter and policy must not be empty",
+            ));
+        }
+        self.lease_next_matching(now_millis, lease_duration_millis, |work| {
+            work.run == *run
+                && work.coverage.adapter == adapter
+                && work.coverage.policy == policy
+                && eligible(work)
         })
     }
 
@@ -871,6 +1254,13 @@ impl DurableQueue {
         Ok(selected)
     }
 
+    /// Extends the lease deadline on an actively leased work item.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - `id` does not exist in the work queue.
+    /// - The work item is not currently leased or its lease has already expired (`< now_millis`).
+    /// - Database write or event journal append fails.
     pub fn heartbeat(
         &self,
         id: &WorkItemId,
@@ -916,6 +1306,16 @@ impl DurableQueue {
         Ok(lease_until)
     }
 
+    /// Records a failed execution attempt for a leased work item.
+    ///
+    /// If `attempt_count < maximum_attempts`, the item transitions back to [`QueueState::Pending`]
+    /// for retry. Otherwise, it transitions to [`QueueState::Failed`].
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - `maximum_attempts == 0`.
+    /// - The work item is not in [`QueueState::Leased`].
+    /// - Database transaction fails.
     pub fn fail_attempt(
         &self,
         id: &WorkItemId,
@@ -960,6 +1360,15 @@ impl DurableQueue {
         Ok(next)
     }
 
+    /// Cancels a specific work item by ID.
+    ///
+    /// Work in [`QueueState::Pending`] or [`QueueState::Leased`] transitions to [`QueueState::Cancelled`].
+    /// Returns `Ok(true)` if the state changed, or `Ok(false)` if already cancelled.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - The work item is already in a terminal state ([`QueueState::Succeeded`] or [`QueueState::Failed`]).
+    /// - The work item does not exist.
     pub fn cancel(&self, id: &WorkItemId, at_millis: u64) -> Result<bool, argus_core::ArgusError> {
         let write = self
             .database
@@ -986,6 +1395,13 @@ impl DurableQueue {
     }
 
     /// Atomically stores one effective outcome and marks its work succeeded.
+    ///
+    /// Returns `Ok(true)` if newly inserted, or `Ok(false)` if an identical outcome already existed.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - The outcome key conflicts with a different payload.
+    /// - The work item is not currently leased.
     pub fn complete(
         &self,
         work_id: &WorkItemId,
@@ -1006,6 +1422,12 @@ impl DurableQueue {
     /// Replay callers use this inbox operation after an uncertain commit. Once a logical key
     /// exists for the same work item, its original payload wins even when a replay proposes
     /// different bytes. A key owned by another work item remains an invariant violation.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - `outcome_key` is empty.
+    /// - The key belongs to a different work item.
+    /// - The work item is not leased (when inserting).
     pub fn record_or_get(
         &self,
         work_id: &WorkItemId,
@@ -1015,6 +1437,14 @@ impl DurableQueue {
         self.record_or_get_with_artifacts(work_id, outcome_key, outcome, &[])
     }
 
+    /// Atomically records an outcome with supporting artifact references, or returns the existing outcome.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - `outcome_key` is empty.
+    /// - Any referenced artifact does not exist in the artifact table.
+    /// - The key belongs to a different work item.
+    /// - The work item is not leased (when inserting).
     pub fn record_or_get_with_artifacts(
         &self,
         work_id: &WorkItemId,
@@ -1111,6 +1541,10 @@ impl DurableQueue {
         Ok(result)
     }
 
+    /// Retrieves a committed outcome by its unique outcome key.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if the table cannot be read or decoding fails.
     pub fn outcome(
         &self,
         outcome_key: &str,
@@ -1129,6 +1563,10 @@ impl DurableQueue {
             .transpose()
     }
 
+    /// Retrieves a work item by its work item ID.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if the table cannot be read or decoding fails.
     pub fn get(&self, id: &WorkItemId) -> Result<Option<QueueWork>, argus_core::ArgusError> {
         let read = self
             .database
@@ -1145,6 +1583,14 @@ impl DurableQueue {
     }
 
     /// Returns a consistent logical view of one run for read-only reporting.
+    ///
+    /// Scans work items, committed outcomes, referenced artifacts, and human adjudications
+    /// for the specified run ID.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - `run_id` is unknown.
+    /// - Any referenced report artifact is missing or corrupted.
     pub fn run_records(&self, run_id: &RunId) -> Result<RunRecords, argus_core::ArgusError> {
         let read = self
             .database
@@ -1304,6 +1750,10 @@ impl DurableQueue {
             .map_err(database_error("cannot commit adjudication"))
     }
 
+    /// Retrieves all human adjudications associated with an audit run.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if reading or decoding adjudications fails.
     pub fn adjudications(
         &self,
         run_id: &RunId,
@@ -1344,6 +1794,13 @@ impl DurableQueue {
         Ok(records)
     }
 
+    /// Computes the current queue status breakdown across all lifecycle states.
+    ///
+    /// Items in [`QueueState::Leased`] whose lease deadline has elapsed (`<= now_millis`)
+    /// are counted in `stalled` as well as `leased`.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if reading the work table fails.
     pub fn status(&self, now_millis: u64) -> Result<QueueStatus, argus_core::ArgusError> {
         let read = self
             .database
@@ -1378,6 +1835,10 @@ impl DurableQueue {
         Ok(status)
     }
 
+    /// Reads all chronological lifecycle events from the queue transaction journal.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if reading or decoding events fails.
     pub fn events(&self) -> Result<Vec<QueueEvent>, argus_core::ArgusError> {
         let read = self
             .database
@@ -1396,6 +1857,10 @@ impl DurableQueue {
             .collect()
     }
 
+    /// Computes aggregated queue telemetry and operational health metrics.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if status calculation or event scanning fails.
     pub fn telemetry(&self, now_millis: u64) -> Result<QueueTelemetry, argus_core::ArgusError> {
         let events = self.events()?;
         Ok(QueueTelemetry {
@@ -1418,6 +1883,13 @@ impl DurableQueue {
         })
     }
 
+    /// Records a point-in-time telemetry snapshot from an active LLM provider session.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - `session_id` is empty or unnormalized.
+    /// - `provider` validation fails.
+    /// - Database insertion fails.
     pub fn publish_provider_telemetry(
         &self,
         session_id: &str,
@@ -1460,6 +1932,10 @@ impl DurableQueue {
             .map_err(database_error("cannot commit provider telemetry"))
     }
 
+    /// Summarizes provider telemetry across all recorded provider sessions.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if reading the telemetry table fails.
     pub fn provider_telemetry(
         &self,
     ) -> Result<Vec<ProviderTelemetrySummary>, argus_core::ArgusError> {
@@ -1490,6 +1966,17 @@ impl DurableQueue {
             .collect())
     }
 
+    /// Stores a content-addressed binary artifact in the database.
+    ///
+    /// Computes the cryptographic digest of `payload` and stores the artifact under
+    /// `artifact:{kind}:{content_hash}`. If an identical artifact already exists,
+    /// returns the existing record idempotently.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - `kind` is invalid or unnormalized.
+    /// - `payload` is empty.
+    /// - An artifact with the same reference exists with conflicting bytes.
     pub fn store_artifact(
         &self,
         kind: &str,
@@ -1542,6 +2029,10 @@ impl DurableQueue {
         Ok(artifact)
     }
 
+    /// Retrieves a stored artifact by its canonical reference key.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if reading from disk fails or payload digest validation fails.
     pub fn artifact(
         &self,
         reference: &str,
@@ -1607,6 +2098,10 @@ impl DurableQueue {
         Ok(changed)
     }
 
+    /// Returns a map of queue statuses grouped by coverage partition key.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if scanning the work table fails.
     pub fn coverage(
         &self,
         now_millis: u64,

@@ -13,19 +13,23 @@
 // limitations under the License.
 
 use crate::{
-    PolicyAssessmentContract, PrimaryReviewActor, PrimaryReviewDecision, WorkflowDataStore,
-    review_decision_schema_for,
+    ArchitectureConstituentEvidence, PolicyAssessmentContract, PrimaryReviewActor,
+    PrimaryReviewDecision, WorkflowDataStore, review_decision_schema_for,
 };
 use argus_core::WorkItemId;
 use argus_evidence::ReviewContextFrame;
 use argus_policies::{
     ALL_ARCHITECTURE_DIMENSIONS, ArchitectureAssessment, ArchitectureAssessmentBinding,
-    ArchitectureAssessmentDraft, ArchitectureDimensionDraft, ArchitectureDimensionStatus,
+    ArchitectureAssessmentDraft, ArchitectureCandidate, ArchitectureCandidateVerification,
+    ArchitectureDimensionDraft, ArchitectureDimensionStatus, ArchitectureFindingKind,
     ArchitectureResultDraft, ArchitectureResultStatus, ArchitectureScope,
-    ArchitectureTargetProfile, ConstituentHealthSummary,
+    ArchitectureTargetProfile, ArchitectureVerificationStatus, ConstituentHealthSummary,
 };
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ArchitectureReviewTransportValidator;
@@ -77,12 +81,28 @@ impl argus_provider::OutputValidator for ArchitectureReviewTransportValidator {
 #[derive(Clone, Debug)]
 pub struct ArchitectureAssessmentContract {
     binding: ArchitectureAssessmentBinding,
+    verification_complete: bool,
+    verification_targets: BTreeMap<argus_core::EvidenceId, BTreeSet<argus_core::TargetId>>,
 }
 
 impl ArchitectureAssessmentContract {
     #[must_use]
-    pub const fn new(binding: ArchitectureAssessmentBinding) -> Self {
-        Self { binding }
+    pub fn new(binding: ArchitectureAssessmentBinding) -> Self {
+        let verification_targets = binding
+            .evidence
+            .iter()
+            .map(|(id, citation)| {
+                (
+                    id.clone(),
+                    citation.related_targets.iter().cloned().collect(),
+                )
+            })
+            .collect();
+        Self {
+            binding,
+            verification_complete: true,
+            verification_targets,
+        }
     }
 
     pub fn from_context(
@@ -96,13 +116,169 @@ impl ArchitectureAssessmentContract {
                 "architecture target does not match the trusted review context",
             ));
         }
+        let scope_evidence = context
+            .untrusted_evidence
+            .iter()
+            .filter(|item| {
+                item.kind == argus_core::EvidenceKind::ArchitectureGraph
+                    && item.target.as_ref() == Some(&target.target)
+            })
+            .map(|item| {
+                item.detail
+                    .as_deref()
+                    .ok_or_else(|| {
+                        argus_core::ArgusError::invalid_input(
+                            "architecture scope evidence detail is missing",
+                        )
+                    })
+                    .and_then(|detail| {
+                        serde_json::from_str::<crate::ArchitectureScopeEvidence>(detail).map_err(
+                            |error| {
+                                argus_core::ArgusError::invalid_input(
+                                    "architecture scope evidence is invalid",
+                                )
+                                .with_source(error)
+                            },
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let [scope_evidence] = scope_evidence.as_slice() else {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture review requires exactly one scoped structural evidence artifact",
+            ));
+        };
+        if scope_evidence.target != target.target || scope_evidence.scope != scope {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture scope evidence identity mismatch",
+            ));
+        }
+        let constituent_evidence = context
+            .untrusted_evidence
+            .iter()
+            .filter(|item| {
+                item.kind == argus_core::EvidenceKind::ArchitectureSummary
+                    && item.target.as_ref() == Some(&target.target)
+            })
+            .map(|item| {
+                item.detail
+                    .as_deref()
+                    .ok_or_else(|| {
+                        argus_core::ArgusError::invalid_input(
+                            "architecture constituent evidence detail is missing",
+                        )
+                    })
+                    .and_then(|detail| {
+                        serde_json::from_str::<ArchitectureConstituentEvidence>(detail).map_err(
+                            |error| {
+                                argus_core::ArgusError::invalid_input(
+                                    "architecture constituent evidence is invalid",
+                                )
+                                .with_source(error)
+                            },
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if constituent_evidence.len() > 1 {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture review accepts at most one constituent summary artifact",
+            ));
+        }
+        if constituent_evidence.iter().any(|evidence| {
+            evidence.schema_version != 1
+                || evidence.target != target.target
+                || evidence.scope != scope
+        }) {
+            return Err(argus_core::ArgusError::invariant(
+                "architecture constituent evidence identity mismatch",
+            ));
+        }
+        let allowed_targets = std::iter::once(scope_evidence.target.clone())
+            .chain(
+                scope_evidence
+                    .constituents
+                    .iter()
+                    .chain(&scope_evidence.boundary_targets)
+                    .map(|target| target.id.clone()),
+            )
+            .collect();
+        let constituent_health = constituent_evidence.first().map_or_else(
+            || scope_evidence.constituent_health.clone(),
+            |evidence| evidence.constituent_health.clone(),
+        );
+        let verification_complete = scope_evidence.omitted_constituents == 0
+            && scope_evidence.omitted_boundary_targets == 0
+            && scope_evidence.omitted_internal_relations == 0
+            && scope_evidence.omitted_boundary_relations == 0
+            && scope_evidence.omitted_dependency_cycles == 0
+            && constituent_health.failed_constituents == 0
+            && constituent_health.unable_to_verify_constituents == 0;
+        let graph_targets = std::iter::once(scope_evidence.target.clone())
+            .chain(
+                scope_evidence
+                    .constituents
+                    .iter()
+                    .chain(&scope_evidence.boundary_targets)
+                    .map(|target| target.id.clone()),
+            )
+            .chain(
+                scope_evidence
+                    .internal_relations
+                    .iter()
+                    .chain(&scope_evidence.boundary_relations)
+                    .flat_map(|relation| [relation.source.clone(), relation.target.clone()]),
+            )
+            .chain(scope_evidence.dependency_cycles.iter().flatten().cloned())
+            .collect::<BTreeSet<_>>();
+        let summary_targets = constituent_evidence
+            .first()
+            .map(|evidence| {
+                std::iter::once(evidence.target.clone())
+                    .chain(evidence.constituents.iter().map(|fact| fact.target.clone()))
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let verification_targets = context
+            .untrusted_evidence
+            .iter()
+            .map(|item| {
+                let targets = match item.kind {
+                    argus_core::EvidenceKind::ArchitectureGraph => graph_targets.clone(),
+                    argus_core::EvidenceKind::ArchitectureSummary => summary_targets.clone(),
+                    _ => item.target.iter().cloned().collect(),
+                };
+                (item.id.clone(), targets)
+            })
+            .collect();
         let binding = ArchitectureAssessmentBinding {
             policy_id: context.trusted_control.policy.clone(),
             work_item_id: work_item,
             target: target.target,
             scope,
+            evidence: context
+                .untrusted_evidence
+                .iter()
+                .map(|item| {
+                    (
+                        item.id.clone(),
+                        argus_policies::ArchitectureEvidenceCitation {
+                            evidence: item.id.clone(),
+                            kind: item.kind,
+                            location: item.location.clone(),
+                            related_targets: item.target.iter().cloned().collect(),
+                        },
+                    )
+                })
+                .collect(),
+            allowed_targets,
+            constituent_health,
         };
-        Ok(Self { binding })
+        Ok(Self {
+            binding,
+            verification_complete,
+            verification_targets,
+        })
     }
 
     pub fn bind_assessment(
@@ -161,6 +337,62 @@ impl ArchitectureAssessmentContract {
     }
 
     #[must_use]
+    pub const fn verification_context_complete(&self) -> bool {
+        self.verification_complete
+    }
+
+    #[must_use]
+    pub fn verify_candidate(
+        &self,
+        candidate: &ArchitectureCandidate,
+    ) -> ArchitectureCandidateVerification {
+        let (status, rationale) = if !self.verification_complete {
+            (
+                ArchitectureVerificationStatus::UnableToVerify,
+                "Structural or constituent evidence is incomplete or truncated.".to_owned(),
+            )
+        } else if let Some(citation) = candidate.citations.iter().find(|citation| {
+            let Some(known_targets) = self.verification_targets.get(&citation.evidence) else {
+                return true;
+            };
+            citation.related_targets.is_empty()
+                || citation
+                    .related_targets
+                    .iter()
+                    .any(|target| !known_targets.contains(target))
+        }) {
+            (
+                ArchitectureVerificationStatus::Rejected,
+                format!(
+                    "Citation {} does not resolve every claimed target against its stored evidence artifact.",
+                    citation.evidence
+                ),
+            )
+        } else if matches!(
+            candidate.defect_kind,
+            ArchitectureFindingKind::StructuralDefect
+        ) && candidate.inferred_intent.is_none()
+        {
+            (
+                ArchitectureVerificationStatus::Corroborated,
+                "Every cited target resolves against complete stored evidence for this directly observed structural defect."
+                    .to_owned(),
+            )
+        } else {
+            (
+                ArchitectureVerificationStatus::Disputed,
+                "The citations resolve, but the candidate depends on architectural risk or inferred intent and requires adjudication."
+                    .to_owned(),
+            )
+        };
+        ArchitectureCandidateVerification {
+            candidate_id: candidate.id.clone(),
+            status,
+            rationale,
+        }
+    }
+
+    #[must_use]
     pub fn review_actor(
         self: &Arc<Self>,
         executor: Arc<argus_provider::ProviderExecutor>,
@@ -202,17 +434,42 @@ impl PolicyAssessmentContract for ArchitectureAssessmentContract {
             .candidates
             .into_iter()
             .map(|candidate| {
-                serde_json::to_value(candidate)
-                    .map_err(|error| format!("cannot serialize architecture candidate: {error}"))
+                Ok(json!({
+                    "title": candidate.id,
+                    "description": candidate.explanation,
+                    "severity": candidate.severity,
+                    "confidence_basis_points": candidate.confidence.basis_points(),
+                }))
             })
             .collect()
     }
+
+    fn instructions(&self) -> &str {
+        ARCHITECTURE_INSTRUCTIONS
+    }
 }
+
+const ARCHITECTURE_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against architectural principles and constraints.
+Return only the final JSON decision. Do not emit analysis, chain-of-thought, or commentary outside the schema. Keep every rationale, observation, explanation, and summary concise: one sentence per string, no more than two observations per dimension, and no repeated evidence narrative. In each citation, copy `evidence` exactly from a supplied evidence item's `id` field (never its hash or location), and include only related target IDs present in that evidence.
+The static-analysis scope artifact is the authoritative structural input. Use its constituents, internal relations, boundary relations, dependency cycles, and inventory health directly. For package and workspace scopes, the constituent-summary artifact contains terminal lower-scope assessments and is authoritative for reviewed constituent health. Cite the applicable artifact for graph-derived or roll-up claims. The graph fingerprint identifies its complete pre-truncation input, while omitted_* counters identify bounded truncation. Do not invent an edge that is absent from the artifact, and do not treat an absent edge as proof when inventory is incomplete or facts were omitted.
+For package and workspace scopes, lower-scope findings are already durable: do not reproduce or paraphrase them as candidates. Emit at most 3 candidates, only for new cross-constituent defects or patterns established by aggregate evidence. Summarize constituent health without restating individual findings.
+Evaluate all 6 architectural dimensions:
+1. dependency_structure: Proper dependency direction, acyclic graphs, and absence of forbidden couplings.
+2. cycles: Absence of circular dependencies across modules, packages, or components.
+3. public_surface: Encapsulation, minimal export surface, and proper visibility scoping.
+4. ownership_and_cohesion: Clear module responsibility, high cohesion, and proper state ownership.
+5. boundary_analysis: Respect for subsystem boundaries and abstraction layers.
+6. pattern_consistency: Uniformity in architectural conventions, error handling, and design patterns.
+
+Decision Rules:
+- If ANY architectural defect or boundary violation is detected, emit `review.candidate_found` with result status "deficient" and list the architectural candidates.
+- Emit `review.pass` ONLY when all dimensions are satisfied or not applicable and no candidates exist.
+- `review.failed` is strictly reserved for internal analysis execution errors and must NEVER be used to report architectural defects or code issues."#;
 
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn architecture_assessment_draft_schema() -> Value {
-    json!({
+    let mut schema = json!({
         "type": "object",
         "required": ["result"],
         "additionalProperties": false,
@@ -265,7 +522,7 @@ pub fn architecture_assessment_draft_schema() -> Value {
                                 "id": { "type": "string" },
                                 "severity": {
                                     "type": "string",
-                                    "enum": ["critical", "high", "medium", "low", "info"]
+                                    "enum": ["note", "low", "medium", "high", "critical"]
                                 },
                                 "defect_kind": {
                                     "type": "string",
@@ -295,11 +552,10 @@ pub fn architecture_assessment_draft_schema() -> Value {
                                     "type": "array",
                                     "items": {
                                         "type": "object",
-                                        "required": ["evidence", "kind", "related_targets"],
+                                        "required": ["evidence", "related_targets"],
+                                        "additionalProperties": false,
                                         "properties": {
                                             "evidence": { "type": "string" },
-                                            "kind": { "type": "string" },
-                                            "location": { "type": ["object", "null"] },
                                             "related_targets": {
                                                 "type": "array",
                                                 "items": { "type": "string" }
@@ -329,5 +585,278 @@ pub fn architecture_assessment_draft_schema() -> Value {
                 }
             }
         }
-    })
+    });
+    for (pointer, maximum) in [
+        (
+            "/properties/result/properties/dimensions/additionalProperties/properties/observations",
+            2,
+        ),
+        ("/properties/result/properties/candidates", 3),
+        (
+            "/properties/result/properties/candidates/items/properties/citations",
+            2,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/citations/items/properties/related_targets",
+            8,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/observed_facts",
+            3,
+        ),
+    ] {
+        schema
+            .pointer_mut(pointer)
+            .and_then(Value::as_object_mut)
+            .expect("architecture schema array path must exist")
+            .insert("maxItems".to_owned(), json!(maximum));
+    }
+    for (pointer, maximum) in [
+        (
+            "/properties/result/properties/dimensions/additionalProperties/properties/observations/items",
+            240,
+        ),
+        (
+            "/properties/result/properties/dimensions/additionalProperties/properties/rationale",
+            320,
+        ),
+        ("/properties/result/properties/summary", 480),
+        (
+            "/properties/result/properties/candidates/items/properties/id",
+            120,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/explanation",
+            480,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/citations/items/properties/evidence",
+            128,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/citations/items/properties/related_targets/items",
+            128,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/observed_facts/items",
+            240,
+        ),
+        (
+            "/properties/result/properties/candidates/items/properties/inferred_intent",
+            320,
+        ),
+    ] {
+        schema
+            .pointer_mut(pointer)
+            .and_then(Value::as_object_mut)
+            .expect("architecture schema string path must exist")
+            .insert("maxLength".to_owned(), json!(maximum));
+    }
+    let dimensions = schema
+        .pointer_mut("/properties/result/properties/dimensions")
+        .and_then(Value::as_object_mut)
+        .expect("architecture dimensions schema must exist");
+    dimensions.insert("minProperties".to_owned(), json!(6));
+    dimensions.insert("maxProperties".to_owned(), json!(6));
+    dimensions.insert(
+        "propertyNames".to_owned(),
+        json!({
+            "enum": [
+                "dependency_structure",
+                "cycles",
+                "public_surface",
+                "ownership_and_cohesion",
+                "boundary_analysis",
+                "pattern_consistency"
+            ]
+        }),
+    );
+    schema
+        .pointer_mut("/properties/result/properties/candidates/items/properties/dimensions")
+        .and_then(Value::as_object_mut)
+        .expect("architecture candidate dimensions schema must exist")
+        .insert("maxItems".to_owned(), json!(6));
+    schema
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argus_core::{Confidence, EvidenceId, EvidenceKind, PolicyId, Severity, TargetId};
+    use argus_policies::{
+        ArchitectureCandidateDraft, ArchitectureDimension, ArchitectureEvidenceCitation,
+        ArchitectureEvidenceCitationDraft, ArchitectureFindingKind,
+    };
+    use argus_provider::OutputValidator;
+    use std::collections::BTreeSet;
+
+    fn fixture() -> (ArchitectureAssessmentBinding, ArchitectureAssessmentDraft) {
+        let evidence_id = EvidenceId::derive([b"architecture-graph".as_slice()]);
+        let target = TargetId::derive([b"crate::module".as_slice()]);
+        let citation = ArchitectureEvidenceCitation {
+            evidence: evidence_id.clone(),
+            kind: EvidenceKind::ArchitectureGraph,
+            location: None,
+            related_targets: vec![target.clone()],
+        };
+        let binding = ArchitectureAssessmentBinding {
+            policy_id: PolicyId::derive([b"architecture-code-derived@1".as_slice()]),
+            work_item_id: WorkItemId::derive([b"work-1".as_slice()]),
+            target: target.clone(),
+            scope: ArchitectureScope::Module,
+            evidence: BTreeMap::from([(evidence_id, citation.clone())]),
+            allowed_targets: BTreeSet::from([target]),
+            constituent_health: ConstituentHealthSummary::default(),
+        };
+        let draft = ArchitectureAssessmentDraft {
+            result: ArchitectureResultDraft {
+                status: ArchitectureResultStatus::Deficient,
+                dimensions: ALL_ARCHITECTURE_DIMENSIONS
+                    .into_iter()
+                    .map(|dimension| {
+                        let deficient = dimension == ArchitectureDimension::DependencyStructure;
+                        (
+                            dimension,
+                            ArchitectureDimensionDraft {
+                                status: if deficient {
+                                    ArchitectureDimensionStatus::Deficient
+                                } else {
+                                    ArchitectureDimensionStatus::Satisfied
+                                },
+                                observations: vec![if deficient {
+                                    "Layering violation: calls upstream UI".to_owned()
+                                } else {
+                                    format!("{dimension:?} is satisfied")
+                                }],
+                                rationale: if deficient {
+                                    "Domain layer must not depend on UI presentation".to_owned()
+                                } else {
+                                    format!("No {dimension:?} deficiency was observed")
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+                summary: "Module violates clean layering architecture".to_owned(),
+                candidates: vec![ArchitectureCandidateDraft {
+                    id: "layering-violation-1".to_owned(),
+                    severity: Severity::High,
+                    defect_kind: ArchitectureFindingKind::StructuralDefect,
+                    dimensions: BTreeSet::from([ArchitectureDimension::DependencyStructure]),
+                    confidence: Confidence::from_basis_points(9500).unwrap(),
+                    explanation: "Direct dependency on presentation layer".to_owned(),
+                    citations: vec![ArchitectureEvidenceCitationDraft {
+                        evidence: citation.evidence.clone(),
+                        related_targets: citation.related_targets.clone(),
+                    }],
+                    observed_facts: vec!["rust:calls edge from storage to ui".to_owned()],
+                    inferred_intent: Some("Intended to decouple backend from UI".to_owned()),
+                }],
+                constituent_health: ConstituentHealthSummary::default(),
+            },
+        };
+        (binding, draft)
+    }
+
+    #[test]
+    fn generic_candidates_are_derived_from_architecture_assessment() {
+        let (binding, draft) = fixture();
+        let contract = ArchitectureAssessmentContract::new(binding);
+        let validator = ArchitectureReviewTransportValidator;
+        let schema = crate::review_decision_schema_for(&contract.schema());
+        let assessment = serde_json::to_value(draft).unwrap();
+        let output = json!({
+            "event_type": "review.candidate_found",
+            "payload": {"assessment": assessment}
+        });
+        validator.validate(&schema, &output).unwrap();
+
+        let candidates = contract
+            .candidates(&output["payload"]["assessment"])
+            .unwrap();
+        assert_eq!(
+            candidates,
+            vec![json!({
+                "title": "layering-violation-1",
+                "description": "Direct dependency on presentation layer",
+                "severity": "high",
+                "confidence_basis_points": 9500
+            })]
+        );
+
+        for candidate in &candidates {
+            crate::review_actor::validate_candidate_draft(candidate).unwrap();
+        }
+
+        let mut duplicated = output;
+        duplicated["payload"]["candidates"] = json!([]);
+        assert!(validator.validate(&schema, &duplicated).is_err());
+    }
+
+    #[test]
+    fn transport_schema_excludes_trusted_assessment_identity() {
+        let serialized = serde_json::to_string(&architecture_assessment_draft_schema()).unwrap();
+        for forbidden in [
+            "\"work_item\"",
+            "\"work_item_id\"",
+            "\"policy_id\"",
+            "\"policy_version\"",
+            "\"evidence_revision\"",
+            "\"applicability\"",
+            "\"target\":",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "schema contains forbidden key: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn architecture_instructions_bound_the_final_response() {
+        assert!(ARCHITECTURE_INSTRUCTIONS.contains("Return only the final JSON decision"));
+        assert!(ARCHITECTURE_INSTRUCTIONS.contains("no more than two observations per dimension"));
+        assert!(
+            ARCHITECTURE_INSTRUCTIONS.contains("do not reproduce or paraphrase them as candidates")
+        );
+        let schema = architecture_assessment_draft_schema();
+        assert_eq!(
+            schema["properties"]["result"]["properties"]["candidates"]["maxItems"],
+            3
+        );
+        assert_eq!(
+            schema["properties"]["result"]["properties"]["dimensions"]["maxProperties"],
+            6
+        );
+        assert_eq!(
+            schema["properties"]["result"]["properties"]["summary"]["maxLength"],
+            480
+        );
+    }
+
+    #[test]
+    fn verifier_resolves_claimed_targets_against_stored_evidence() {
+        let (mut binding, mut draft) = fixture();
+        draft.result.candidates[0].inferred_intent = None;
+        let contract = ArchitectureAssessmentContract::new(binding.clone());
+        let assessment = contract.bind_assessment(draft.clone()).unwrap();
+        assert_eq!(
+            contract
+                .verify_candidate(&assessment.result.candidates[0])
+                .status,
+            ArchitectureVerificationStatus::Corroborated
+        );
+
+        let unsupported = TargetId::derive([b"crate::unrelated".as_slice()]);
+        binding.allowed_targets.insert(unsupported.clone());
+        draft.result.candidates[0].citations[0].related_targets = vec![unsupported];
+        let contract = ArchitectureAssessmentContract::new(binding);
+        let assessment = contract.bind_assessment(draft).unwrap();
+        assert_eq!(
+            contract
+                .verify_candidate(&assessment.result.candidates[0])
+                .status,
+            ArchitectureVerificationStatus::Rejected
+        );
+    }
 }

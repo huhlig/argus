@@ -143,3 +143,30 @@ pub fn known_clean_error_handling(path: &str) -> Result<String, std::io::Error> 
 pub fn known_clean_boundary(items: &[u8], index: usize) -> Option<u8> {
     items.get(index).copied()
 }
+
+// 10. DocumentedStub: intentional todo!() in production code
+/// Validates transaction signature against network authority.
+///
+/// Note: Signature verification is currently a stub and panics with todo!().
+pub fn documented_stub_todo(signature: &[u8]) -> bool {
+    // TODO: implement cryptographic signature verification
+    let _ = signature;
+    todo!("cryptographic signature verification is not yet implemented")
+}
+
+// 11. ScopeGap: dummy return value violating security invariant
+/// Evaluates user permission scope against resource requirements.
+///
+/// Full permission evaluation is incomplete; currently allows all requests.
+#[must_use]
+pub fn documented_scope_gap(user_id: u64, resource: &str) -> bool {
+    // Stub: placeholder always returns true
+    let _ = (user_id, resource);
+    true
+}
+
+#[must_use]
+pub fn known_clean_implemented_feature(user_id: u64, allowed_users: &[u64]) -> bool {
+    allowed_users.contains(&user_id)
+}
+

@@ -229,7 +229,66 @@ impl PolicyAssessmentContract for DocumentationAssessmentContract {
             })
             .collect()
     }
+
+    fn instructions(&self) -> &str {
+        DOCUMENTATION_INSTRUCTIONS
+    }
 }
+
+const DOCUMENTATION_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against the documentation policy rubric in two explicit stages:
+1. First, extract claims strictly from records whose kind is documentation. Never infer a documentation claim from a signature, source code, or expected API convention. Identify all documentation, doc comments, and inline comments that mention, describe, or acknowledge gaps, inconsistencies, stubs, or unimplemented aspects.
+2. Next, compare those extracted claims and material omissions against records whose kind is source.
+
+You MUST evaluate all 14 distinct documentation dimensions exactly once in the `dimensions` array:
+1. presence: Target has attached doc comments / documentation.
+2. purpose: High-level role, rationale, and intent.
+3. behavior: Runtime semantics, side conditions, and guarantees.
+4. inputs: Parameters, arguments, and configuration.
+5. outputs: Return types, success values, and results.
+6. errors: Error variants, failure conditions, and error returns.
+7. panics: Explicit panic conditions and unwinding guarantees.
+8. safety: Undefined behavior, preconditions, or `unsafe` requirements.
+9. side_effects: IO, mutations, external process interaction, or global state changes.
+10. invariants: Struct/type consistency and state invariants.
+11. examples: Accuracy and syntax of provided doc examples.
+12. accuracy: Consistency of doc statements with actual source behavior.
+13. currency: Up-to-date terminology, names, and references.
+14. value: Documentation clarity, completeness, and non-trivial informational value.
+
+Documented Gaps, Inconsistencies, Stubs, and Unimplemented Aspects:
+- You MUST identify all documentation, doc comments, and inline comments that describe, acknowledge, or note gaps, inconsistencies, stubs, or unimplemented aspects in the target declaration or implementation.
+- Mandatory Rule: All documented gaps, inconsistencies, stubs, or unimplemented aspects MUST be explicitly listed with `TODO` in the comments (e.g. `// TODO: ...` or `/// TODO: ...`).
+- If any gap, inconsistency, stub, or unimplemented aspect is documented or mentioned without being explicitly listed with `TODO` in the comments, it is a documentation defect:
+  * Mark the corresponding dimension (such as `behavior`, `value`, `purpose`, or `accuracy`) as `deficient` (using comparison `material_omission` or `contradictory`).
+  * Emit candidate findings detailing that the documented gap, inconsistency, stub, or unimplemented aspect is missing a `TODO` designation in the comments.
+- Furthermore, if source evidence shows unimplemented aspects, stubs, or gaps that are either omitted from documentation or documented without `TODO` in the comments, report them as candidate findings.
+
+For each dimension:
+- Set `documentation_coverage` from documentation evidence alone: "stated" (materially complete), "partial" (documentation says something about this dimension but omits material detail — e.g. a high-level claim without the mechanics behind it), "omitted" (documentation is silent), "unable_to_verify", or "not_applicable". Never infer stated or partial coverage from source.
+- Set `source_materiality` from source evidence alone: "material_behavior", "no_material_behavior", "unable_to_verify", or "not_applicable".
+- Set `comparison` and `status` strictly following the required truth table:
+  * "consistent" (status: "satisfied"): Stated + MaterialBehavior, Stated + NoMaterialBehavior, Stated + NotApplicable, Omitted + NoMaterialBehavior, or Omitted + NotApplicable.
+  * "contradictory" (status: "deficient"): Stated or Partial documentation claim conflicts with MaterialBehavior in source.
+  * "material_omission" (status: "deficient"): Omitted or Partial documentation, regardless of source materiality (the omission or partial disclosure is itself the defect). This holds even when source shows NoMaterialBehavior or NotApplicable materiality — e.g. a trivial struct with no complex behavior can still deserve a purpose statement or an examples note, so silence about it is a material omission even though nothing about the source itself is complex. Use your judgment: Omitted + NoMaterialBehavior/NotApplicable is valid under EITHER "consistent" or "material_omission" — choose "material_omission" when the dimension is one a reader would still expect covered (e.g. purpose, examples) even for a structurally simple item, and "consistent" when the dimension genuinely has nothing to say (e.g. errors, panics, side_effects for an item with no such behavior at all).
+  * "unable_to_verify" (status: "unable_to_verify"): Insufficient evidence.
+  * "not_applicable" (status: "not_applicable"): Dimension is not applicable to this target.
+
+Evidence Citation Rules:
+- Every citation MUST be copied verbatim from an evidence record's `id` field. Every evidence record also carries a `content_hash` field for internal integrity tracking only — it is a different 64-character hex value that looks identical in shape to `id` but is NEVER a valid citation. Citing `content_hash` produces a citation that resolves to nothing and fails validation.
+- In `claims[].evidence`: Cite strictly documentation evidence IDs (records with kind="documentation").
+- In `dimensions[].evidence`:
+  * For dimension "presence": Cite at least one documentation evidence ID (kind="documentation").
+  * For all other 13 dimensions (purpose, behavior, inputs, outputs, errors, panics, safety, side_effects, invariants, examples, accuracy, currency, value) when status is "satisfied" or "deficient": You MUST cite BOTH at least one documentation evidence ID (kind="documentation") AND at least one source evidence ID (kind="source") from the provided evidence list.
+- In `findings[].evidence`: You MUST cite BOTH at least one documentation evidence ID and at least one source evidence ID.
+
+Decision Rules:
+- If ANY dimension is deficient (due to material omission, contradictory documentation, or failure to list documented gaps/stubs/unimplemented aspects with `TODO` in comments):
+  * Emit `event_type: "review.candidate_found"`
+  * Set `assessment.result` to `{"state": "candidate_findings", "findings": [...]}` with finding entries for each defect.
+- If all 14 dimensions are satisfied or not applicable:
+  * Emit `event_type: "review.pass"`
+  * Set `assessment.result` to `{"state": "passed"}`
+- `review.failed` is strictly reserved for internal analysis execution errors and must NEVER be used to report missing or deficient documentation."#;
 
 #[must_use]
 #[allow(clippy::too_many_lines)]
@@ -252,13 +311,13 @@ pub fn documentation_assessment_draft_schema() -> Value {
     ];
     let comparison_evidence = json!({
         "type": "array",
-        "description": "Exact evidence IDs copied from untrusted_evidence[].id. For every satisfied or deficient comparison, cite both the documentation record (kind=documentation) and the source record (kind=source); presence requires at least documentation evidence.",
+        "description": "Exact evidence IDs copied from untrusted_evidence[].id (never .content_hash, a different-looking-but-similar field that is not a valid citation). For every satisfied or deficient comparison, cite both the documentation record (kind=documentation) and the source record (kind=source); presence requires at least documentation evidence.",
         "items": {"type": "string"},
         "uniqueItems": true
     });
     let documentation_evidence = json!({
         "type": "array",
-        "description": "Exact IDs of kind=documentation only. These citations prove what the documentation literally states; never cite source evidence as a documentation claim.",
+        "description": "Exact IDs of kind=documentation only, copied from untrusted_evidence[].id (never .content_hash). These citations prove what the documentation literally states; never cite source evidence as a documentation claim.",
         "items": {"type": "string"},
         "uniqueItems": true,
         "minItems": 1
@@ -298,15 +357,15 @@ pub fn documentation_assessment_draft_schema() -> Value {
                     "properties": {
                         "dimension": {"enum": dimensions},
                         "documentation_coverage": {
-                            "description": "Whether this dimension is literally stated in documentation evidence. Use omitted when documentation is silent; never infer stated coverage from source.",
-                            "enum": ["stated", "omitted", "unable_to_verify", "not_applicable"]
+                            "description": "Whether this dimension is literally stated in documentation evidence. Use partial when documentation says something about this dimension but omits material detail (a claim without its mechanics). Use omitted when documentation is silent. Never infer stated or partial coverage from source.",
+                            "enum": ["stated", "partial", "omitted", "unable_to_verify", "not_applicable"]
                         },
                         "source_materiality": {
                             "description": "Whether source evidence contains behavior material to this documentation dimension.",
                             "enum": ["material_behavior", "no_material_behavior", "unable_to_verify", "not_applicable"]
                         },
                         "comparison": {
-                            "description": "The explicit comparison. Use material_omission for omitted documentation with material source behavior, and contradictory when a stated claim conflicts with material source behavior.",
+                            "description": "The explicit comparison. Use material_omission for omitted or partial documentation regardless of source materiality (the omission or partial disclosure is itself the defect, even when the source shows no material behavior). Use contradictory when a stated or partial claim conflicts with material source behavior.",
                             "enum": ["consistent", "contradictory", "material_omission", "unable_to_verify", "not_applicable"]
                         },
                         "status": {
@@ -526,6 +585,145 @@ mod tests {
             .bind_output(&serde_json::to_value(draft).unwrap())
             .unwrap_err();
         assert!(error.contains("inconsistent coverage, materiality, comparison, and status"));
+    }
+
+    #[test]
+    fn validator_accepts_a_material_omission_over_partial_coverage() {
+        let (binding, mut draft) = fixture();
+        let errors = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Behavior)
+            .unwrap();
+        errors.documentation_coverage = DocumentationCoverage::Partial;
+        errors.source_materiality = SourceMateriality::MaterialBehavior;
+        errors.comparison = DocumentationComparison::MaterialOmission;
+        errors.status = DocumentationDimensionStatus::Deficient;
+        draft.result = DocumentationResultDraft::CandidateFindings {
+            findings: vec![DocumentationCandidateDraft {
+                title: "Partially documented behavior".to_owned(),
+                description:
+                    "Documentation states a high-level claim but omits material mechanics."
+                        .to_owned(),
+                severity: argus_core::Severity::Medium,
+                confidence_basis_points: 9000,
+                dimensions: BTreeSet::from([DocumentationDimension::Behavior]),
+                evidence: draft.dimensions[0].evidence.clone(),
+            }],
+        };
+
+        DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn validator_accepts_a_material_omission_over_partial_coverage_with_no_material_source_behavior()
+     {
+        let (binding, mut draft) = fixture();
+        let value = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Value)
+            .unwrap();
+        value.documentation_coverage = DocumentationCoverage::Partial;
+        value.source_materiality = SourceMateriality::NoMaterialBehavior;
+        value.comparison = DocumentationComparison::MaterialOmission;
+        value.status = DocumentationDimensionStatus::Deficient;
+        draft.result = DocumentationResultDraft::CandidateFindings {
+            findings: vec![DocumentationCandidateDraft {
+                title: "Low informational value".to_owned(),
+                description:
+                    "Documentation is too vague to be useful, independent of source complexity."
+                        .to_owned(),
+                severity: argus_core::Severity::Low,
+                confidence_basis_points: 7000,
+                dimensions: BTreeSet::from([DocumentationDimension::Value]),
+                evidence: draft.dimensions[0].evidence.clone(),
+            }],
+        };
+
+        DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn validator_accepts_a_material_omission_for_omitted_coverage_with_not_applicable_source_materiality()
+     {
+        let (binding, mut draft) = fixture();
+        let value = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Value)
+            .unwrap();
+        value.documentation_coverage = DocumentationCoverage::Omitted;
+        value.source_materiality = SourceMateriality::NotApplicable;
+        value.comparison = DocumentationComparison::MaterialOmission;
+        value.status = DocumentationDimensionStatus::Deficient;
+        draft.result = DocumentationResultDraft::CandidateFindings {
+            findings: vec![DocumentationCandidateDraft {
+                title: "No informational value assessment".to_owned(),
+                description:
+                    "Documentation says nothing that speaks to its own clarity or completeness."
+                        .to_owned(),
+                severity: argus_core::Severity::Low,
+                confidence_basis_points: 7000,
+                dimensions: BTreeSet::from([DocumentationDimension::Value]),
+                evidence: draft.dimensions[0].evidence.clone(),
+            }],
+        };
+
+        DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn validator_accepts_a_material_omission_for_omitted_coverage_with_no_material_source_behavior()
+    {
+        let (binding, mut draft) = fixture();
+        let purpose = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Purpose)
+            .unwrap();
+        purpose.documentation_coverage = DocumentationCoverage::Omitted;
+        purpose.source_materiality = SourceMateriality::NoMaterialBehavior;
+        purpose.comparison = DocumentationComparison::MaterialOmission;
+        purpose.status = DocumentationDimensionStatus::Deficient;
+        draft.result = DocumentationResultDraft::CandidateFindings {
+            findings: vec![DocumentationCandidateDraft {
+                title: "Missing purpose documentation".to_owned(),
+                description: "Documentation is silent on the type's purpose, even though it has no complex source behavior.".to_owned(),
+                severity: argus_core::Severity::Medium,
+                confidence_basis_points: 9000,
+                dimensions: BTreeSet::from([DocumentationDimension::Purpose]),
+                evidence: draft.dimensions[0].evidence.clone(),
+            }],
+        };
+
+        DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn validator_accepts_consistent_for_stated_coverage_with_not_applicable_source_materiality() {
+        let (binding, mut draft) = fixture();
+        let value = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Value)
+            .unwrap();
+        value.documentation_coverage = DocumentationCoverage::Stated;
+        value.source_materiality = SourceMateriality::NotApplicable;
+        value.comparison = DocumentationComparison::Consistent;
+        value.status = DocumentationDimensionStatus::Satisfied;
+
+        DocumentationAssessmentContract::new(binding)
+            .bind_output(&serde_json::to_value(draft).unwrap())
+            .unwrap();
     }
 
     #[test]
@@ -765,5 +963,11 @@ mod tests {
         ] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn documentation_instructions_require_listing_gaps_stubs_and_unimplemented_aspects_with_todo() {
+        assert!(DOCUMENTATION_INSTRUCTIONS.contains("gaps, inconsistencies, stubs, or unimplemented aspects"));
+        assert!(DOCUMENTATION_INSTRUCTIONS.contains("listed with `TODO` in the comments"));
     }
 }

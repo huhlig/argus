@@ -50,10 +50,13 @@ pub fn seeded_documentation_fixture() -> SeededDocumentationFixture {
     let inaccurate_behavior = seeded_target("inaccurate-behavior");
     let obsolete_currency = seeded_target("obsolete-currency");
     let vacuous_tautology = seeded_target("vacuous-tautology");
+    let documented_stub_missing_todo = seeded_target("documented-stub-missing-todo");
+    let documented_gap_missing_todo = seeded_target("documented-gap-missing-todo");
 
     let known_clean = seeded_target("known-clean");
     let known_clean_unsafe = seeded_target("known-clean-unsafe");
     let known_clean_error = seeded_target("known-clean-error");
+    let known_clean_stub_with_todo = seeded_target("known-clean-stub-with-todo");
 
     SeededDocumentationFixture {
         corpus: DocumentationEvaluationCorpus {
@@ -135,11 +138,22 @@ pub fn seeded_documentation_fixture() -> SeededDocumentationFixture {
                     target: vacuous_tautology.clone(),
                     dimensions: BTreeSet::from([DocumentationDimension::Value]),
                 },
+                ExpectedDocumentationIssue {
+                    id: "documented-stub-missing-todo".to_owned(),
+                    target: documented_stub_missing_todo.clone(),
+                    dimensions: BTreeSet::from([DocumentationDimension::Behavior]),
+                },
+                ExpectedDocumentationIssue {
+                    id: "documented-gap-missing-todo".to_owned(),
+                    target: documented_gap_missing_todo.clone(),
+                    dimensions: BTreeSet::from([DocumentationDimension::Behavior]),
+                },
             ],
             known_clean_targets: vec![
                 known_clean.clone(),
                 known_clean_unsafe.clone(),
                 known_clean_error.clone(),
+                known_clean_stub_with_todo.clone(),
             ],
         },
         sources: vec![
@@ -339,6 +353,46 @@ pub fn known_clean_error(path: &str) -> Result<String, std::io::Error> {
 }
 "#,
             },
+            SeededDocumentationSource {
+                target: documented_stub_missing_todo,
+                logical_name: "documented_stub_missing_todo",
+                source: r#"/// Generates encryption key pairs.
+///
+/// Note: Hardware security module key generation is currently a stub returning mock keys.
+#[must_use]
+pub fn documented_stub_missing_todo(key_type: &str) -> Vec<u8> {
+    if key_type == "hsm" {
+        vec![0xAA; 32]
+    } else {
+        vec![0x00; 32]
+    }
+}
+"#,
+            },
+            SeededDocumentationSource {
+                target: documented_gap_missing_todo,
+                logical_name: "documented_gap_missing_todo",
+                source: r#"/// Synchronizes state with the upstream coordinator.
+///
+/// Sync retry on network timeout is unimplemented and dropped packets are ignored.
+#[must_use]
+pub fn documented_gap_missing_todo(state_id: u64) -> bool {
+    state_id > 0
+}
+"#,
+            },
+            SeededDocumentationSource {
+                target: known_clean_stub_with_todo,
+                logical_name: "known_clean_stub_with_todo",
+                source: r#"/// Computes message digest using the specified cipher suite.
+///
+/// TODO: Add hardware-accelerated SHA-3 implementation.
+#[must_use]
+pub fn known_clean_stub_with_todo(input: &[u8]) -> usize {
+    input.len()
+}
+"#,
+            },
         ],
     }
 }
@@ -359,9 +413,12 @@ fn seeded_target(name: &str) -> TargetId {
         "inaccurate-behavior" => ("callable", "inaccurate_behavior"),
         "obsolete-currency" => ("callable", "obsolete_currency"),
         "vacuous-tautology" => ("callable", "vacuous_tautology"),
+        "documented-stub-missing-todo" => ("callable", "documented_stub_missing_todo"),
+        "documented-gap-missing-todo" => ("callable", "documented_gap_missing_todo"),
         "known-clean" => ("callable", "known_clean"),
         "known-clean-unsafe" => ("callable", "known_clean_unsafe"),
         "known-clean-error" => ("callable", "known_clean_error"),
+        "known-clean-stub-with-todo" => ("callable", "known_clean_stub_with_todo"),
         _ => unreachable!("unknown seeded documentation target"),
     };
     TargetId::derive([

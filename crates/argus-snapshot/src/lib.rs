@@ -26,4 +26,4 @@ pub use manifest::{
 pub use store::{LineIndex, SnapshotRepository, SourceReader};
 
 /// Version of the snapshot manifest format.
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;

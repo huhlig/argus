@@ -14,7 +14,7 @@
 
 use crate::{
     DocumentationReviewAdmission, DocumentationReviewMaterialization, DocumentationRuntimeIdentity,
-    RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryManifest, RecoveryStore,
+    RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryError, RecoveryManifest, RecoveryStore,
     WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, documentation_actor_registry,
     open_checkpoint_store,
 };
@@ -26,6 +26,10 @@ use langchart_adapters::{
     checkpoint::CheckpointStore,
     context::{ContextError, ContextItem, ContextResolver, ContextView},
     event::EventSink,
+    llm::LlmAdapter,
+    mcp::McpAdapter,
+    memory::MemoryAdapter,
+    secrets::SecretsAdapter,
 };
 use langchart_model::{
     id::{RunId, StateId},
@@ -43,9 +47,25 @@ use tokio::time::{Duration, Instant};
 #[derive(Clone)]
 pub struct DocumentationWorkerRuntime {
     pub executor: Arc<ProviderExecutor>,
-    pub broker: Arc<langchart_runtime::CapabilityBroker>,
+    pub llm: Arc<dyn LlmAdapter>,
+    pub mcp: Arc<dyn McpAdapter>,
+    pub memory: Arc<dyn MemoryAdapter>,
+    pub secrets: Arc<dyn SecretsAdapter>,
     pub event_sink: Arc<dyn EventSink>,
     pub failure_diagnostics: Arc<WorkflowFailureDiagnostics>,
+}
+
+impl DocumentationWorkerRuntime {
+    #[must_use]
+    pub fn create_broker(&self) -> Arc<langchart_runtime::CapabilityBroker> {
+        Arc::new(langchart_runtime::CapabilityBroker::new(
+            self.llm.clone(),
+            self.mcp.clone(),
+            self.memory.clone(),
+            self.secrets.clone(),
+            self.event_sink.clone(),
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -58,7 +78,7 @@ impl WorkflowFailureDiagnostics {
         lock(&self.failures).insert(run_id.to_owned(), message);
     }
 
-    fn get(&self, run_id: &str) -> Option<String> {
+    pub fn get(&self, run_id: &str) -> Option<String> {
         lock(&self.failures).get(run_id).cloned()
     }
 }
@@ -78,6 +98,7 @@ pub struct DocumentationWorker {
     workflow_data: Arc<WorkflowDataStore>,
     runtime: DocumentationWorkerRuntime,
     config: DocumentationWorkerConfig,
+    checkpoint_store: Arc<dyn CheckpointStore>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,22 +132,40 @@ impl DocumentationWorker {
                 "documentation worker adapter and policy must not be empty",
             ));
         }
+        let checkpoint_store = Arc::new(open_checkpoint_store(&config.state_directory).map_err(
+            |error| {
+                ArgusError::invariant("cannot open documentation checkpoint store")
+                    .with_source(error)
+            },
+        )?);
         Ok(Self {
             queue,
             workflow_data,
             runtime,
             config,
+            checkpoint_store,
         })
     }
 
     pub async fn run_next(&self, now_millis: u64) -> Result<DocumentationWorkerResult, ArgusError> {
-        let Some(leased) = self.queue.lease_next_for_partition(
-            now_millis,
-            self.config.lease_duration_millis,
-            &self.config.identity.audit_run,
-            &self.config.adapter,
-            &self.config.policy,
-        )?
+        let queue = self.queue.clone();
+        let audit_run = self.config.identity.audit_run.clone();
+        let adapter = self.config.adapter.clone();
+        let policy = self.config.policy.clone();
+        let lease_duration_millis = self.config.lease_duration_millis;
+        let Some(leased) = tokio::task::spawn_blocking(move || {
+            queue.lease_next_for_partition(
+                now_millis,
+                lease_duration_millis,
+                &audit_run,
+                &adapter,
+                &policy,
+            )
+        })
+        .await
+        .map_err(|error| {
+            ArgusError::invariant("documentation lease task failed").with_source(error)
+        })??
         else {
             return Ok(DocumentationWorkerResult::Idle);
         };
@@ -134,19 +173,31 @@ impl DocumentationWorker {
             Ok(()) => Ok(DocumentationWorkerResult::Succeeded { work_id: leased.id }),
             Err(error) => {
                 let message = error.to_string();
-                if self
-                    .queue
-                    .get(&leased.id)?
-                    .is_some_and(|work| work.state == QueueState::Succeeded)
-                {
+                let queue = self.queue.clone();
+                let succeeded_already = {
+                    let leased_id = leased.id.clone();
+                    tokio::task::spawn_blocking(move || queue.get(&leased_id))
+                        .await
+                        .map_err(|error| {
+                            ArgusError::invariant("documentation lookup task failed")
+                                .with_source(error)
+                        })??
+                };
+                if succeeded_already.is_some_and(|work| work.state == QueueState::Succeeded) {
                     return Ok(DocumentationWorkerResult::Succeeded { work_id: leased.id });
                 }
-                let state = self.queue.fail_attempt(
-                    &leased.id,
-                    now_millis,
-                    message.clone(),
-                    self.config.maximum_attempts,
-                )?;
+                let queue = self.queue.clone();
+                let work_id = leased.id.clone();
+                let fail_message = message.clone();
+                let maximum_attempts = self.config.maximum_attempts;
+                let state = tokio::task::spawn_blocking(move || {
+                    queue.fail_attempt(&work_id, now_millis, fail_message, maximum_attempts)
+                })
+                .await
+                .map_err(|error| {
+                    ArgusError::invariant("documentation fail-attempt task failed")
+                        .with_source(error)
+                })??;
                 Ok(match state {
                     QueueState::Pending => DocumentationWorkerResult::RetryScheduled {
                         work_id: leased.id,
@@ -184,11 +235,16 @@ impl DocumentationWorker {
             loop {
                 interval.tick().await;
                 let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                queue.heartbeat(
-                    &work_id,
-                    leased_at_millis.saturating_add(elapsed),
-                    lease_duration_millis,
-                )?;
+                let now = leased_at_millis.saturating_add(elapsed);
+                let heartbeat_queue = queue.clone();
+                let heartbeat_work_id = work_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    heartbeat_queue.heartbeat(&heartbeat_work_id, now, lease_duration_millis)
+                })
+                .await
+                .map_err(|error| {
+                    ArgusError::invariant("documentation heartbeat task failed").with_source(error)
+                })??;
             }
             #[allow(unreachable_code)]
             Ok::<(), ArgusError>(())
@@ -207,6 +263,15 @@ impl DocumentationWorker {
 
     async fn execute(&self, leased: &LeasedWork) -> Result<(), ArgusError> {
         let (admission, materialized, langchart_run_id) = self.restore_work(leased)?;
+        tracing::info!(
+            policy = "documentation",
+            work_id = %leased.id,
+            target_id = %admission.unit.target.target,
+            target_scope = ?admission.unit.target.class,
+            "Processing documentation review for {:?} target `{}`",
+            admission.unit.target.class,
+            admission.unit.target.target
+        );
         let diagnostic_run_id = langchart_run_id.as_ref().to_owned();
         let prepared = self.prepare_runtime(leased, &materialized, &langchart_run_id)?;
         let checkpoint = prepared
@@ -230,7 +295,7 @@ impl DocumentationWorker {
         let mut instance = WorkflowInstance::new(
             langchart_run_id,
             prepared.compiled,
-            self.runtime.broker.clone(),
+            self.runtime.create_broker(),
             self.runtime.event_sink.clone(),
             prepared.actors,
         )
@@ -354,28 +419,51 @@ impl DocumentationWorker {
         let workflow = recovery.store_target_review().map_err(|error| {
             ArgusError::invariant("cannot store documentation workflow").with_source(error)
         })?;
-        let manifest = RecoveryManifest {
-            schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
-            workflow_data_schema_version: WORKFLOW_DATA_SCHEMA_VERSION,
-            langchart_run_id: langchart_run_id.as_ref().to_owned(),
-            audit_snapshot: self.config.identity.audit_snapshot.clone(),
-            audit_run: self.config.identity.audit_run.clone(),
-            work_id: leased.id.clone(),
-            actors: recovery.actor_identities(&workflow).map_err(|error| {
-                ArgusError::invariant("cannot resolve documentation actor identities")
-                    .with_source(error)
-            })?,
-            workflow,
-            provider: self.runtime.executor.expected_identity().clone(),
-            provider_policy: self.runtime.executor.policy().clone(),
-            policy_version: materialized.unit.policy_version.clone(),
-            prompt_version: self.config.identity.provenance.prompt_version.clone(),
-            evidence_revision: materialized.package.package.revision,
-            langchart_runtime_version: "0.1.0".to_owned(),
+        let manifest = match recovery.load_manifest(langchart_run_id.as_ref()) {
+            Ok(mut existing) => {
+                existing.workflow = workflow;
+                existing.actors =
+                    recovery
+                        .actor_identities(&existing.workflow)
+                        .map_err(|error| {
+                            ArgusError::invariant("cannot resolve documentation actor identities")
+                                .with_source(error)
+                        })?;
+                existing
+            }
+            Err(RecoveryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                let manifest = RecoveryManifest {
+                    schema_version: RECOVERY_MANIFEST_SCHEMA_VERSION,
+                    workflow_data_schema_version: WORKFLOW_DATA_SCHEMA_VERSION,
+                    langchart_run_id: langchart_run_id.as_ref().to_owned(),
+                    audit_snapshot: self.config.identity.audit_snapshot.clone(),
+                    audit_run: self.config.identity.audit_run.clone(),
+                    work_id: leased.id.clone(),
+                    actors: recovery.actor_identities(&workflow).map_err(|error| {
+                        ArgusError::invariant("cannot resolve documentation actor identities")
+                            .with_source(error)
+                    })?,
+                    workflow,
+                    provider: self.runtime.executor.expected_identity().clone(),
+                    provider_policy: self.runtime.executor.policy().clone(),
+                    policy_version: materialized.unit.policy_version.clone(),
+                    prompt_version: self.config.identity.provenance.prompt_version.clone(),
+                    evidence_revision: materialized.package.package.revision,
+                    langchart_runtime_version: "0.1.0".to_owned(),
+                };
+                recovery.write_manifest(&manifest).map_err(|error| {
+                    ArgusError::invariant("cannot store documentation recovery manifest")
+                        .with_source(error)
+                })?;
+                manifest
+            }
+            Err(error) => {
+                return Err(
+                    ArgusError::invariant("cannot load documentation recovery manifest")
+                        .with_source(error),
+                );
+            }
         };
-        recovery.write_manifest(&manifest).map_err(|error| {
-            ArgusError::invariant("cannot store documentation recovery manifest").with_source(error)
-        })?;
         let compiled = Arc::new(
             recovery
                 .load_compiled(&manifest.workflow)
@@ -387,7 +475,7 @@ impl DocumentationWorker {
             self.queue.clone(),
             self.workflow_data.clone(),
             materialized,
-            self.runtime.executor.clone(),
+            self.runtime.executor.scoped_for_review(),
             self.config.identity.clone(),
         )
         .map_err(|error| {
@@ -396,16 +484,10 @@ impl DocumentationWorker {
         let actors = registry.reconstruct(&manifest).map_err(|error| {
             ArgusError::invariant("cannot reconstruct documentation actors").with_source(error)
         })?;
-        let checkpoint_store = Arc::new(
-            open_checkpoint_store(&self.config.state_directory).map_err(|error| {
-                ArgusError::invariant("cannot open documentation checkpoint store")
-                    .with_source(error)
-            })?,
-        );
         Ok(PreparedDocumentationRuntime {
             compiled,
             actors,
-            checkpoint_store,
+            checkpoint_store: self.checkpoint_store.clone(),
         })
     }
 
@@ -554,16 +636,16 @@ mod tests {
     }
 
     struct StaticLlm {
-        response: String,
+        responder: Arc<dyn Fn(&LlmRequest) -> String + Send + Sync>,
         delay_millis: u64,
     }
 
     #[async_trait]
     impl LlmAdapter for StaticLlm {
-        async fn complete(&self, _request: LlmRequest) -> Result<LlmResponse, LlmError> {
+        async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
             tokio::time::sleep(Duration::from_millis(self.delay_millis)).await;
             Ok(LlmResponse {
-                content: Some(self.response.clone()),
+                content: Some((self.responder)(&request)),
                 tool_calls: Vec::new(),
                 usage: TokenUsage {
                     prompt_tokens: 100,
@@ -697,6 +779,19 @@ mod tests {
             capabilities: Vec::new(),
             diagnostic: None,
         };
+        let target2 = Target {
+            id: TargetId::derive([b"worker-target-2".as_slice()]),
+            kind: TargetKind::Portable {
+                kind: PortableTargetKind::Callable,
+            },
+            visibility: TargetVisibility::Public,
+            name: "documented_api_2".to_owned(),
+            parent: None,
+            location: None,
+            inventory: InventoryState::Represented,
+            capabilities: Vec::new(),
+            diagnostic: None,
+        };
         let evidence_id = EvidenceId::derive([b"worker-documentation".as_slice()]);
         let evidence = EvidenceRecord {
             id: evidence_id.clone(),
@@ -731,7 +826,42 @@ mod tests {
                 resolution: ResolutionQuality::Exact,
             },
         };
-        let evidence_records = vec![evidence, source_evidence];
+        let evidence_id2 = EvidenceId::derive([b"worker-documentation-2".as_slice()]);
+        let evidence2 = EvidenceRecord {
+            id: evidence_id2.clone(),
+            kind: EvidenceKind::Documentation,
+            origin: EvidenceOrigin::Direct,
+            target: Some(target2.id.clone()),
+            location: None,
+            summary: "The public API 2 is documented.".to_owned(),
+            detail: Some("Performs the documented operation.".to_owned()),
+            provenance: EvidenceProvenance {
+                provider: "fixture".to_owned(),
+                provider_version: "1".to_owned(),
+                configuration: configuration.clone(),
+                ingest_only: true,
+                resolution: ResolutionQuality::Exact,
+            },
+        };
+        let source_evidence_id2 = EvidenceId::derive([b"worker-source-2".as_slice()]);
+        let source_evidence2 = EvidenceRecord {
+            id: source_evidence_id2.clone(),
+            kind: EvidenceKind::Source,
+            origin: EvidenceOrigin::Direct,
+            target: Some(target2.id.clone()),
+            location: None,
+            summary: "The public API 2 implementation.".to_owned(),
+            detail: Some("Performs the documented operation.".to_owned()),
+            provenance: EvidenceProvenance {
+                provider: "fixture".to_owned(),
+                provider_version: "1".to_owned(),
+                configuration: configuration.clone(),
+                ingest_only: true,
+                resolution: ResolutionQuality::Exact,
+            },
+        };
+        let targets = vec![target, target2.clone()];
+        let evidence_records = vec![evidence, source_evidence, evidence2, source_evidence2];
         let policy = argus_policies::DocumentationApplicabilityPolicy::public_api().unwrap();
         let plan = crate::DocumentationReviewPlanner::new(
             &policy,
@@ -739,15 +869,14 @@ mod tests {
             "documentation-public-api@1",
         )
         .unwrap()
-        .plan(
-            &snapshot,
-            &configuration,
-            std::slice::from_ref(&target),
-            &evidence_records,
-        )
+        .plan(&snapshot, &configuration, &targets, &evidence_records)
         .unwrap();
         assert_eq!(
             plan.units[0].applicability.state,
+            ApplicabilityState::Applicable
+        );
+        assert_eq!(
+            plan.units[1].applicability.state,
             ApplicabilityState::Applicable
         );
         let evidence_store = EvidenceStore::open(state.join("evidence")).unwrap();
@@ -793,9 +922,41 @@ mod tests {
             claims: Vec::new(),
             result: DocumentationResultDraft::Passed,
         };
+        let draft2 = DocumentationAssessmentDraft {
+            dimensions: ALL_DOCUMENTATION_DIMENSIONS
+                .into_iter()
+                .map(|dimension| DocumentationDimensionDraft {
+                    dimension,
+                    documentation_coverage: argus_policies::DocumentationCoverage::Stated,
+                    source_materiality: argus_policies::SourceMateriality::MaterialBehavior,
+                    comparison: argus_policies::DocumentationComparison::Consistent,
+                    status: DocumentationDimensionStatus::Satisfied,
+                    rationale: "Satisfied by the bounded documentation evidence.".to_owned(),
+                    evidence: vec![evidence_id2.clone(), source_evidence_id2.clone()],
+                })
+                .collect(),
+            claims: Vec::new(),
+            result: DocumentationResultDraft::Passed,
+        };
+        let draft1_json =
+            json!({"event_type":"review.pass", "payload":{"assessment":draft}}).to_string();
+        let draft2_json =
+            json!({"event_type":"review.pass", "payload":{"assessment":draft2}}).to_string();
+        let target2_id_str = target2.id.to_string();
         let llm: Arc<dyn LlmAdapter> = Arc::new(StaticLlm {
-            response: json!({"event_type":"review.pass", "payload":{"assessment":draft}})
-                .to_string(),
+            responder: Arc::new(move |req: &LlmRequest| {
+                let matches_target2 = req.messages.iter().any(|msg| match msg {
+                    langchart_adapters::llm::Message::User { content } => {
+                        content.contains(&target2_id_str)
+                    }
+                    _ => false,
+                });
+                if matches_target2 {
+                    draft2_json.clone()
+                } else {
+                    draft1_json.clone()
+                }
+            }),
             delay_millis: 400,
         });
         let capabilities = capabilities();
@@ -815,20 +976,16 @@ mod tests {
         );
         let sink = Arc::new(CapturingSink::default());
         let captured = sink.clone();
-        let broker = Arc::new(langchart_runtime::CapabilityBroker::new(
-            llm,
-            Arc::new(NoopMcp),
-            Arc::new(NoopMemory),
-            Arc::new(HostMapSecretsAdapter::empty()) as Arc<dyn SecretsAdapter>,
-            sink.clone(),
-        ));
         let workflow_data = Arc::new(WorkflowDataStore::open(&state).unwrap());
         let worker = DocumentationWorker::new(
             queue.clone(),
             workflow_data,
             DocumentationWorkerRuntime {
                 executor,
-                broker,
+                llm,
+                mcp: Arc::new(NoopMcp),
+                memory: Arc::new(NoopMemory),
+                secrets: Arc::new(HostMapSecretsAdapter::empty()) as Arc<dyn SecretsAdapter>,
                 event_sink: sink,
                 failure_diagnostics: Arc::new(WorkflowFailureDiagnostics::default()),
             },
@@ -855,16 +1012,23 @@ mod tests {
         )
         .unwrap();
 
-        let result = worker.run_next(3).await.unwrap();
+        let (result1, result2) = tokio::join!(worker.run_next(3), worker.run_next(3));
+        let result1 = result1.unwrap();
+        let result2 = result2.unwrap();
         let events = captured.payloads().await;
         assert!(
-            matches!(result, DocumentationWorkerResult::Succeeded { .. }),
-            "unexpected worker result: {result:?}; events: {events:#?}"
+            matches!(result1, DocumentationWorkerResult::Succeeded { .. }),
+            "unexpected worker result: {result1:?}; events: {events:#?}"
         );
-        assert_eq!(queue.status(3).unwrap().succeeded, 1);
+        assert!(
+            matches!(result2, DocumentationWorkerResult::Succeeded { .. }),
+            "unexpected concurrent worker result: {result2:?}; events: {events:#?}"
+        );
+        assert_eq!(queue.status(3).unwrap().succeeded, 2);
         assert!(queue.events().unwrap().iter().any(|event| {
             event.work_id == materialized.unit.work_item && event.kind == QueueEventKind::Heartbeat
         }));
+
         let invalid_id = WorkItemId::derive([b"invalid-documentation-admission".as_slice()]);
         let coverage = queue
             .get(&materialized.unit.work_item)
@@ -880,16 +1044,16 @@ mod tests {
             ))
             .unwrap();
         assert!(matches!(
-            worker.run_next(4).await.unwrap(),
+            worker.run_next(5).await.unwrap(),
             DocumentationWorkerResult::RetryScheduled { work_id, .. } if work_id == invalid_id
         ));
         assert!(matches!(
-            worker.run_next(5).await.unwrap(),
+            worker.run_next(6).await.unwrap(),
             DocumentationWorkerResult::Failed { work_id, .. } if work_id == invalid_id
         ));
-        assert_eq!(queue.status(5).unwrap().failed, 1);
+        assert_eq!(queue.status(6).unwrap().failed, 1);
         assert_eq!(
-            worker.run_next(6).await.unwrap(),
+            worker.run_next(7).await.unwrap(),
             DocumentationWorkerResult::Idle
         );
     }
