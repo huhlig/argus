@@ -927,3 +927,45 @@ fn schema_one_initialization_adds_all_current_tables() {
         artifact
     );
 }
+
+#[test]
+fn telemetry_reports_completion_range_and_stalled_items() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("state.redb");
+    let queue = DurableQueue::open(&path).unwrap();
+
+    let item1 = work("item-1");
+    let item2 = work("item-2");
+    let item3 = work("item-3");
+
+    queue.admit(&item1).unwrap();
+    queue.admit(&item2).unwrap();
+    queue.admit(&item3).unwrap();
+
+    // Item 1 is leased at t=100 and completed at t=150
+    let l1 = queue.lease_next(100, 1_000).unwrap().unwrap();
+    queue.complete_at(&l1.id, "key-1", b"outcome-1", 150).unwrap();
+
+    // Item 2 is leased at t=200 and completed at t=300
+    let l2 = queue.lease_next(200, 1_000).unwrap().unwrap();
+    queue.complete_at(&l2.id, "key-2", b"outcome-2", 300).unwrap();
+
+    // Item 3 is leased at t=250 with short lease duration 50 (expires at 300)
+    let l3 = queue.lease_next(250, 50).unwrap().unwrap();
+
+    // Query telemetry at t=350 (Item 3 is stalled!)
+    let telemetry = queue.telemetry(350).unwrap();
+    assert_eq!(telemetry.status.succeeded, 2);
+    assert_eq!(telemetry.status.stalled, 1);
+    assert_eq!(telemetry.status.leased, 1);
+    assert_eq!(telemetry.first_succeeded_at_millis, Some(150));
+    assert_eq!(telemetry.last_succeeded_at_millis, Some(300));
+    assert_eq!(telemetry.last_successful_work, Some(l2.id));
+
+    assert_eq!(telemetry.stalled_items.len(), 1);
+    let stalled = &telemetry.stalled_items[0];
+    assert_eq!(stalled.work_id, l3.id);
+    assert_eq!(stalled.attempt_count, 1);
+    assert_eq!(stalled.lease_until_millis, Some(300));
+}
+

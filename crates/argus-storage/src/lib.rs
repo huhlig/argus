@@ -22,7 +22,7 @@ pub use queue::{
     CoverageKey, DurableProviderTelemetryPublisher, DurableQueue, LeasedWork, OutcomeRecord,
     OutcomeWrite, ProviderTelemetrySnapshot, ProviderTelemetrySummary, QueueEvent, QueueEventKind,
     QueueState, QueueStatus, QueueTelemetry, QueueWork, RunRecord, RunRecords, RunState,
-    StoredArtifact,
+    StalledWorkItem, StoredArtifact,
 };
 
 /// Initial unreleased working-state schema containing all current tables.

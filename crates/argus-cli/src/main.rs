@@ -231,15 +231,17 @@ Examples:
   argus targets list
   argus targets show 4b91c2...";
 
-const HELP_STATUS: &str = "Show durable queue status, provider telemetry, and failure diagnostics
+const HELP_STATUS: &str = "Show durable queue status, audit progress, provider telemetry, and stall diagnostics
 
 Usage: argus status
 
 Description:
   Reports real-time queue telemetry from `.argus/state/working.redb`:
     - Work item counts: total, pending, leased, succeeded, failed, cancelled, stalled
-    - Provider telemetry: throughput (req/s), in-flight requests, tokens, cost
-    - Detailed failure diagnostics for stalled or failed work items
+    - Progress & throughput: completed/s, elapsed runtime, projected completion ETA
+    - Provider telemetry: cumulative & per-profile token counts, throughput, cost
+    - Database footprint: size on disk
+    - Detailed warnings & diagnostics for stalled or failed work items
 
 Examples:
   argus status";
@@ -4349,10 +4351,46 @@ fn parse_run_id(
 
 fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
     let queue = working_queue(root)?;
-    let telemetry = queue.telemetry(now_millis()?)?;
+    let now = now_millis()?;
+    let telemetry = queue.telemetry(now)?;
     let status = telemetry.status;
+
+    // Calculate throughput and projected completion ETA
+    let mut progress_line = String::new();
+    if let (Some(first), Some(last)) = (
+        telemetry.first_succeeded_at_millis,
+        telemetry.last_succeeded_at_millis,
+    ) {
+        if last > first && status.succeeded > 1 {
+            let elapsed_secs = (last - first) as f64 / 1000.0;
+            let throughput = (status.succeeded - 1) as f64 / elapsed_secs;
+            progress_line.push_str(&format!(
+                "\nThroughput: {:.2} items/s (over {:.1}s)",
+                throughput, elapsed_secs
+            ));
+            if status.pending > 0 && throughput > 0.0 {
+                let remaining_secs = (status.pending as f64 / throughput).round() as u64;
+                let minutes = remaining_secs / 60;
+                let seconds = remaining_secs % 60;
+                if minutes > 0 {
+                    progress_line.push_str(&format!(
+                        "\nProjected completion: ~{}m {}s remaining",
+                        minutes, seconds
+                    ));
+                } else {
+                    progress_line.push_str(&format!(
+                        "\nProjected completion: ~{}s remaining",
+                        seconds
+                    ));
+                }
+            }
+        }
+    }
+
+    let human_db_bytes = format_bytes(telemetry.database_bytes);
+
     let mut output = format!(
-        "Queue total: {}\nPending: {}\nLeased: {}\nSucceeded: {}\nFailed: {}\nCancelled: {}\nStalled: {}\nEvents: {}\nRetries: {}\nLast successful work: {}\nDatabase bytes: {}",
+        "Queue total: {}\nPending: {}\nLeased: {}\nSucceeded: {}\nFailed: {}\nCancelled: {}\nStalled: {}{}\nEvents: {}\nRetries: {}\nLast successful work: {}\nDatabase size: {}",
         status.total(),
         status.pending,
         status.leased,
@@ -4360,14 +4398,52 @@ fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusErr
         status.failed,
         status.cancelled,
         status.stalled,
+        progress_line,
         telemetry.event_count,
         telemetry.retry_count,
         telemetry
             .last_successful_work
             .as_ref()
             .map_or("none", argus_core::WorkItemId::as_str),
-        telemetry.database_bytes
+        human_db_bytes
     );
+
+    // Cumulative provider token & cost overview
+    let mut total_requests = 0u64;
+    let mut total_successes = 0u64;
+    let mut total_failures = 0u64;
+    let mut total_input_tokens = 0u64;
+    let mut total_output_tokens = 0u64;
+    let mut total_cost_microusd = 0u64;
+    let mut has_unreported_cost = false;
+
+    for provider in &telemetry.providers {
+        let metrics = &provider.telemetry;
+        total_requests = total_requests.saturating_add(metrics.requests);
+        total_successes = total_successes.saturating_add(metrics.successes);
+        total_failures = total_failures.saturating_add(metrics.failures);
+        total_input_tokens = total_input_tokens.saturating_add(metrics.input_tokens);
+        total_output_tokens = total_output_tokens.saturating_add(metrics.output_tokens);
+        total_cost_microusd = total_cost_microusd.saturating_add(metrics.estimated_cost_microusd);
+        if metrics.requests > 0 && metrics.unreported_cost_responses >= metrics.requests {
+            has_unreported_cost = true;
+        }
+    }
+
+    if !telemetry.providers.is_empty() {
+        let cost_str = if has_unreported_cost && total_cost_microusd == 0 {
+            "unreported".to_owned()
+        } else {
+            format!("${:.4} ({} µUSD)", total_cost_microusd as f64 / 1_000_000.0, total_cost_microusd)
+        };
+        writeln!(
+            output,
+            "\nProvider summary: requests={total_requests} (success={total_successes}, fail={total_failures}) input_tokens={total_input_tokens} output_tokens={total_output_tokens} total_tokens={} estimated_cost={cost_str}",
+            total_input_tokens.saturating_add(total_output_tokens)
+        )
+        .expect("writing to a String cannot fail");
+    }
+
     writeln!(output, "\nProvider profiles: {}", telemetry.providers.len())
         .expect("writing to a String cannot fail");
     for provider in telemetry.providers {
@@ -4417,9 +4493,58 @@ fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusErr
         )
         .expect("writing to a String cannot fail");
     }
+    append_stalled_warnings(&telemetry.stalled_items, &mut output)?;
     append_architecture_status(root, &queue, &mut output)?;
     append_work_errors(root, &queue, &mut output)?;
     Ok(output.trim_end().to_owned())
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB ({bytes} bytes)", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB ({bytes} bytes)", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!(
+            "{:.2} GB ({bytes} bytes)",
+            bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+        )
+    }
+}
+
+fn append_stalled_warnings(
+    stalled_items: &[argus_storage::StalledWorkItem],
+    output: &mut String,
+) -> Result<(), argus_core::ArgusError> {
+    if stalled_items.is_empty() {
+        return Ok(());
+    }
+    writeln!(
+        output,
+        "\nWARNING: {} work item(s) are stalled (lease expired without worker completion or voluntary release):",
+        stalled_items.len()
+    )
+    .expect("writing to a String cannot fail");
+    for item in stalled_items {
+        let error_note = item
+            .last_error
+            .as_deref()
+            .map_or(String::new(), |err| format!(" (last error: {err})"));
+        writeln!(
+            output,
+            "  * Work {} [run={}, policy={}, attempts={}]{error_note}",
+            item.work_id, item.run_id, item.policy, item.attempt_count
+        )
+        .expect("writing to a String cannot fail");
+    }
+    writeln!(
+        output,
+        "Action: Run 'argus resume' to release expired leases back to pending state, or investigate crashed workers."
+    )
+    .expect("writing to a String cannot fail");
+    Ok(())
 }
 
 fn append_architecture_status(
@@ -5880,6 +6005,59 @@ mod tests {
             work.id
         )));
         assert!(output.contains("Failed 3: assessment binding failed invalid evidence"));
+    }
+
+    #[test]
+    fn status_exposes_throughput_completion_progress_and_stalled_warnings() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        run(["prime".to_owned()].into_iter(), temporary.path()).unwrap();
+        let queue = working_queue(temporary.path()).unwrap();
+        let run_id = current_run(temporary.path()).unwrap();
+
+        let w1 = argus_storage::QueueWork::pending_for(
+            argus_core::WorkItemId::derive([b"status-item-1".as_slice()]),
+            b"item1".to_vec(),
+            run_id.clone(),
+            argus_storage::CoverageKey::unspecified(),
+        );
+        let w2 = argus_storage::QueueWork::pending_for(
+            argus_core::WorkItemId::derive([b"status-item-2".as_slice()]),
+            b"item2".to_vec(),
+            run_id.clone(),
+            argus_storage::CoverageKey::unspecified(),
+        );
+        let w3 = argus_storage::QueueWork::pending_for(
+            argus_core::WorkItemId::derive([b"status-item-3".as_slice()]),
+            b"item3".to_vec(),
+            run_id.clone(),
+            argus_storage::CoverageKey::unspecified(),
+        );
+
+        queue.admit(&w1).unwrap();
+        queue.admit(&w2).unwrap();
+        queue.admit(&w3).unwrap();
+
+        // Leased and succeeded at t=1_000 and t=3_000 (2s elapsed, 1 interval, 0.50 items/s)
+        let l1 = queue.lease_next(1_000, 10_000).unwrap().unwrap();
+        queue.complete_at(&l1.id, "key-1", b"outcome-1", 1_000).unwrap();
+
+        let l2 = queue.lease_next(2_000, 10_000).unwrap().unwrap();
+        queue.complete_at(&l2.id, "key-2", b"outcome-2", 3_000).unwrap();
+
+        // Item 3 is leased at t=2_500 with a lease deadline of 200ms (expires at t=2_700)
+        let l3 = queue.lease_next(2_500, 200).unwrap().unwrap();
+        drop(queue);
+
+        let output = status_command(temporary.path()).unwrap();
+
+        assert!(output.contains("Queue total: 3"));
+        assert!(output.contains("Succeeded: 2"));
+        assert!(output.contains("Stalled: 1"));
+        assert!(output.contains("Database size:"));
+        assert!(output.contains("WARNING: 1 work item(s) are stalled"));
+        assert!(output.contains(&format!("* Work {}", l3.id)));
+        assert!(output.contains("Run 'argus resume' to release expired leases back to pending state"));
     }
 
     #[test]

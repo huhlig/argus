@@ -361,6 +361,23 @@ pub struct QueueStatus {
     pub stalled: u64,
 }
 
+/// A work item whose lease expired without completion or voluntary release.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StalledWorkItem {
+    /// Unique identifier of the stalled work item.
+    pub work_id: WorkItemId,
+    /// Associated audit run identifier.
+    pub run_id: RunId,
+    /// Partition coverage policy.
+    pub policy: String,
+    /// Number of lease attempts executed so far.
+    pub attempt_count: u32,
+    /// Epoch timestamp in milliseconds when the lease expired.
+    pub lease_until_millis: Option<u64>,
+    /// Last recorded error message, if any.
+    pub last_error: Option<String>,
+}
+
 /// Real-time operational telemetry and health metrics for [`DurableQueue`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueueTelemetry {
@@ -372,8 +389,14 @@ pub struct QueueTelemetry {
     pub retry_count: u64,
     /// Identifier of the most recently succeeded work item, if any.
     pub last_successful_work: Option<WorkItemId>,
+    /// Timestamp in milliseconds of the first succeeded work item, if any.
+    pub first_succeeded_at_millis: Option<u64>,
+    /// Timestamp in milliseconds of the most recent succeeded work item, if any.
+    pub last_succeeded_at_millis: Option<u64>,
     /// Current size of the underlying database on disk in bytes.
     pub database_bytes: u64,
+    /// Detailed list of currently stalled work items, if any.
+    pub stalled_items: Vec<StalledWorkItem>,
     /// Aggregated telemetry summaries across all active providers.
     pub providers: Vec<ProviderTelemetrySummary>,
 }
@@ -1526,7 +1549,25 @@ impl DurableQueue {
         outcome_key: &str,
         outcome: &[u8],
     ) -> Result<bool, argus_core::ArgusError> {
-        match self.record_or_get(work_id, outcome_key, outcome)? {
+        self.complete_at(work_id, outcome_key, outcome, 0)
+    }
+
+    /// Atomically stores one effective outcome at a specific timestamp and marks its work succeeded.
+    ///
+    /// Returns `Ok(true)` if newly inserted, or `Ok(false)` if an identical outcome already existed.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - The outcome key conflicts with a different payload.
+    /// - The work item is not currently leased.
+    pub fn complete_at(
+        &self,
+        work_id: &WorkItemId,
+        outcome_key: &str,
+        outcome: &[u8],
+        at_millis: u64,
+    ) -> Result<bool, argus_core::ArgusError> {
+        match self.record_or_get_at(work_id, outcome_key, outcome, at_millis)? {
             OutcomeWrite::Inserted(_) => Ok(true),
             OutcomeWrite::Existing(existing) if existing.payload == outcome => Ok(false),
             OutcomeWrite::Existing(_) => Err(argus_core::ArgusError::invariant(
@@ -1552,7 +1593,18 @@ impl DurableQueue {
         outcome_key: &str,
         outcome: &[u8],
     ) -> Result<OutcomeWrite, argus_core::ArgusError> {
-        self.record_or_get_with_artifacts(work_id, outcome_key, outcome, &[])
+        self.record_or_get_with_artifacts_at(work_id, outcome_key, outcome, &[], 0)
+    }
+
+    /// Atomically records an outcome at a specified timestamp or returns the result already effective for the key.
+    pub fn record_or_get_at(
+        &self,
+        work_id: &WorkItemId,
+        outcome_key: &str,
+        outcome: &[u8],
+        at_millis: u64,
+    ) -> Result<OutcomeWrite, argus_core::ArgusError> {
+        self.record_or_get_with_artifacts_at(work_id, outcome_key, outcome, &[], at_millis)
     }
 
     /// Atomically records an outcome with supporting artifact references, or returns the existing outcome.
@@ -1569,6 +1621,25 @@ impl DurableQueue {
         outcome_key: &str,
         outcome: &[u8],
         artifact_references: &[String],
+    ) -> Result<OutcomeWrite, argus_core::ArgusError> {
+        self.record_or_get_with_artifacts_at(work_id, outcome_key, outcome, artifact_references, 0)
+    }
+
+    /// Atomically records an outcome with supporting artifact references at a specific timestamp.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if:
+    /// - `outcome_key` is empty.
+    /// - Any referenced artifact does not exist in the artifact table.
+    /// - The key belongs to a different work item.
+    /// - The work item is not leased (when inserting).
+    pub fn record_or_get_with_artifacts_at(
+        &self,
+        work_id: &WorkItemId,
+        outcome_key: &str,
+        outcome: &[u8],
+        artifact_references: &[String],
+        at_millis: u64,
     ) -> Result<OutcomeWrite, argus_core::ArgusError> {
         if outcome_key.trim().is_empty() {
             return Err(argus_core::ArgusError::invalid_input(
@@ -1649,7 +1720,7 @@ impl DurableQueue {
                 &write,
                 work_id,
                 QueueEventKind::Succeeded,
-                0,
+                at_millis,
                 Some(outcome_key.to_owned()),
             )?;
         }
@@ -1981,8 +2052,65 @@ impl DurableQueue {
     /// Returns [`ArgusError`](argus_core::ArgusError) if status calculation or event scanning fails.
     pub fn telemetry(&self, now_millis: u64) -> Result<QueueTelemetry, argus_core::ArgusError> {
         let events = self.events()?;
+        let mut first_succeeded_at_millis = None;
+        let mut last_succeeded_at_millis = None;
+        let mut last_successful_work = None;
+
+        for event in &events {
+            if event.kind == QueueEventKind::Succeeded {
+                if first_succeeded_at_millis.is_none() {
+                    first_succeeded_at_millis = Some(event.at_millis);
+                }
+                last_succeeded_at_millis = Some(event.at_millis);
+                last_successful_work = Some(event.work_id.clone());
+            }
+        }
+
+        let read = self
+            .database
+            .begin_read()
+            .map_err(database_error("cannot read queue for telemetry"))?;
+        let table = read
+            .open_table(WORK)
+            .map_err(database_error("cannot open work table"))?;
+        let mut status = QueueStatus::default();
+        let mut stalled_items = Vec::new();
+
+        for entry in table
+            .iter()
+            .map_err(database_error("cannot scan queue for telemetry"))?
+        {
+            let (_, value) = entry.map_err(database_error("cannot read queue item"))?;
+            let work: QueueWork = decode(value.value())?;
+            match work.state {
+                QueueState::Pending => status.pending += 1,
+                QueueState::Leased => {
+                    status.leased += 1;
+                    if work
+                        .lease_until_millis
+                        .is_some_and(|until| until <= now_millis)
+                    {
+                        status.stalled += 1;
+                        stalled_items.push(StalledWorkItem {
+                            work_id: work.id,
+                            run_id: work.run,
+                            policy: work.coverage.policy,
+                            attempt_count: work.attempt_count,
+                            lease_until_millis: work.lease_until_millis,
+                            last_error: work.last_error,
+                        });
+                    }
+                }
+                QueueState::Succeeded => status.succeeded += 1,
+                QueueState::Failed => status.failed += 1,
+                QueueState::Cancelled => status.cancelled += 1,
+            }
+        }
+
+        stalled_items.sort_by(|a, b| a.work_id.cmp(&b.work_id));
+
         Ok(QueueTelemetry {
-            status: self.status(now_millis)?,
+            status,
             event_count: u64::try_from(events.len()).unwrap_or(u64::MAX),
             retry_count: u64::try_from(
                 events
@@ -1991,12 +2119,11 @@ impl DurableQueue {
                     .count(),
             )
             .unwrap_or(u64::MAX),
-            last_successful_work: events
-                .iter()
-                .rev()
-                .find(|event| event.kind == QueueEventKind::Succeeded)
-                .map(|event| event.work_id.clone()),
+            last_successful_work,
+            first_succeeded_at_millis,
+            last_succeeded_at_millis,
             database_bytes: std::fs::metadata(&self.path).map_or(0, |metadata| metadata.len()),
+            stalled_items,
             providers: self.provider_telemetry()?,
         })
     }

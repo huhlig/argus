@@ -957,7 +957,7 @@ mod tests {
                     draft1_json.clone()
                 }
             }),
-            delay_millis: 400,
+            delay_millis: 500,
         });
         let capabilities = capabilities();
         let provider =
@@ -1006,7 +1006,7 @@ mod tests {
                 },
                 adapter: "rust".to_owned(),
                 policy: "documentation-public-api@1".to_owned(),
-                lease_duration_millis: 1_000,
+                lease_duration_millis: 900,
                 maximum_attempts: 2,
             },
         )
