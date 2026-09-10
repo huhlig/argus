@@ -31,6 +31,7 @@ Setup & Snapshots:
   prime        Capture repository snapshot and build initial language inventory
 
 Audit & Review Execution:
+  run          Execute complete review lifecycle (prime -> audit -> work -> finalize -> report)
   audit        Plan and durably admit review work items for a policy pipeline
   work         Execute admitted review work items using a configured model provider
   resume       Recover expired work item leases for an active audit run
@@ -119,7 +120,7 @@ Examples:
 
 const HELP_AUDIT: &str = "Plan and durably admit review work items for a policy pipeline
 
-Usage: argus audit --pipeline <pipeline>
+Usage: argus audit --pipeline <pipeline> [--preset <local|ci>] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]
 
 Description:
   Evaluates policy applicability rules across discovered targets in the current
@@ -128,6 +129,11 @@ Description:
 
 Options:
   --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, correctness, architecture, full)
+  --preset <preset>       Execution preset: local (default, developer interactive) or ci (strict budget, automated gating)
+  --base <ref>            Examine targets changed and impacted relative to git base ref (merge-base vs HEAD)
+  --diff <ref>            Alias for --base <ref>
+  --since <ref>           Alias for --base <ref>
+  --changed-only          Examine only targets changed and impacted in working tree vs HEAD
 
 Preconditions:
   Requires an active primed run (`argus prime --adapter rust`).
@@ -136,11 +142,14 @@ Examples:
   argus audit --pipeline documentation
   argus audit --pipeline correctness
   argus audit --pipeline architecture
-  argus audit --pipeline full";
+  argus audit --pipeline full
+  argus audit --pipeline full --preset ci
+  argus audit --pipeline full --base main
+  argus audit --pipeline full --diff origin/main --preset ci";
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work [documentation|correctness|architecture|all] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--config <path>]
+Usage: argus work [documentation|correctness|architecture|all] [--preset <local|ci>] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -149,10 +158,12 @@ Description:
 
 Arguments & Options:
   documentation | correctness | architecture | all  Review policy to execute (default: all)
+  --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency)
   -p, --provider, --profile <name[:model]>    Provider configuration (e.g. 'bedrock:claude-3-haiku', 'lemonade:default') or path
   -j, --concurrency, --threads <number>       Number of concurrent review threads/workers (default: provider max concurrency)
   --limit <number>                            Maximum number of work items to process (0 for no limit, default: 1)
   --no-limit                                  Process all pending work items until the queue is empty (alias for --limit 0)
+  --fail-fast                                 Immediately abort work pool on the first failed item (default in CI preset)
   -c, --config <path>                         Path to project configuration (default: .argus/config/argus.json)
 
 Provider Discovery & Configuration:
@@ -166,8 +177,42 @@ Examples:
   argus work --provider bedrock:claude-3-haiku -j 4 --limit 20
   argus work --provider lemonade:default -j 2 --no-limit
   argus work --provider bedrock:sonnet --no-limit -j 4
+  argus work --preset ci --provider bedrock:claude-3-haiku --no-limit
   argus work documentation --provider ollama:llama3.2 --no-limit
   argus work correctness --provider bedrock:claude-3-haiku --limit 5";
+
+const HELP_RUN: &str = "Execute complete review lifecycle (prime -> audit -> work -> finalize -> report)
+
+Usage: argus run [--preset <local|ci>] [--adapter <adapter>] [--pipeline <pipeline>] [--provider <name[:model]>] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only] [--format <format>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
+
+Description:
+  Executes an end-to-end review lifecycle pipeline in a single unified command:
+    1. prime: captures snapshot & language inventory (default adapter: rust)
+    2. audit: plans applicability & admits bounded evidence items (default pipeline: full)
+    3. work: processes admitted queue items with LLM provider (default: all)
+    4. finalize & report: bundles immutable run outcomes and produces summary report
+
+Options:
+  --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency, strict checks)
+  --adapter <adapter>                         Language adapter to run (default: rust)
+  --pipeline <pipeline>                       Policy pipeline to admit (default: full)
+  -p, --provider, --profile <name[:model]>    Provider configuration (e.g. 'bedrock:claude-3-haiku', 'lemonade:default')
+  --base <ref>                                Examine targets changed/impacted relative to git base ref (merge-base vs HEAD)
+  --diff <ref>                                Alias for --base <ref>
+  --since <ref>                               Alias for --base <ref>
+  --changed-only                              Examine only targets changed/impacted in working tree vs HEAD
+  --limit <number>                            Maximum number of work items to process (0 for no limit, default: 0 / all)
+  --no-limit                                  Process all pending work items until the queue is empty
+  -j, --concurrency, --threads <number>       Number of concurrent review workers
+  --fail-fast                                 Immediately abort work pool on the first failed item (default in CI preset)
+  --format <format>                           Report output format: markdown (default), json, jsonl, backlog, beads
+  -c, --config <path>                         Path to project configuration (default: .argus/config/argus.json)
+
+Examples:
+  argus run
+  argus run --preset ci --base origin/main
+  argus run --preset ci --diff origin/main --provider bedrock:claude-3-haiku
+  argus run --pipeline documentation --changed-only";
 
 const HELP_TARGETS: &str = "List or inspect persisted semantic targets from the current inventory
 
@@ -494,6 +539,7 @@ fn command_help(command: &str) -> Result<String, argus_core::ArgusError> {
         "init" => Ok(HELP_INIT.to_owned()),
         "snapshot" => Ok(HELP_SNAPSHOT.to_owned()),
         "prime" => Ok(HELP_PRIME.to_owned()),
+        "run" => Ok(HELP_RUN.to_owned()),
         "audit" => Ok(HELP_AUDIT.to_owned()),
         "work" => Ok(HELP_WORK.to_owned()),
         "targets" => Ok(HELP_TARGETS.to_owned()),
@@ -1046,6 +1092,10 @@ pub enum CliCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    Run {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     Audit {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -1156,6 +1206,7 @@ fn run(
         CliCommand::Init => initialize(root),
         CliCommand::Snapshot { args } => snapshot_command(root, append_config(args).into_iter()),
         CliCommand::Prime { args } => prime_command(root, append_config(args).into_iter()),
+        CliCommand::Run { args } => run_command(root, append_config(args).into_iter()),
         CliCommand::Audit { args } => audit_command(root, append_config(args).into_iter()),
         CliCommand::Work { args } => work_command(root, append_config(args).into_iter()),
         CliCommand::Targets { args } => targets_command(root, append_config(args).into_iter()),
@@ -1680,6 +1731,69 @@ fn current_run(root: &std::path::Path) -> Result<argus_core::RunId, argus_core::
         .parse()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PipelinePreset {
+    Local,
+    Ci,
+}
+
+impl PipelinePreset {
+    pub fn parse(s: &str) -> Result<Self, argus_core::ArgusError> {
+        match s.to_ascii_lowercase().as_str() {
+            "local" => Ok(Self::Local),
+            "ci" => Ok(Self::Ci),
+            _ => Err(argus_core::ArgusError::invalid_input(format!(
+                "invalid preset `{s}` (supported: local, ci)"
+            ))),
+        }
+    }
+}
+
+/// Filters discovered inventory targets to only those that are directly changed or 1st-degree
+/// impacted via relations, preserving the top-level Workspace target if present.
+pub fn filter_changed_and_impacted_targets(
+    targets: &[argus_core::Target],
+    relations: &[argus_core::Relation],
+    changed_files: &BTreeSet<argus_core::SourcePath>,
+) -> Vec<argus_core::Target> {
+    if changed_files.is_empty() {
+        return Vec::new();
+    }
+
+    let mut directly_changed_ids = BTreeSet::new();
+    for target in targets {
+        if let Some(loc) = &target.location {
+            if changed_files.contains(&loc.path) {
+                directly_changed_ids.insert(target.id.clone());
+            }
+        }
+    }
+
+    let mut impacted_ids = BTreeSet::new();
+    for relation in relations {
+        if directly_changed_ids.contains(&relation.source) {
+            impacted_ids.insert(relation.target.clone());
+        }
+        if directly_changed_ids.contains(&relation.target) {
+            impacted_ids.insert(relation.source.clone());
+        }
+    }
+
+    targets
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.kind,
+                argus_core::TargetKind::Portable {
+                    kind: argus_core::PortableTargetKind::Workspace
+                }
+            ) || directly_changed_ids.contains(&target.id)
+                || impacted_ids.contains(&target.id)
+        })
+        .cloned()
+        .collect()
+}
+
 #[allow(clippy::too_many_lines)]
 fn audit_command(
     root: &std::path::Path,
@@ -1689,21 +1803,47 @@ fn audit_command(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_AUDIT.to_owned());
     }
-    let mut iter = args.into_iter();
-    let flag = iter.next();
-    let pipeline = iter.next();
-    if flag.as_deref() != Some("--pipeline")
-        || !matches!(
-            pipeline.as_deref(),
-            Some("documentation" | "correctness" | "architecture" | "full")
-        )
-        || iter.next().is_some()
-    {
-        return Err(argus_core::ArgusError::invalid_input(
-            "usage: argus audit --pipeline <documentation|correctness|architecture|full>",
-        ));
+    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|full> [--preset <local|ci>] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
+    let mut iter = args.into_iter().peekable();
+    let mut pipeline = None;
+    let mut preset = PipelinePreset::Local;
+    let mut base_ref = None;
+    let mut changed_only = false;
+
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--pipeline" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                if !matches!(
+                    val.as_str(),
+                    "documentation" | "correctness" | "architecture" | "full"
+                ) {
+                    return Err(argus_core::ArgusError::invalid_input(usage));
+                }
+                pipeline = Some(val);
+            }
+            "--preset" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                preset = PipelinePreset::parse(&val)?;
+            }
+            "--base" | "--diff" | "--since" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                base_ref = Some(val);
+            }
+            "--changed-only" => {
+                changed_only = true;
+            }
+            _ => return Err(argus_core::ArgusError::invalid_input(usage)),
+        }
     }
-    let pipeline = pipeline.unwrap();
+
+    let pipeline = pipeline.ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
     let inventory = load_inventory(root)?;
     let queue = working_queue(root)?;
     let run_id = current_run(root)?;
@@ -1728,6 +1868,83 @@ fn audit_command(
         )));
     }
 
+    // Determine target subset if change examination is requested
+    let change_filter_active = base_ref.is_some() || changed_only;
+    let (targets_to_plan, change_diagnostic) = if change_filter_active {
+        let changed_files = argus_snapshot::git_diff_changed_paths(root, base_ref.as_deref())?;
+        let filtered = filter_changed_and_impacted_targets(
+            &inventory.targets,
+            &inventory.relations,
+            &changed_files,
+        );
+        let ref_desc = base_ref.as_deref().unwrap_or("working tree");
+        let diag = format!(
+            " (change examination active against `{ref_desc}`: {} changed files, {} directly/impacted targets of {} total)",
+            changed_files.len(),
+            filtered.len(),
+            inventory.targets.len()
+        );
+        (filtered, diag)
+    } else {
+        (inventory.targets.clone(), String::new())
+    };
+
+    // Filter evidence to match targets_to_plan
+    let targets_to_plan_ids: BTreeSet<_> = targets_to_plan.iter().map(|t| t.id.clone()).collect();
+    let evidence_to_plan: Vec<_> = inventory
+        .evidence
+        .iter()
+        .filter(|e| match &e.target {
+            Some(tid) => targets_to_plan_ids.contains(tid),
+            None => true,
+        })
+        .cloned()
+        .collect();
+
+    // Budget configurations per preset
+    let (doc_budget, corr_budget, arch_budget) = match preset {
+        PipelinePreset::Local => (
+            argus_evidence::EvidenceBudget {
+                max_bytes: 400_000,
+                max_tokens: 80_000,
+                max_items: 32,
+                max_relation_depth: 0,
+            },
+            argus_evidence::EvidenceBudget {
+                max_bytes: 400_000,
+                max_tokens: 80_000,
+                max_items: 32,
+                max_relation_depth: 0,
+            },
+            argus_evidence::EvidenceBudget {
+                max_bytes: 400_000,
+                max_tokens: 80_000,
+                max_items: 64,
+                max_relation_depth: 2,
+            },
+        ),
+        PipelinePreset::Ci => (
+            argus_evidence::EvidenceBudget {
+                max_bytes: 250_000,
+                max_tokens: 50_000,
+                max_items: 16,
+                max_relation_depth: 0,
+            },
+            argus_evidence::EvidenceBudget {
+                max_bytes: 250_000,
+                max_tokens: 50_000,
+                max_items: 16,
+                max_relation_depth: 0,
+            },
+            argus_evidence::EvidenceBudget {
+                max_bytes: 300_000,
+                max_tokens: 60_000,
+                max_items: 32,
+                max_relation_depth: 1,
+            },
+        ),
+    };
+
     let evidence_store = argus_evidence::EvidenceStore::open(root.join(".argus/state/evidence"))?;
 
     let plan_documentation = || -> Result<String, argus_core::ArgusError> {
@@ -1740,8 +1957,8 @@ fn audit_command(
         let plan = planner.plan(
             &run.snapshot,
             &run.configuration,
-            &inventory.targets,
-            &inventory.evidence,
+            &targets_to_plan,
+            &evidence_to_plan,
         )?;
         let applicable = plan
             .units
@@ -1760,19 +1977,14 @@ fn audit_command(
             &evidence_store,
             &run.snapshot,
             argus_evidence::DataClassification::Internal,
-            &inventory.evidence,
+            &evidence_to_plan,
         )?;
         let batch = plan.materialize_admissible(
             &evidence_store,
             &catalog,
             &run.snapshot,
             &run.configuration,
-            &argus_evidence::EvidenceBudget {
-                max_bytes: 400_000,
-                max_tokens: 80_000,
-                max_items: 32,
-                max_relation_depth: 0,
-            },
+            &doc_budget,
             argus_evidence::DataClassification::Internal,
         )?;
         let admitted = batch.admit(
@@ -1799,8 +2011,8 @@ fn audit_command(
         let plan = planner.plan(
             &run.snapshot,
             &run.configuration,
-            &inventory.targets,
-            &inventory.evidence,
+            &targets_to_plan,
+            &evidence_to_plan,
         )?;
         let applicable = plan
             .units
@@ -1819,19 +2031,14 @@ fn audit_command(
             &evidence_store,
             &run.snapshot,
             argus_evidence::DataClassification::Internal,
-            &inventory.evidence,
+            &evidence_to_plan,
         )?;
         let batch = plan.materialize_admissible(
             &evidence_store,
             &catalog,
             &run.snapshot,
             &run.configuration,
-            &argus_evidence::EvidenceBudget {
-                max_bytes: 400_000,
-                max_tokens: 80_000,
-                max_items: 32,
-                max_relation_depth: 0,
-            },
+            &corr_budget,
             argus_evidence::DataClassification::Internal,
         )?;
         let admitted = batch.admit(
@@ -1887,12 +2094,7 @@ fn audit_command(
             &catalog,
             &run.snapshot,
             &run.configuration,
-            &argus_evidence::EvidenceBudget {
-                max_bytes: 400_000,
-                max_tokens: 80_000,
-                max_items: 64,
-                max_relation_depth: 2,
-            },
+            &arch_budget,
             argus_evidence::DataClassification::Internal,
         )?;
         let admitted = batch.admit(
@@ -1909,17 +2111,21 @@ fn audit_command(
         ))
     };
 
-    let next_step =
-        "\nNext step: Run 'argus work' to process admitted review items with an LLM profile.";
+    let next_step = match preset {
+        PipelinePreset::Local => "\nNext step: Run 'argus work' to process admitted review items with an LLM profile.",
+        PipelinePreset::Ci => "\nNext step: Run 'argus work --preset ci' to process admitted review items under CI limits.",
+    };
+    let preset_note = format!("[Preset: {preset:?}]{change_diagnostic}\n");
+
     match pipeline.as_str() {
-        "documentation" => plan_documentation().map(|msg| format!("{msg}{next_step}")),
-        "correctness" => plan_correctness().map(|msg| format!("{msg}{next_step}")),
-        "architecture" => plan_architecture().map(|msg| format!("{msg}{next_step}")),
+        "documentation" => plan_documentation().map(|msg| format!("{preset_note}{msg}{next_step}")),
+        "correctness" => plan_correctness().map(|msg| format!("{preset_note}{msg}{next_step}")),
+        "architecture" => plan_architecture().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "full" => {
             let doc_msg = plan_documentation()?;
             let corr_msg = plan_correctness()?;
             let arch_msg = plan_architecture()?;
-            Ok(format!("{doc_msg}\n{corr_msg}\n{arch_msg}{next_step}"))
+            Ok(format!("{preset_note}{doc_msg}\n{corr_msg}\n{arch_msg}{next_step}"))
         }
         _ => unreachable!(),
     }
@@ -1942,7 +2148,7 @@ fn work_command_with_env(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
     }
-    let usage = "usage: argus work [documentation|correctness|architecture|all] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--config <path>]";
+    let usage = "usage: argus work [documentation|correctness|architecture|all] [--preset <local|ci>] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
     let mut iter = args.into_iter().peekable();
     let policy_arg = if iter.peek().is_some_and(|a| !a.starts_with('-')) {
         iter.next().map(|arg| arg.to_lowercase())
@@ -1957,15 +2163,26 @@ fn work_command_with_env(
         Some("all") | None => "all",
         _ => return Err(argus_core::ArgusError::invalid_input(usage)),
     };
+    let mut preset = PipelinePreset::Local;
     let mut profile_name = None;
     let mut limit: Option<usize> = Some(1);
     let mut limit_explicit = false;
     let mut no_limit_explicit = false;
     let mut concurrency_override: Option<usize> = None;
+    let mut fail_fast_explicit: Option<bool> = None;
     let mut config_path = None;
 
     while let Some(flag) = iter.next() {
         match flag.as_str() {
+            "--preset" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                preset = PipelinePreset::parse(&val)?;
+            }
+            "--fail-fast" => {
+                fail_fast_explicit = Some(true);
+            }
             "-p" | "--provider" | "--profile" => {
                 profile_name = Some(
                     iter.next()
@@ -2024,6 +2241,8 @@ fn work_command_with_env(
         }
     }
 
+    let fail_fast = fail_fast_explicit.unwrap_or(matches!(preset, PipelinePreset::Ci));
+
     let explicit_config = config_path.as_deref().map(std::path::Path::new);
     let project_config = load_project_config(root, explicit_config)?;
 
@@ -2043,6 +2262,10 @@ fn work_command_with_env(
             )));
         }
         profile.policy.limits.max_concurrency = concurrency as u32;
+    } else if matches!(preset, PipelinePreset::Ci) {
+        // Under CI preset, cap default concurrency to min(4, capacity) for predictable bounded runs
+        let ci_concurrency = (profile.policy.limits.max_concurrency).min(4);
+        profile.policy.limits.max_concurrency = ci_concurrency;
     }
     let concurrency = profile.policy.limits.max_concurrency as usize;
 
@@ -2056,14 +2279,15 @@ fn work_command_with_env(
             profile,
             limit,
             concurrency,
+            fail_fast,
         )),
         "correctness" => {
-            runtime.block_on(execute_correctness_work(root, profile, limit, concurrency))
+            runtime.block_on(execute_correctness_work(root, profile, limit, concurrency, fail_fast))
         }
         "architecture" => {
-            runtime.block_on(execute_architecture_work(root, profile, limit, concurrency))
+            runtime.block_on(execute_architecture_work(root, profile, limit, concurrency, fail_fast))
         }
-        "all" => runtime.block_on(execute_all_work(root, profile, limit, concurrency)),
+        "all" => runtime.block_on(execute_all_work(root, profile, limit, concurrency, fail_fast)),
         _ => unreachable!(),
     }
 }
@@ -2231,6 +2455,7 @@ async fn execute_concurrent_worker_pool<W, F, Fut>(
     run_id: &argus_core::RunId,
     worker: std::sync::Arc<W>,
     step_runner: F,
+    fail_fast: bool,
 ) -> Result<String, argus_core::ArgusError>
 where
     W: Send + Sync + 'static,
@@ -2312,18 +2537,14 @@ where
                             "[{category}] Item {item_label} step failed: {err}"
                         );
                         let consecutive = consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
-                        if consecutive >= CIRCUIT_BREAKER_CONSECUTIVE_FAILURES {
+                        if fail_fast || consecutive >= CIRCUIT_BREAKER_CONSECUTIVE_FAILURES {
                             breaker_tripped.store(true, Ordering::SeqCst);
                             tracing::error!(
                                 policy = category,
                                 provider = %provider_id,
                                 model = %model_id,
                                 consecutive_failures = consecutive,
-                                "[{category}] Aborting: {consecutive} consecutive work items failed \
-                                 with provider `{provider_id}` model `{model_id}` after exhausting \
-                                 their retry budgets. This provider/model combination is not \
-                                 producing usable output; stopping instead of continuing through \
-                                 the remaining queue. Run 'argus status' for failure details."
+                                "[{category}] Aborting: worker failure encountered (fail_fast: {fail_fast}, consecutive: {consecutive}). Stopping worker pool."
                             );
                             break;
                         }
@@ -2374,18 +2595,14 @@ where
                         );
                         let consecutive =
                             consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
-                        if consecutive >= CIRCUIT_BREAKER_CONSECUTIVE_FAILURES {
+                        if fail_fast || consecutive >= CIRCUIT_BREAKER_CONSECUTIVE_FAILURES {
                             breaker_tripped.store(true, Ordering::SeqCst);
                             tracing::error!(
                                 policy = category,
                                 provider = %provider_id,
                                 model = %model_id,
                                 consecutive_failures = consecutive,
-                                "[{category}] Aborting: {consecutive} consecutive work items failed \
-                                 with provider `{provider_id}` model `{model_id}` after exhausting \
-                                 their retry budgets. This provider/model combination is not \
-                                 producing usable output; stopping instead of continuing through \
-                                 the remaining queue. Run 'argus status' for failure details."
+                                "[{category}] Aborting: failure encountered (fail_fast: {fail_fast}, consecutive: {consecutive}). Stopping worker pool."
                             );
                             break;
                         }
@@ -2417,9 +2634,13 @@ where
     );
 
     if breaker_tripped.load(Ordering::SeqCst) {
+        let abort_clause = if fail_fast {
+            "aborted (fail-fast mode triggered on worker failure)".to_owned()
+        } else {
+            format!("aborted after {CIRCUIT_BREAKER_CONSECUTIVE_FAILURES} consecutive failures")
+        };
         return Err(argus_core::ArgusError::invariant(format!(
-            "{category_title} work aborted after {CIRCUIT_BREAKER_CONSECUTIVE_FAILURES} \
-             consecutive failures from provider `{provider_id}` model `{model_id}`; \
+            "{category_title} work {abort_clause} from provider `{provider_id}` model `{model_id}`; \
              stopped instead of continuing through the remaining queue. {summary}. \
              Run 'argus status' for failure details, then resume once the provider or \
              model selection is fixed."
@@ -2434,10 +2655,11 @@ async fn execute_all_work(
     profile: argus_provider::ProviderRuntimeProfile,
     limit: Option<usize>,
     concurrency: usize,
+    fail_fast: bool,
 ) -> Result<String, argus_core::ArgusError> {
-    let doc_res = execute_documentation_work(root, profile.clone(), limit, concurrency).await?;
-    let corr_res = execute_correctness_work(root, profile.clone(), limit, concurrency).await?;
-    let arch_res = execute_architecture_work(root, profile, limit, concurrency).await?;
+    let doc_res = execute_documentation_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
+    let corr_res = execute_correctness_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
+    let arch_res = execute_architecture_work(root, profile, limit, concurrency, fail_fast).await?;
     Ok(format!("{doc_res}\n{corr_res}\n{arch_res}"))
 }
 
@@ -2463,6 +2685,7 @@ async fn execute_documentation_work(
     profile: argus_provider::ProviderRuntimeProfile,
     limit: Option<usize>,
     concurrency: usize,
+    fail_fast: bool,
 ) -> Result<String, argus_core::ArgusError> {
     let queue = std::sync::Arc::new(working_queue(root)?);
     let run_id = current_run(root)?;
@@ -2555,6 +2778,7 @@ async fn execute_documentation_work(
                 }
             }
         },
+        fail_fast,
     )
     .await
 }
@@ -2565,6 +2789,7 @@ async fn execute_correctness_work(
     profile: argus_provider::ProviderRuntimeProfile,
     limit: Option<usize>,
     concurrency: usize,
+    fail_fast: bool,
 ) -> Result<String, argus_core::ArgusError> {
     let queue = std::sync::Arc::new(working_queue(root)?);
     let run_id = current_run(root)?;
@@ -2657,6 +2882,7 @@ async fn execute_correctness_work(
                 }
             }
         },
+        fail_fast,
     )
     .await
 }
@@ -2667,6 +2893,7 @@ async fn execute_architecture_work(
     profile: argus_provider::ProviderRuntimeProfile,
     limit: Option<usize>,
     concurrency: usize,
+    fail_fast: bool,
 ) -> Result<String, argus_core::ArgusError> {
     let queue = std::sync::Arc::new(working_queue(root)?);
     let run_id = current_run(root)?;
@@ -2759,8 +2986,205 @@ async fn execute_architecture_work(
                 }
             }
         },
+        fail_fast,
     )
     .await
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_command(
+    root: &std::path::Path,
+    args: impl Iterator<Item = String>,
+) -> Result<String, argus_core::ArgusError> {
+    let args: Vec<String> = args.collect();
+    if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
+        return Ok(HELP_RUN.to_owned());
+    }
+
+    let mut iter = args.into_iter().peekable();
+    let mut preset = PipelinePreset::Local;
+    let mut adapter = Some("rust".to_owned());
+    let mut pipeline = Some("full".to_owned());
+    let mut provider_arg = None;
+    let mut base_ref = None;
+    let mut changed_only = false;
+    let mut limit_arg: Option<usize> = None;
+    let mut limit_explicit = false;
+    let mut no_limit_explicit = false;
+    let mut concurrency_arg = None;
+    let mut fail_fast_arg = None;
+    let mut format_arg = None;
+    let mut config_arg = None;
+
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--preset" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --preset"))?;
+                preset = PipelinePreset::parse(&val)?;
+            }
+            "--adapter" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --adapter"))?;
+                adapter = Some(val);
+            }
+            "--pipeline" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --pipeline"))?;
+                pipeline = Some(val);
+            }
+            "-p" | "--provider" | "--profile" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --provider"))?;
+                provider_arg = Some(val);
+            }
+            "--base" | "--diff" | "--since" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --base"))?;
+                base_ref = Some(val);
+            }
+            "--changed-only" => {
+                changed_only = true;
+            }
+            "--limit" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --limit"))?;
+                let parsed = val.parse::<usize>().map_err(|e| {
+                    argus_core::ArgusError::invalid_input("work limit must be an integer").with_source(e)
+                })?;
+                limit_explicit = true;
+                limit_arg = if parsed == 0 { None } else { Some(parsed) };
+            }
+            "--no-limit" => {
+                no_limit_explicit = true;
+                limit_arg = None;
+            }
+            "-j" | "--concurrency" | "-t" | "--threads" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --concurrency"))?;
+                concurrency_arg = Some(val);
+            }
+            "--fail-fast" => {
+                fail_fast_arg = Some(true);
+            }
+            "--format" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --format"))?;
+                format_arg = Some(val);
+            }
+            "-c" | "--config" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --config"))?;
+                config_arg = Some(val);
+            }
+            _ => {
+                return Err(argus_core::ArgusError::invalid_input(format!(
+                    "unknown option `{flag}` for argus run; run `argus run --help`"
+                )));
+            }
+        }
+    }
+
+    let mut output = String::new();
+
+    // 1. Prime phase
+    let mut prime_args = Vec::new();
+    if let Some(ad) = adapter {
+        prime_args.push("--adapter".to_owned());
+        prime_args.push(ad);
+    }
+    if let Some(ref cfg) = config_arg {
+        prime_args.push("--config".to_owned());
+        prime_args.push(cfg.clone());
+    }
+    let prime_result = prime_command(root, prime_args.into_iter())?;
+    output.push_str(&prime_result);
+    output.push('\n');
+
+    // 2. Audit phase
+    let mut audit_args = Vec::new();
+    audit_args.push("--pipeline".to_owned());
+    audit_args.push(pipeline.unwrap_or_else(|| "full".to_owned()));
+    audit_args.push("--preset".to_owned());
+    audit_args.push(match preset {
+        PipelinePreset::Local => "local".to_owned(),
+        PipelinePreset::Ci => "ci".to_owned(),
+    });
+    if let Some(base) = base_ref {
+        audit_args.push("--base".to_owned());
+        audit_args.push(base);
+    }
+    if changed_only {
+        audit_args.push("--changed-only".to_owned());
+    }
+    if let Some(ref cfg) = config_arg {
+        audit_args.push("--config".to_owned());
+        audit_args.push(cfg.clone());
+    }
+    let audit_result = audit_command(root, audit_args.into_iter())?;
+    output.push_str(&audit_result);
+    output.push('\n');
+
+    // 3. Work phase
+    let mut work_args = vec!["all".to_owned()];
+    work_args.push("--preset".to_owned());
+    work_args.push(match preset {
+        PipelinePreset::Local => "local".to_owned(),
+        PipelinePreset::Ci => "ci".to_owned(),
+    });
+    if let Some(prov) = provider_arg {
+        work_args.push("--provider".to_owned());
+        work_args.push(prov);
+    }
+    if let Some(lim) = limit_arg {
+        work_args.push("--limit".to_owned());
+        work_args.push(lim.to_string());
+    } else if limit_explicit || no_limit_explicit || matches!(preset, PipelinePreset::Ci) {
+        work_args.push("--no-limit".to_owned());
+    }
+    if let Some(c) = concurrency_arg {
+        work_args.push("--concurrency".to_owned());
+        work_args.push(c);
+    }
+    if let Some(true) = fail_fast_arg {
+        work_args.push("--fail-fast".to_owned());
+    }
+    if let Some(ref cfg) = config_arg {
+        work_args.push("--config".to_owned());
+        work_args.push(cfg.clone());
+    }
+    let work_result = work_command(root, work_args.into_iter())?;
+    output.push_str(&work_result);
+    output.push('\n');
+
+    // 4. Finalize phase
+    let finalize_result = finalize_command(root, None)?;
+    output.push_str(&finalize_result);
+    output.push('\n');
+
+    // 5. Report phase
+    let mut report_args = Vec::new();
+    if let Some(fmt) = format_arg {
+        report_args.push("--format".to_owned());
+        report_args.push(fmt);
+    }
+    if let Some(ref cfg) = config_arg {
+        report_args.push("--config".to_owned());
+        report_args.push(cfg.clone());
+    }
+    let report_result = report_command(root, report_args.into_iter())?;
+    output.push_str(&report_result);
+
+    Ok(output)
 }
 
 fn prime_command(
@@ -5507,6 +5931,7 @@ mod tests {
                     })
                 }
             },
+            false,
         )
         .await;
 
@@ -6758,5 +7183,108 @@ mod tests {
         .unwrap();
         let parsed: argus_report::BacklogReport = serde_json::from_str(&gaps_json).unwrap();
         assert_eq!(parsed.run_id.as_str(), parsed.run_id.to_string());
+    }
+
+    #[test]
+    fn pipeline_preset_parsing() {
+        assert_eq!(PipelinePreset::parse("local").unwrap(), PipelinePreset::Local);
+        assert_eq!(PipelinePreset::parse("LOCAL").unwrap(), PipelinePreset::Local);
+        assert_eq!(PipelinePreset::parse("ci").unwrap(), PipelinePreset::Ci);
+        assert_eq!(PipelinePreset::parse("CI").unwrap(), PipelinePreset::Ci);
+        assert!(PipelinePreset::parse("invalid").is_err());
+    }
+
+    #[test]
+    fn filter_changed_and_impacted_targets_computes_1st_degree() {
+        use argus_core::{
+            ByteSpan, InventoryState, LineColumn, PortableTargetKind, Relation,
+            RelationId, RelationProvenance, ResolutionQuality, SourceLocation, SourcePath,
+            Target, TargetId, TargetKind, TargetVisibility,
+        };
+        use std::collections::BTreeSet;
+
+        let make_target = |name: &str, path: &str, is_ws: bool| -> Target {
+            let id = TargetId::derive([name.as_bytes()]);
+            let kind = if is_ws {
+                TargetKind::Portable { kind: PortableTargetKind::Workspace }
+            } else {
+                TargetKind::Portable { kind: PortableTargetKind::Module }
+            };
+            Target {
+                id,
+                kind,
+                visibility: TargetVisibility::Public,
+                name: name.to_owned(),
+                parent: None,
+                location: Some(SourceLocation {
+                    path: SourcePath::new(path).unwrap(),
+                    bytes: ByteSpan { start: 0, end: 100 },
+                    start: Some(LineColumn { line: 1, column: 1 }),
+                    end: Some(LineColumn { line: 10, column: 1 }),
+                }),
+                inventory: InventoryState::Represented,
+                capabilities: Vec::new(),
+                diagnostic: None,
+            }
+        };
+
+        let t_ws = make_target("root", "Cargo.toml", true);
+        let t_changed = make_target("changed_mod", "src/foo.rs", false);
+        let t_impacted = make_target("impacted_mod", "src/bar.rs", false);
+        let t_unrelated = make_target("unrelated_mod", "src/baz.rs", false);
+
+        let targets = vec![
+            t_ws.clone(),
+            t_changed.clone(),
+            t_impacted.clone(),
+            t_unrelated.clone(),
+        ];
+
+        let relation = Relation {
+            id: RelationId::derive([b"rel1".as_slice()]),
+            source: t_changed.id.clone(),
+            target: t_impacted.id.clone(),
+            kind: "core:calls".to_owned(),
+            provenance: RelationProvenance {
+                provider: "test".to_owned(),
+                provider_version: "1.0".to_owned(),
+                configuration: None,
+                ingest_only: false,
+                resolution: ResolutionQuality::Exact,
+                detail: None,
+            },
+        };
+        let relations = vec![relation];
+
+        let mut changed_files = BTreeSet::new();
+        changed_files.insert(SourcePath::new("src/foo.rs").unwrap());
+
+        let filtered = filter_changed_and_impacted_targets(&targets, &relations, &changed_files);
+        let filtered_names: Vec<_> = filtered.iter().map(|t| t.name.as_str()).collect();
+
+        // Must include Workspace target, directly changed target, and 1st-degree impacted target
+        assert!(filtered_names.contains(&"root"));
+        assert!(filtered_names.contains(&"changed_mod"));
+        assert!(filtered_names.contains(&"impacted_mod"));
+        // Must NOT include unrelated target
+        assert!(!filtered_names.contains(&"unrelated_mod"));
+    }
+
+    #[test]
+    fn run_help_text_is_accessible() {
+        let temporary = tempfile::tempdir().unwrap();
+        let help = run(["run".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(help.contains("Execute complete review lifecycle"));
+        assert!(help.contains("--preset <local|ci>"));
+        assert!(help.contains("--base <ref>"));
+        assert!(help.contains("--fail-fast"));
+
+        let audit_help = run(["audit".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(audit_help.contains("--preset <local|ci>"));
+        assert!(audit_help.contains("--base <ref>"));
+
+        let work_help = run(["work".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(work_help.contains("--preset <local|ci>"));
+        assert!(work_help.contains("--fail-fast"));
     }
 }

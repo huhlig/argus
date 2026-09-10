@@ -18,7 +18,7 @@ mod capture;
 mod manifest;
 mod store;
 
-pub use capture::{CaptureOptions, capture_snapshot};
+pub use capture::{CaptureOptions, capture_snapshot, git_diff_changed_paths};
 pub use manifest::{
     AnalysisConfiguration, CaptureIssue, CaptureIssueKind, CompilerInput, DriftKind, DriftRecord,
     DriftReport, EnvironmentInput, FileClass, FileRecord, SnapshotManifest, VcsState,

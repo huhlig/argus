@@ -314,6 +314,51 @@ fn vcs_state(root: &Path) -> VcsState {
     VcsState { revision, dirty }
 }
 
+/// Returns the set of changed source paths compared to a git base ref (branch, commit, or tag).
+///
+/// If `base_ref` is provided, this resolves the merge base between `base_ref` and `HEAD`
+/// (or uses `base_ref` directly) and queries `git diff --name-only`. It also includes any
+/// untracked or unstaged working tree changes.
+pub fn git_diff_changed_paths(
+    repository_root: &Path,
+    base_ref: Option<&str>,
+) -> Result<std::collections::BTreeSet<SourcePath>, argus_core::ArgusError> {
+    let mut changed = std::collections::BTreeSet::new();
+
+    // 1. If base_ref is given, query diff between merge-base (or base_ref) and HEAD
+    if let Some(base) = base_ref {
+        // Try merge-base first for PR/branch comparisons
+        let merge_base = git(repository_root, &["merge-base", base, "HEAD"]);
+        let target_base = merge_base.as_deref().unwrap_or(base);
+        if let Some(diff_output) = git(repository_root, &["diff", "--name-only", target_base]) {
+            for line in diff_output.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    if let Ok(path) = SourcePath::new(trimmed) {
+                        changed.insert(path);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Also check untracked and unstaged working-tree changes
+    if let Some(status_output) = git(repository_root, &["status", "--porcelain", "--untracked-files=all"]) {
+        for line in status_output.lines() {
+            if line.len() >= 4 {
+                let file_path = line[3..].trim();
+                // Handle rename syntax: "R  old -> new"
+                let target_file = file_path.split(" -> ").last().unwrap_or(file_path);
+                if let Ok(path) = SourcePath::new(target_file) {
+                    changed.insert(path);
+                }
+            }
+        }
+    }
+
+    Ok(changed)
+}
+
 fn git(root: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .args(args)
@@ -333,3 +378,4 @@ fn path_text(path: &Path) -> String {
 fn io_error(message: &'static str) -> impl FnOnce(std::io::Error) -> argus_core::ArgusError {
     move |error| argus_core::ArgusError::new(argus_core::ErrorCode::Io, message).with_source(error)
 }
+
