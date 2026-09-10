@@ -13,7 +13,10 @@
 // limitations under the License.
 
 use crate::{read_jsonl, write_reconciled};
-use argus_core::{Confidence, FindingId, RunId, Severity, TargetId, WorkItemId};
+use argus_core::{
+    AdjudicationState, Confidence, FindingId, HumanAdjudication, RunId, Severity, TargetId,
+    WorkItemId,
+};
 use argus_policies::{
     CorrectnessAssessment, CorrectnessCandidate, CorrectnessDefectKind, CorrectnessDimension,
     CorrectnessEvidenceCitation, CorrectnessResult,
@@ -43,6 +46,14 @@ pub struct CorrectnessReportSummary {
     pub finding_occurrences: usize,
     pub finding_clusters: usize,
     pub duplicate_findings: usize,
+    #[serde(default)]
+    pub unadjudicated_findings: usize,
+    #[serde(default)]
+    pub accepted_findings: usize,
+    #[serde(default)]
+    pub rejected_findings: usize,
+    #[serde(default)]
+    pub deferred_findings: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -65,6 +76,8 @@ pub struct CorrectnessFindingCluster {
     pub id: FindingId,
     pub representative: CorrectnessCandidate,
     pub occurrences: Vec<CorrectnessFindingOccurrence>,
+    #[serde(default)]
+    pub adjudication: AdjudicationState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -97,13 +110,24 @@ struct CanonicalCorrectnessFindingKey {
 }
 
 impl CorrectnessReport {
-    #[allow(clippy::too_many_lines)]
     pub fn build(
         run_id: RunId,
         policy_version: &str,
         work: &[QueueWork],
         outcomes: &[OutcomeRecord],
         artifacts: &[StoredArtifact],
+    ) -> Result<Self, argus_core::ArgusError> {
+        Self::build_with_adjudications(run_id, policy_version, work, outcomes, artifacts, &[])
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub fn build_with_adjudications(
+        run_id: RunId,
+        policy_version: &str,
+        work: &[QueueWork],
+        outcomes: &[OutcomeRecord],
+        artifacts: &[StoredArtifact],
+        adjudications: &[HumanAdjudication],
     ) -> Result<Self, argus_core::ArgusError> {
         let policy_version = policy_version.to_owned();
         let mut summary = CorrectnessReportSummary::default();
@@ -172,6 +196,7 @@ impl CorrectnessReport {
                                             id: canonical_finding_id(candidate),
                                             representative: candidate.clone(),
                                             occurrences: Vec::new(),
+                                            adjudication: AdjudicationState::Unreviewed,
                                         }
                                     });
                                     cluster.occurrences.push(CorrectnessFindingOccurrence {
@@ -196,12 +221,44 @@ impl CorrectnessReport {
             }
         }
 
-        summary.finding_clusters = clusters_by_key.len();
+        let mut latest_adjudications = BTreeMap::new();
+        for adj in adjudications {
+            adj.validate()?;
+            if adj.run == run_id {
+                let entry = latest_adjudications.entry(adj.finding.clone());
+                match entry {
+                    std::collections::btree_map::Entry::Vacant(vacant) => {
+                        vacant.insert(adj);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut occupied) => {
+                        if occupied.get().revision < adj.revision {
+                            occupied.insert(adj);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut finding_clusters = clusters_by_key.into_values().collect::<Vec<_>>();
+        for cluster in &mut finding_clusters {
+            if let Some(adj) = latest_adjudications.get(&cluster.id) {
+                cluster.adjudication = adj.state;
+            } else {
+                cluster.adjudication = AdjudicationState::Unreviewed;
+            }
+            match cluster.adjudication {
+                AdjudicationState::Unreviewed => summary.unadjudicated_findings += 1,
+                AdjudicationState::Accepted => summary.accepted_findings += 1,
+                AdjudicationState::Rejected => summary.rejected_findings += 1,
+                AdjudicationState::Deferred => summary.deferred_findings += 1,
+            }
+        }
+
+        summary.finding_clusters = finding_clusters.len();
         summary.duplicate_findings = summary
             .finding_occurrences
             .saturating_sub(summary.finding_clusters);
 
-        let mut finding_clusters = clusters_by_key.into_values().collect::<Vec<_>>();
         finding_clusters.sort_by(|left, right| left.id.cmp(&right.id));
         report_assessments.sort_by(|left, right| {
             left.assessment
@@ -265,6 +322,24 @@ impl CorrectnessReport {
             self.summary.leased,
             self.summary.cancelled,
         );
+        let _ = writeln!(out, "## Adjudication status\n");
+        let _ = writeln!(
+            out,
+            "| Candidate clusters | Unadjudicated | Accepted | Rejected | Deferred |"
+        );
+        let _ = writeln!(
+            out,
+            "| ---: | ---: | ---: | ---: | ---: |"
+        );
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} | {} | {} |\n",
+            self.summary.finding_clusters,
+            self.summary.unadjudicated_findings,
+            self.summary.accepted_findings,
+            self.summary.rejected_findings,
+            self.summary.deferred_findings,
+        );
 
         if self.finding_clusters.is_empty() {
             let _ = writeln!(
@@ -294,6 +369,7 @@ impl CorrectnessReport {
                 );
                 let _ = writeln!(out, "- **Location**: {location_str}");
                 let _ = writeln!(out, "- **Target**: {target_ids}");
+                let _ = writeln!(out, "- **Adjudication**: `{:?}`", cluster.adjudication);
                 let _ = writeln!(
                     out,
                     "- **Defect Kind**: {:?}",
@@ -413,7 +489,19 @@ pub fn write_correctness_bundle_reports(
     let work: Vec<QueueWork> = read_jsonl(&bundle.join("work.jsonl"))?;
     let outcomes: Vec<OutcomeRecord> = read_jsonl(&bundle.join("outcomes.jsonl"))?;
     let artifacts: Vec<StoredArtifact> = read_jsonl(&bundle.join("artifacts.jsonl"))?;
-    let report = CorrectnessReport::build(run_id, policy_version, &work, &outcomes, &artifacts)?;
+    let adjudications: Vec<HumanAdjudication> = if bundle.join("adjudications.jsonl").is_file() {
+        read_jsonl(&bundle.join("adjudications.jsonl"))?
+    } else {
+        Vec::new()
+    };
+    let report = CorrectnessReport::build_with_adjudications(
+        run_id,
+        policy_version,
+        &work,
+        &outcomes,
+        &artifacts,
+        &adjudications,
+    )?;
     write_reconciled(&bundle.join("correctness-report.json"), &report.to_json()?)?;
     write_reconciled(
         &bundle.join("correctness-report.jsonl"),
@@ -432,12 +520,13 @@ pub fn correctness_report_from_queue(
     policy_version: &str,
 ) -> Result<CorrectnessReport, argus_core::ArgusError> {
     let records = queue.run_records(&run_id)?;
-    CorrectnessReport::build(
+    CorrectnessReport::build_with_adjudications(
         run_id,
         policy_version,
         &records.work,
         &records.outcomes,
         &records.artifacts,
+        &records.adjudications,
     )
 }
 
@@ -480,6 +569,7 @@ mod tests {
                 severity: Severity::High,
                 confidence: Confidence::from_basis_points(9_000).unwrap(),
             }],
+            adjudication: AdjudicationState::Unreviewed,
         };
         let report = CorrectnessReport {
             schema_version: CORRECTNESS_REPORT_SCHEMA_VERSION,
@@ -498,5 +588,149 @@ mod tests {
         let md = report.to_markdown();
         assert!(md.contains("- **Location**: `crates/example/src/lib.rs:5:1`"));
         assert!(md.contains(&format!("- **Target**: `{target_id}`")));
+        assert!(md.contains("- **Adjudication**: `Unreviewed`"));
+        assert!(md.contains("## Adjudication status"));
+    }
+
+    #[test]
+    fn unadjudicated_and_adjudicated_correctness_findings_demarcation() {
+        let run_id = RunId::derive([b"correctness-adj-run".as_slice()]);
+        let target_id = TargetId::derive([b"target-1".as_slice()]);
+        let citation = CorrectnessEvidenceCitation {
+            evidence: argus_core::EvidenceId::derive([b"ev-1".as_slice()]),
+            target: target_id.clone(),
+            location: None,
+        };
+        let candidate = CorrectnessCandidate {
+            title: "Division by zero".to_owned(),
+            description: "Potential division by zero.".to_owned(),
+            defect_kind: CorrectnessDefectKind::DemonstratedDefect,
+            severity: Severity::High,
+            confidence: Confidence::from_basis_points(9_000).unwrap(),
+            failure_path: "foo -> bar".to_owned(),
+            dimensions: std::collections::BTreeSet::from([CorrectnessDimension::BoundaryConditions]),
+            citations: vec![citation],
+        };
+        let work_id = WorkItemId::derive([b"work-1".as_slice()]);
+        let coverage = argus_storage::CoverageKey {
+            snapshot: "snapshot".to_owned(),
+            configuration: "config".to_owned(),
+            adapter: "rust".to_owned(),
+            target_kind: "callable".to_owned(),
+            policy: "correctness@1".to_owned(),
+        };
+        let work = QueueWork::pending_for(
+            work_id.clone(),
+            vec![],
+            run_id.clone(),
+            coverage,
+        );
+        let mut work_succeeded = work.clone();
+        work_succeeded.state = QueueState::Succeeded;
+        let assessment = CorrectnessAssessment {
+            schema_version: 1,
+            work_item: work_id.clone(),
+            target: argus_policies::CorrectnessTargetProfile {
+                target: target_id.clone(),
+                class: argus_policies::CorrectnessTargetClass::Callable,
+                visibility: argus_core::TargetVisibility::Public,
+                inventory: argus_core::InventoryState::Represented,
+            },
+            policy: argus_core::PolicyId::derive([b"correctness-policy".as_slice()]),
+            policy_version: "correctness@1".to_owned(),
+            applicability: argus_core::ApplicabilityState::Applicable,
+            evidence_revision: 1,
+            dimensions: vec![],
+            result: CorrectnessResult::CandidateFindings {
+                findings: vec![candidate],
+            },
+        };
+        let artifact_bytes = serde_json::to_vec(&assessment).unwrap();
+        let content_hash = argus_core::ContentHash::digest(&artifact_bytes);
+        let reference = format!("artifact:{}:{}", CORRECTNESS_ASSESSMENT_ARTIFACT_KIND, content_hash.as_str());
+        let artifact = StoredArtifact {
+            reference: reference.clone(),
+            kind: CORRECTNESS_ASSESSMENT_ARTIFACT_KIND.to_owned(),
+            content_hash,
+            payload: artifact_bytes,
+        };
+        let effective_outcome = EffectiveOutcome {
+            logical_key: argus_workflow::LogicalOutcomeKey {
+                audit_snapshot: argus_core::SnapshotId::derive([b"snapshot".as_slice()]),
+                audit_run: run_id.clone(),
+                work_id: work_id.clone(),
+                policy_version: "correctness@1".to_owned(),
+                evidence_revision: 1,
+                workflow_hash: "a".repeat(64),
+            },
+            result_ref: reference.clone(),
+            kind: argus_workflow::OutcomeKind::Passed,
+            provenance: argus_workflow::OutcomeProvenance {
+                prompt_version: "correctness-review@1".to_owned(),
+                actor_id: "argus.review".to_owned(),
+                actor_version: "1.0.0".to_owned(),
+                workflow_id: "argus.target-review".to_owned(),
+                workflow_version: "1.0.0".to_owned(),
+                provider: argus_provider::ProviderIdentity {
+                    provider: "fixture".to_owned(),
+                    provider_version: "1".to_owned(),
+                    model: "reviewer".to_owned(),
+                    model_version: "pinned".to_owned(),
+                },
+            },
+        };
+        let outcome_record = OutcomeRecord {
+            key: effective_outcome.logical_key.storage_key().unwrap(),
+            work_id: work_succeeded.id.clone(),
+            payload: serde_json::to_vec(&effective_outcome).unwrap(),
+            artifact_references: vec![reference],
+        };
+
+        // Without adjudications
+        let report = CorrectnessReport::build_with_adjudications(
+            run_id.clone(),
+            "correctness@1",
+            &[work_succeeded.clone()],
+            &[outcome_record.clone()],
+            &[artifact.clone()],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(report.summary.candidate_findings, 1);
+        assert_eq!(report.summary.unadjudicated_findings, 1);
+        assert_eq!(report.summary.accepted_findings, 0);
+        assert_eq!(report.finding_clusters[0].adjudication, AdjudicationState::Unreviewed);
+        let md = report.to_markdown();
+        assert!(md.contains("- **Adjudication**: `Unreviewed`"));
+        assert!(md.contains("| 1 | 1 | 0 | 0 | 0 |"));
+
+        // With accepted adjudication
+        let finding_id = report.finding_clusters[0].id.clone();
+        let adj = HumanAdjudication {
+            run: run_id.clone(),
+            finding: finding_id,
+            revision: 1,
+            state: AdjudicationState::Accepted,
+            expected_issue: None,
+            reviewer: "reviewer".to_owned(),
+            rationale: "valid defect".to_owned(),
+            recorded_at_millis: 1000,
+        };
+        let report_adj = CorrectnessReport::build_with_adjudications(
+            run_id,
+            "correctness@1",
+            &[work_succeeded],
+            &[outcome_record],
+            &[artifact],
+            &[adj],
+        )
+        .unwrap();
+        assert_eq!(report_adj.summary.candidate_findings, 1);
+        assert_eq!(report_adj.summary.unadjudicated_findings, 0);
+        assert_eq!(report_adj.summary.accepted_findings, 1);
+        assert_eq!(report_adj.finding_clusters[0].adjudication, AdjudicationState::Accepted);
+        let md_adj = report_adj.to_markdown();
+        assert!(md_adj.contains("- **Adjudication**: `Accepted`"));
+        assert!(md_adj.contains("| 1 | 0 | 1 | 0 | 0 |"));
     }
 }

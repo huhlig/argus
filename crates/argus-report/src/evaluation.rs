@@ -477,12 +477,14 @@ mod tests {
             } else {
                 vec![occurrence(0), occurrence(1)]
             },
+            adjudication: AdjudicationState::Unreviewed,
         }];
         if include_extra {
             clusters.push(DocumentationFindingCluster {
                 id: FindingId::derive([b"unstable-finding".as_slice()]),
                 representative: candidate,
                 occurrences: vec![occurrence(1)],
+                adjudication: AdjudicationState::Unreviewed,
             });
         }
         DocumentationReport {

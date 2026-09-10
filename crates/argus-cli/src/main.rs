@@ -3527,8 +3527,10 @@ fn finalize_command(
             "documentation-public-api@1",
         )?;
         report_summaries.push(format!(
-            "{} documentation assessments",
-            report.assessments.len()
+            "{} documentation assessments ({} candidates, {} unadjudicated)",
+            report.assessments.len(),
+            report.summary.candidate_findings,
+            report.summary.unadjudicated_findings,
         ));
     }
     if is_correctness {
@@ -3538,8 +3540,10 @@ fn finalize_command(
             "correctness-conservative@1",
         )?;
         report_summaries.push(format!(
-            "{} correctness assessments",
-            report.assessments.len()
+            "{} correctness assessments ({} candidates, {} unadjudicated)",
+            report.assessments.len(),
+            report.summary.candidate_findings,
+            report.summary.unadjudicated_findings,
         ));
     }
     if is_architecture {
@@ -3549,8 +3553,10 @@ fn finalize_command(
             "architecture-code-derived@1",
         )?;
         report_summaries.push(format!(
-            "{} architecture assessments",
-            report.assessments.len()
+            "{} architecture assessments ({} candidates, {} unadjudicated)",
+            report.assessments.len(),
+            report.summary.candidate_assessments,
+            report.summary.unadjudicated_findings,
         ));
     }
     let msg = format!(

@@ -52,7 +52,10 @@ pub use evaluation::{
     EvaluationRate, ExpectedDocumentationIssue, evaluate_documentation,
 };
 
-use argus_core::{Confidence, FindingId, RunId, Severity, TargetId, WorkItemId};
+use argus_core::{
+    AdjudicationState, Confidence, FindingId, HumanAdjudication, RunId, Severity, TargetId,
+    WorkItemId,
+};
 use argus_policies::{
     DocumentationAssessment, DocumentationCandidate, DocumentationDimension,
     DocumentationDimensionStatus, DocumentationResult, EvidenceCitation,
@@ -82,6 +85,14 @@ pub struct DocumentationReportSummary {
     pub finding_occurrences: usize,
     pub finding_clusters: usize,
     pub duplicate_findings: usize,
+    #[serde(default)]
+    pub unadjudicated_findings: usize,
+    #[serde(default)]
+    pub accepted_findings: usize,
+    #[serde(default)]
+    pub rejected_findings: usize,
+    #[serde(default)]
+    pub deferred_findings: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -104,6 +115,8 @@ pub struct DocumentationFindingCluster {
     pub id: FindingId,
     pub representative: DocumentationCandidate,
     pub occurrences: Vec<DocumentationFindingOccurrence>,
+    #[serde(default)]
+    pub adjudication: AdjudicationState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -154,6 +167,17 @@ impl DocumentationReport {
         outcomes: &[OutcomeRecord],
         artifacts: &[StoredArtifact],
     ) -> Result<Self, argus_core::ArgusError> {
+        Self::build_with_adjudications(run_id, policy_version, work, outcomes, artifacts, &[])
+    }
+
+    pub fn build_with_adjudications(
+        run_id: RunId,
+        policy_version: impl Into<String>,
+        work: &[QueueWork],
+        outcomes: &[OutcomeRecord],
+        artifacts: &[StoredArtifact],
+        adjudications: &[HumanAdjudication],
+    ) -> Result<Self, argus_core::ArgusError> {
         let policy_version = policy_version.into();
         if policy_version.trim().is_empty() || policy_version.trim() != policy_version {
             return Err(argus_core::ArgusError::invalid_input(
@@ -189,7 +213,40 @@ impl DocumentationReport {
                 DocumentationResult::UnableToVerify { .. } => summary.unable_to_verify += 1,
             }
         }
-        let finding_clusters = cluster_findings(&assessments)?;
+        let mut finding_clusters = cluster_findings(&assessments)?;
+
+        let mut latest_adjudications = BTreeMap::new();
+        for adj in adjudications {
+            adj.validate()?;
+            if adj.run == run_id {
+                let entry = latest_adjudications.entry(adj.finding.clone());
+                match entry {
+                    std::collections::btree_map::Entry::Vacant(vacant) => {
+                        vacant.insert(adj);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut occupied) => {
+                        if occupied.get().revision < adj.revision {
+                            occupied.insert(adj);
+                        }
+                    }
+                }
+            }
+        }
+
+        for cluster in &mut finding_clusters {
+            if let Some(adj) = latest_adjudications.get(&cluster.id) {
+                cluster.adjudication = adj.state;
+            } else {
+                cluster.adjudication = AdjudicationState::Unreviewed;
+            }
+            match cluster.adjudication {
+                AdjudicationState::Unreviewed => summary.unadjudicated_findings += 1,
+                AdjudicationState::Accepted => summary.accepted_findings += 1,
+                AdjudicationState::Rejected => summary.rejected_findings += 1,
+                AdjudicationState::Deferred => summary.deferred_findings += 1,
+            }
+        }
+
         summary.finding_occurrences = finding_clusters
             .iter()
             .map(|cluster| cluster.occurrences.len())
@@ -235,7 +292,7 @@ impl DocumentationReport {
     #[must_use]
     pub fn to_markdown(&self) -> String {
         let mut output = format!(
-            "# Documentation audit\n\nRun: `{}`  \nPolicy: `{}`\n\n## Coverage\n\n| Total | Passed | Candidate findings | Unable to verify | Failed | Pending | Leased | Cancelled |\n| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "# Documentation audit\n\nRun: `{}`  \nPolicy: `{}`\n\n## Coverage\n\n| Total | Passed | Candidate findings | Unable to verify | Failed | Pending | Leased | Cancelled |\n| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n| {} | {} | {} | {} | {} | {} | {} | {} |\n\n## Adjudication status\n\n| Candidate clusters | Unadjudicated | Accepted | Rejected | Deferred |\n| ---: | ---: | ---: | ---: | ---: |\n| {} | {} | {} | {} | {} |\n",
             self.run_id,
             escape_markdown(&self.policy_version),
             self.summary.total,
@@ -246,6 +303,11 @@ impl DocumentationReport {
             self.summary.pending,
             self.summary.leased,
             self.summary.cancelled,
+            self.summary.finding_clusters,
+            self.summary.unadjudicated_findings,
+            self.summary.accepted_findings,
+            self.summary.rejected_findings,
+            self.summary.deferred_findings,
         );
         if !self.finding_clusters.is_empty() {
             output.push_str("\n## Finding clusters\n");
@@ -287,11 +349,12 @@ impl DocumentationReport {
                     .join(", ");
                 write!(
                     output,
-                    "\n### {}\n\nLocation: {}  \nTarget: {}  \nCluster: `{}`  \nOccurrences: `{}`  \nDuplicates: `{}`  \nSeverity observations: {}  \nConfidence observations: {}\n\n{}\n",
+                    "\n### {}\n\nLocation: {}  \nTarget: {}  \nCluster: `{}`  \nAdjudication: `{:?}`  \nOccurrences: `{}`  \nDuplicates: `{}`  \nSeverity observations: {}  \nConfidence observations: {}\n\n{}\n",
                     escape_markdown(&cluster.representative.title),
                     location_str,
                     target_ids,
                     cluster.id,
+                    cluster.adjudication,
                     cluster.occurrences.len(),
                     cluster.occurrences.len().saturating_sub(1),
                     cluster
@@ -443,6 +506,7 @@ fn cluster_findings(
                     ]),
                     representative: finding.clone(),
                     occurrences: Vec::new(),
+                    adjudication: AdjudicationState::Unreviewed,
                 })
                 .occurrences
                 .push(occurrence);
@@ -498,7 +562,19 @@ pub fn write_documentation_bundle_reports(
     let work: Vec<QueueWork> = read_jsonl(&bundle.join("work.jsonl"))?;
     let outcomes: Vec<OutcomeRecord> = read_jsonl(&bundle.join("outcomes.jsonl"))?;
     let artifacts: Vec<StoredArtifact> = read_jsonl(&bundle.join("artifacts.jsonl"))?;
-    let report = DocumentationReport::build(run_id, policy_version, &work, &outcomes, &artifacts)?;
+    let adjudications: Vec<HumanAdjudication> = if bundle.join("adjudications.jsonl").is_file() {
+        read_jsonl(&bundle.join("adjudications.jsonl"))?
+    } else {
+        Vec::new()
+    };
+    let report = DocumentationReport::build_with_adjudications(
+        run_id,
+        policy_version,
+        &work,
+        &outcomes,
+        &artifacts,
+        &adjudications,
+    )?;
     write_reconciled(
         &bundle.join("documentation-report.json"),
         &report.to_json()?,
@@ -520,12 +596,13 @@ pub fn documentation_report_from_queue(
     policy_version: &str,
 ) -> Result<DocumentationReport, argus_core::ArgusError> {
     let records = queue.run_records(&run_id)?;
-    DocumentationReport::build(
+    DocumentationReport::build_with_adjudications(
         run_id,
         policy_version,
         &records.work,
         &records.outcomes,
         &records.artifacts,
+        &records.adjudications,
     )
 }
 
@@ -1025,5 +1102,101 @@ mod tests {
         assert!(md.contains(&format!("Target: `{target_id}`")));
         assert!(md.contains("Location: `crates/example/src/lib.rs:10:1`"));
         assert!(md.contains(&format!("## Target `{target_id}`\n\nLocation: `crates/example/src/lib.rs:10:1`")));
+    }
+
+    #[test]
+    fn unadjudicated_and_adjudicated_candidate_findings_demarcation() {
+        let fixture = fixture();
+        let citation = EvidenceCitation {
+            evidence: EvidenceId::derive([b"report-evidence".as_slice()]),
+            target: TargetId::derive([b"report-target".as_slice()]),
+            location: None,
+        };
+        let candidate = DocumentationCandidate {
+            title: "Missing error contract".to_owned(),
+            description: "Errors are not documented.".to_owned(),
+            severity: Severity::Medium,
+            confidence: Confidence::from_basis_points(8_000).unwrap(),
+            dimensions: std::collections::BTreeSet::from([DocumentationDimension::Errors]),
+            citations: vec![citation.clone()],
+        };
+        let mut work = fixture.work[0].clone();
+        work.state = QueueState::Succeeded;
+        let mut doc_assessment: DocumentationAssessment =
+            serde_json::from_slice(&fixture.artifacts[0].payload).unwrap();
+        for dim_res in &mut doc_assessment.dimensions {
+            if dim_res.dimension == DocumentationDimension::Errors {
+                dim_res.status = DocumentationDimensionStatus::Deficient;
+                dim_res.citations = vec![citation.clone()];
+            }
+        }
+        doc_assessment.result = DocumentationResult::CandidateFindings {
+            findings: vec![candidate],
+        };
+        let artifact_bytes = serde_json::to_vec(&doc_assessment).unwrap();
+        let content_hash = argus_core::ContentHash::digest(&artifact_bytes);
+        let reference = format!("artifact:{}:{}", DOCUMENTATION_ASSESSMENT_ARTIFACT_KIND, content_hash.as_str());
+        let artifact = StoredArtifact {
+            reference: reference.clone(),
+            kind: DOCUMENTATION_ASSESSMENT_ARTIFACT_KIND.to_owned(),
+            content_hash,
+            payload: artifact_bytes,
+        };
+        let mut outcome: EffectiveOutcome = serde_json::from_slice(&fixture.outcomes[0].payload).unwrap();
+        outcome.result_ref = reference.clone();
+        outcome.kind = OutcomeKind::CandidateFindings;
+        let mut outcome_rec = fixture.outcomes[0].clone();
+        outcome_rec.payload = serde_json::to_vec(&outcome).unwrap();
+        outcome_rec.artifact_references = vec![reference];
+
+        // Build with no adjudications -> unadjudicated
+        let unadj_report = DocumentationReport::build_with_adjudications(
+            fixture.run.clone(),
+            POLICY,
+            &[work.clone()],
+            &[outcome_rec.clone()],
+            &[artifact.clone()],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(unadj_report.summary.candidate_findings, 1);
+        assert_eq!(unadj_report.summary.finding_clusters, 1);
+        assert_eq!(unadj_report.summary.unadjudicated_findings, 1);
+        assert_eq!(unadj_report.summary.accepted_findings, 0);
+        assert_eq!(unadj_report.finding_clusters[0].adjudication, AdjudicationState::Unreviewed);
+        let md = unadj_report.to_markdown();
+        assert!(md.contains("## Adjudication status"));
+        assert!(md.contains("| 1 | 1 | 0 | 0 | 0 |"));
+        assert!(md.contains("Adjudication: `Unreviewed`"));
+
+        // Build with an accepted adjudication
+        let finding_id = unadj_report.finding_clusters[0].id.clone();
+        let adjudication = HumanAdjudication {
+            run: fixture.run.clone(),
+            finding: finding_id,
+            revision: 1,
+            state: AdjudicationState::Accepted,
+            expected_issue: None,
+            reviewer: "reviewer".to_owned(),
+            rationale: "valid finding".to_owned(),
+            recorded_at_millis: 1000,
+        };
+        let adj_report = DocumentationReport::build_with_adjudications(
+            fixture.run.clone(),
+            POLICY,
+            &[work],
+            &[outcome_rec],
+            &[artifact],
+            &[adjudication],
+        )
+        .unwrap();
+        assert_eq!(adj_report.summary.candidate_findings, 1);
+        assert_eq!(adj_report.summary.finding_clusters, 1);
+        assert_eq!(adj_report.summary.unadjudicated_findings, 0);
+        assert_eq!(adj_report.summary.accepted_findings, 1);
+        assert_eq!(adj_report.finding_clusters[0].adjudication, AdjudicationState::Accepted);
+        let md_adj = adj_report.to_markdown();
+        assert!(md_adj.contains("| 1 | 0 | 1 | 0 | 0 |"));
+        assert!(md_adj.contains("Adjudication: `Accepted`"));
     }
 }

@@ -121,7 +121,63 @@ Use one of these objects for the `transport` field:
 {"kind": "anthropic", "api_key_env": "ANTHROPIC_API_KEY"}
 {"kind": "lm_studio", "base_url": null, "api_key_env": null}
 {"kind": "watsonx", "service_url": "https://us-south.ml.cloud.ibm.com", "api_version": "2024-05-31", "scope": {"kind": "project", "id": "project-id"}, "credential": {"kind": "api_key", "env": "WATSONX_API_KEY"}}
+{"kind": "bedrock", "region": "${AWS_REGION:-us-east-1}", "bearer_token": "${AWS_BEARER_TOKEN_BEDROCK}", "endpoint_url": null}
 ```
+
+### Bedrock Authentication & Configuration Options
+
+Bedrock supports either AWS IAM static credentials, Bearer Token authentication, or ambient environment credentials. You can set them directly in the provider JSON file (`%APPDATA%\argus\providers\bedrock.json` or in a profile file) under the `transport` field:
+
+#### Option 1: Bearer Token Authentication (API Key)
+If using an AWS bearer token / Bedrock API key:
+```json
+{
+  "transport": {
+    "kind": "bedrock",
+    "region": "${AWS_REGION:-us-east-1}",
+    "bearer_token": "${AWS_BEARER_TOKEN_BEDROCK}"
+  }
+}
+```
+You can set `bearer_token` to an environment variable reference such as `"${AWS_BEARER_TOKEN_BEDROCK}"`, `"$BEDROCK_API_KEY"`, or provide the key directly. When using `argus provider discover`, you can supply this via `--api-key "<token>"` or `--api-key-env BEDROCK_API_KEY`.
+
+#### Option 2: AWS IAM Access Key & Secret Key
+If authenticating via IAM access keys:
+```json
+{
+  "transport": {
+    "kind": "bedrock",
+    "region": "${AWS_REGION:-us-east-1}",
+    "access_key_id": "${AWS_ACCESS_KEY_ID}",
+    "secret_access_key": "${AWS_SECRET_ACCESS_KEY}",
+    "session_token": "${AWS_SESSION_TOKEN}"
+  }
+}
+```
+
+#### Option 3: Ambient AWS Environment / Named Profile
+If using the local AWS credentials file (`~/.aws/credentials`) or ambient AWS environment variables:
+```json
+{
+  "transport": {
+    "kind": "bedrock",
+    "region": "${AWS_REGION:-us-east-1}",
+    "profile_name": "my-aws-profile"
+  }
+}
+```
+If neither `bearer_token` nor explicit access keys are specified, Argus defaults to standard AWS SDK credential discovery (environment variables, profile, IAM role / ECS / EC2 metadata).
+
+#### Bedrock Transport Properties:
+- **`region`**: AWS region (e.g. `"us-east-1"`). Defaults to `"${AWS_REGION:-us-east-1}"`.
+- **`bearer_token`** (alias `bearer_token_env`): Bearer token string or `${ENV_VAR}` reference.
+- **`access_key_id`** (alias `access_key_id_env`): AWS Access Key ID or `${ENV_VAR}` reference.
+- **`secret_access_key`** (alias `secret_access_key_env`): AWS Secret Access Key or `${ENV_VAR}` reference.
+- **`session_token`** (alias `session_token_env`): Optional STS session token.
+- **`endpoint_url`**: Optional custom endpoint URL (e.g. for VPC endpoints or Bedrock Mantle).
+- **`profile_name`**: Optional AWS profile name from `~/.aws/config` or `~/.aws/credentials`.
+
+---
 
 ### Timeouts & Network Policies
 
@@ -133,32 +189,36 @@ Use one of these objects for the `transport` field:
 
 ---
 
-## Automated Profile Discovery
+## Automated Provider & Profile Discovery
 
-You can automatically query a model provider endpoint, discover available models, and populate your user catalog profiles:
+You can automatically query a model provider endpoint, discover available models, and populate your configurations:
 
 ```bash
+# Discover Bedrock models with an AWS region or bearer token:
+argus provider discover --type bedrock --endpoint us-east-1
+argus provider discover --type bedrock --endpoint us-east-1 --api-key-env AWS_BEARER_TOKEN_BEDROCK
+
 # Discover local or network Lemonade models:
-argus profile discover --type lemonade --endpoint http://10.0.0.51:13305/v1
+argus provider discover --type lemonade --endpoint http://10.0.0.51:13305/v1
 
 # Discover local Ollama models:
-argus profile discover --type ollama --endpoint http://127.0.0.1:11434
+argus provider discover --type ollama --endpoint http://127.0.0.1:11434
 
 # Discover OpenAI models using an environment variable for authentication:
-argus profile discover --type openai --api-key-env OPENAI_API_KEY
+argus provider discover --type openai --api-key-env OPENAI_API_KEY
 
 # Discover Anthropic models:
-argus profile discover --type anthropic --api-key-env ANTHROPIC_API_KEY
+argus provider discover --type anthropic --api-key-env ANTHROPIC_API_KEY
 
 # Discover local LM Studio models:
-argus profile discover --type lm_studio --endpoint http://127.0.0.1:1234/v1
+argus provider discover --type lm_studio --endpoint http://127.0.0.1:1234/v1
 ```
 
-### Listing Installed Profiles
+### Listing Installed Providers
 
-To view all installed provider runtime profiles across your catalog and project:
+To view all installed provider configurations and models in your user catalog:
 
 ```bash
-argus profile list
+argus provider list
 ```
 
