@@ -291,7 +291,8 @@ async fn soak_workflow_heartbeat_during_slow_review() {
         claims: Vec::new(),
         result: DocumentationResultDraft::Passed,
     };
-    let draft_json = json!({"event_type":"review.pass", "payload":{"assessment":draft}}).to_string();
+    let draft_json =
+        json!({"event_type":"review.pass", "payload":{"assessment":draft}}).to_string();
 
     // The lease duration is 150ms, but LLM takes 350ms to respond!
     // Without heartbeats, this lease would expire or fail.

@@ -440,7 +440,8 @@ pub fn write_architecture_bundle_reports(
     let work: Vec<QueueWork> = read_jsonl(&work_path)?;
     let outcomes: Vec<OutcomeRecord> = read_jsonl(&outcomes_path)?;
     let artifacts: Vec<StoredArtifact> = read_jsonl(&artifacts_path)?;
-    let adjudications: Vec<HumanAdjudication> = if destination.join("adjudications.jsonl").is_file() {
+    let adjudications: Vec<HumanAdjudication> = if destination.join("adjudications.jsonl").is_file()
+    {
         read_jsonl(&destination.join("adjudications.jsonl"))?
     } else {
         Vec::new()
@@ -645,17 +646,16 @@ mod tests {
             target_kind: "module".to_owned(),
             policy: "architecture-code-derived@1".to_owned(),
         };
-        let work = QueueWork::pending_for(
-            work_id.clone(),
-            vec![],
-            run_id.clone(),
-            coverage,
-        );
+        let work = QueueWork::pending_for(work_id.clone(), vec![], run_id.clone(), coverage);
         let mut work_succeeded = work.clone();
         work_succeeded.state = QueueState::Succeeded;
         let artifact_bytes = serde_json::to_vec(&assessment).unwrap();
         let content_hash = argus_core::ContentHash::digest(&artifact_bytes);
-        let reference = format!("artifact:{}:{}", ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, content_hash.as_str());
+        let reference = format!(
+            "artifact:{}:{}",
+            ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND,
+            content_hash.as_str()
+        );
         let artifact = StoredArtifact {
             reference: reference.clone(),
             kind: ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND.to_owned(),
@@ -708,8 +708,14 @@ mod tests {
         assert_eq!(report.summary.corroborated_candidates, 1);
         assert_eq!(report.summary.unadjudicated_findings, 1);
         assert_eq!(report.summary.accepted_findings, 0);
-        assert_eq!(report.finding_clusters[0].adjudication, AdjudicationState::Unreviewed);
-        assert_eq!(report.finding_clusters[0].verification, ArchitectureVerificationStatus::Corroborated);
+        assert_eq!(
+            report.finding_clusters[0].adjudication,
+            AdjudicationState::Unreviewed
+        );
+        assert_eq!(
+            report.finding_clusters[0].verification,
+            ArchitectureVerificationStatus::Corroborated
+        );
         let md = report.to_markdown();
         assert!(md.contains("- **Adjudication**: `Unreviewed`"));
         assert!(md.contains("- **Verification**: `Corroborated`"));
@@ -738,7 +744,10 @@ mod tests {
         assert_eq!(report_adj.summary.candidate_assessments, 1);
         assert_eq!(report_adj.summary.unadjudicated_findings, 0);
         assert_eq!(report_adj.summary.accepted_findings, 1);
-        assert_eq!(report_adj.finding_clusters[0].adjudication, AdjudicationState::Accepted);
+        assert_eq!(
+            report_adj.finding_clusters[0].adjudication,
+            AdjudicationState::Accepted
+        );
         let md_adj = report_adj.to_markdown();
         assert!(md_adj.contains("- **Adjudication**: `Accepted`"));
         assert!(md_adj.contains("- **Verification**: `Corroborated`"));

@@ -50,7 +50,7 @@ Review, Adjudication & Evaluation:
   finalize     Publish an immutable terminal run bundle to .argus/reviews/
 
 Provider Configurations & Discovery:
-  provider     Discover models from provider endpoints and manage provider configurations (alias: profile)
+  provider     Discover models, test connectivity, and manage provider configurations (alias: profile)
 
 Options:
   -c, --config <path>  Path to project configuration (default: .argus/config/argus.json)
@@ -231,7 +231,8 @@ Examples:
   argus targets list
   argus targets show 4b91c2...";
 
-const HELP_STATUS: &str = "Show durable queue status, audit progress, provider telemetry, and stall diagnostics
+const HELP_STATUS: &str =
+    "Show durable queue status, audit progress, provider telemetry, and stall diagnostics
 
 Usage: argus status
 
@@ -419,10 +420,12 @@ const HELP_PROVIDER: &str = "Manage and discover model provider configurations
 Usage:
   argus provider discover --type <type> [options]
   argus provider list [--dir <path>]
+  argus provider test [--provider <name>] [--model <model>] [options]
 
 Commands:
   discover   Query a model provider endpoint, discover available models, and generate user provider config
   list       List all installed provider configurations and models in the user folder
+  test       Test provider configuration, credentials, and network connectivity
 
 Supported Provider Types & Requirements:
   bedrock    AWS Bedrock foundation models
@@ -462,7 +465,10 @@ Examples:
   argus provider discover --type openai --api-key-env OPENAI_API_KEY
   argus provider discover --type anthropic --api-key-env ANTHROPIC_API_KEY
   argus provider discover --type ollama --endpoint http://127.0.0.1:11434
-  argus provider list";
+  argus provider list
+  argus provider test --provider lemonade
+  argus provider test --provider lemonade --model qwen-32b
+  argus provider test --all";
 
 const HELP_PROVIDER_DISCOVER: &str = "Discover models from a provider and populate the user provider configuration
 
@@ -531,6 +537,31 @@ Options:
 Examples:
   argus provider list
   argus provider list --dir ~/.config/argus/providers";
+
+const HELP_PROVIDER_TEST: &str = "Test provider configuration, credentials, and network connectivity
+
+Usage:
+  argus provider test [--provider <name>] [--model <model>] [options]
+
+Options:
+  --provider, -p <name>      Provider configuration name, file path, or <provider>:<model>
+  --model, -m <model>        Model ID or alias to test under the selected provider
+  --probe                    Issue a minimal test completion request in addition to connectivity check
+  --timeout <seconds>        Network timeout in seconds for health and probe checks (default: 30)
+  --all                      Test all installed provider configurations in the catalog
+  --all-models               Test all configured models under the selected provider
+  --dir, -d <path>           Custom directory containing provider JSON configurations
+  --config, -c <path>        Path to project configuration (default: .argus/config/argus.json)
+  --json                     Output test results in JSON format
+  -h, --help                 Print help information
+
+Examples:
+  argus provider test
+  argus provider test --provider lemonade
+  argus provider test --provider lemonade --model qwen-32b
+  argus provider test --provider lemonade:qwen-32b --probe
+  argus provider test --provider ~/.config/argus/providers/openai.json
+  argus provider test --all";
 
 fn is_help_flag(value: Option<&str>) -> bool {
     matches!(value, Some("-h" | "--help" | "help"))
@@ -842,6 +873,15 @@ fn resolve_provider_profile_with_env(
     name_or_path: &str,
     env_config_dir: Option<&std::path::Path>,
 ) -> Result<(std::path::PathBuf, argus_provider::ProviderRuntimeProfile), argus_core::ArgusError> {
+    resolve_provider_profile_with_env_and_model(root, name_or_path, None, env_config_dir)
+}
+
+fn resolve_provider_profile_with_env_and_model(
+    root: &std::path::Path,
+    name_or_path: &str,
+    model_override: Option<&str>,
+    env_config_dir: Option<&std::path::Path>,
+) -> Result<(std::path::PathBuf, argus_provider::ProviderRuntimeProfile), argus_core::ArgusError> {
     let provider_dirs = provider_catalog_dirs(env_config_dir);
 
     // 1. Direct explicit file path passed
@@ -855,7 +895,7 @@ fn resolve_provider_profile_with_env(
                             if let Ok(config) =
                                 serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
                             {
-                                let profile = config.resolve_runtime_profile(None).map_err(|error| {
+                                let profile = config.resolve_runtime_profile(model_override).map_err(|error| {
                                     argus_core::ArgusError::invalid_input(format!(
                                         "cannot resolve model in provider configuration `{}`: {error}",
                                         path.display()
@@ -873,7 +913,7 @@ fn resolve_provider_profile_with_env(
                         if let Ok(config) =
                             serde_json::from_str::<argus_provider::ProviderConfig>(raw_text)
                         {
-                            let profile = config.resolve_runtime_profile(None).map_err(|error| {
+                            let profile = config.resolve_runtime_profile(model_override).map_err(|error| {
                                 argus_core::ArgusError::invalid_input(format!(
                                     "cannot resolve model in provider configuration `{}`: {error}",
                                     path.display()
@@ -895,7 +935,15 @@ fn resolve_provider_profile_with_env(
     // 2. Colon syntax: <provider>:<model>
     if let Some((prov, model)) = name_or_path.split_once(':') {
         let provider_spec = prov.trim();
-        let model_selector = Some(model.trim());
+        let colon_model = model.trim();
+        if let Some(mo) = model_override {
+            if !colon_model.eq_ignore_ascii_case(mo.trim()) {
+                return Err(argus_core::ArgusError::invalid_input(format!(
+                    "conflicting model specified in provider spec `{name_or_path}` and --model `{mo}`"
+                )));
+            }
+        }
+        let model_selector = Some(colon_model);
         for dir in &provider_dirs {
             let provider_path = dir.join(format!("{provider_spec}.json"));
             if provider_path.is_file() {
@@ -961,9 +1009,9 @@ fn resolve_provider_profile_with_env(
                                     }
                                 });
                         if let Ok(config) = parsed {
-                            let profile = config.resolve_runtime_profile(None).map_err(|error| {
+                            let profile = config.resolve_runtime_profile(model_override).map_err(|error| {
                                 argus_core::ArgusError::invalid_input(format!(
-                                    "cannot resolve default model in provider configuration `{}`: {error}",
+                                    "cannot resolve model in provider configuration `{}`: {error}",
                                     provider_path.display()
                                 ))
                             })?;
@@ -1003,7 +1051,8 @@ fn resolve_provider_profile_with_env(
                         let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                         let prefix = format!("{file_stem}-");
                         if provider_spec.starts_with(&prefix) {
-                            let model_candidate = &provider_spec[prefix.len()..];
+                            let model_candidate =
+                                model_override.unwrap_or(&provider_spec[prefix.len()..]);
                             if let Ok(bytes) = std::fs::read(&path) {
                                 if let Ok(raw_text) = std::str::from_utf8(&bytes) {
                                     let parsed = serde_json::from_str::<
@@ -2114,8 +2163,12 @@ fn audit_command(
     };
 
     let next_step = match preset {
-        PipelinePreset::Local => "\nNext step: Run 'argus work' to process admitted review items with an LLM profile.",
-        PipelinePreset::Ci => "\nNext step: Run 'argus work --preset ci' to process admitted review items under CI limits.",
+        PipelinePreset::Local => {
+            "\nNext step: Run 'argus work' to process admitted review items with an LLM profile."
+        }
+        PipelinePreset::Ci => {
+            "\nNext step: Run 'argus work --preset ci' to process admitted review items under CI limits."
+        }
     };
     let preset_note = format!("[Preset: {preset:?}]{change_diagnostic}\n");
 
@@ -2127,7 +2180,9 @@ fn audit_command(
             let doc_msg = plan_documentation()?;
             let corr_msg = plan_correctness()?;
             let arch_msg = plan_architecture()?;
-            Ok(format!("{preset_note}{doc_msg}\n{corr_msg}\n{arch_msg}{next_step}"))
+            Ok(format!(
+                "{preset_note}{doc_msg}\n{corr_msg}\n{arch_msg}{next_step}"
+            ))
         }
         _ => unreachable!(),
     }
@@ -2283,13 +2338,27 @@ fn work_command_with_env(
             concurrency,
             fail_fast,
         )),
-        "correctness" => {
-            runtime.block_on(execute_correctness_work(root, profile, limit, concurrency, fail_fast))
-        }
-        "architecture" => {
-            runtime.block_on(execute_architecture_work(root, profile, limit, concurrency, fail_fast))
-        }
-        "all" => runtime.block_on(execute_all_work(root, profile, limit, concurrency, fail_fast)),
+        "correctness" => runtime.block_on(execute_correctness_work(
+            root,
+            profile,
+            limit,
+            concurrency,
+            fail_fast,
+        )),
+        "architecture" => runtime.block_on(execute_architecture_work(
+            root,
+            profile,
+            limit,
+            concurrency,
+            fail_fast,
+        )),
+        "all" => runtime.block_on(execute_all_work(
+            root,
+            profile,
+            limit,
+            concurrency,
+            fail_fast,
+        )),
         _ => unreachable!(),
     }
 }
@@ -2482,7 +2551,7 @@ where
     let signal_handle = tokio::spawn(async move {
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
             let mut sigint = signal(SignalKind::interrupt()).ok();
             let mut sigterm = signal(SignalKind::terminate()).ok();
             tokio::select! {
@@ -2732,8 +2801,10 @@ async fn execute_all_work(
     concurrency: usize,
     fail_fast: bool,
 ) -> Result<String, argus_core::ArgusError> {
-    let doc_res = execute_documentation_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
-    let corr_res = execute_correctness_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
+    let doc_res =
+        execute_documentation_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
+    let corr_res =
+        execute_correctness_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
     let arch_res = execute_architecture_work(root, profile, limit, concurrency, fail_fast).await?;
     Ok(format!("{doc_res}\n{corr_res}\n{arch_res}"))
 }
@@ -3094,44 +3165,45 @@ fn run_command(
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--preset" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --preset"))?;
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --preset")
+                })?;
                 preset = PipelinePreset::parse(&val)?;
             }
             "--adapter" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --adapter"))?;
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --adapter")
+                })?;
                 adapter = Some(val);
             }
             "--pipeline" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --pipeline"))?;
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --pipeline")
+                })?;
                 pipeline = Some(val);
             }
             "-p" | "--provider" | "--profile" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --provider"))?;
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --provider")
+                })?;
                 provider_arg = Some(val);
             }
             "--base" | "--diff" | "--since" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --base"))?;
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --base")
+                })?;
                 base_ref = Some(val);
             }
             "--changed-only" => {
                 changed_only = true;
             }
             "--limit" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --limit"))?;
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --limit")
+                })?;
                 let parsed = val.parse::<usize>().map_err(|e| {
-                    argus_core::ArgusError::invalid_input("work limit must be an integer").with_source(e)
+                    argus_core::ArgusError::invalid_input("work limit must be an integer")
+                        .with_source(e)
                 })?;
                 limit_explicit = true;
                 limit_arg = if parsed == 0 { None } else { Some(parsed) };
@@ -3141,24 +3213,24 @@ fn run_command(
                 limit_arg = None;
             }
             "-j" | "--concurrency" | "-t" | "--threads" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --concurrency"))?;
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --concurrency")
+                })?;
                 concurrency_arg = Some(val);
             }
             "--fail-fast" => {
                 fail_fast_arg = Some(true);
             }
             "--format" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --format"))?;
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --format")
+                })?;
                 format_arg = Some(val);
             }
             "-c" | "--config" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| argus_core::ArgusError::invalid_input("missing value for --config"))?;
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --config")
+                })?;
                 config_arg = Some(val);
             }
             _ => {
@@ -4384,10 +4456,8 @@ fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusErr
                         minutes, seconds
                     ));
                 } else {
-                    progress_line.push_str(&format!(
-                        "\nProjected completion: ~{}s remaining",
-                        seconds
-                    ));
+                    progress_line
+                        .push_str(&format!("\nProjected completion: ~{}s remaining", seconds));
                 }
             }
         }
@@ -4440,7 +4510,11 @@ fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusErr
         let cost_str = if has_unreported_cost && total_cost_microusd == 0 {
             "unreported".to_owned()
         } else {
-            format!("${:.4} ({} µUSD)", total_cost_microusd as f64 / 1_000_000.0, total_cost_microusd)
+            format!(
+                "${:.4} ({} µUSD)",
+                total_cost_microusd as f64 / 1_000_000.0,
+                total_cost_microusd
+            )
         };
         writeln!(
             output,
@@ -4803,8 +4877,15 @@ fn provider_command_with_env(
     match subcmd {
         "discover" => provider_discover_command(root, &args[1..], env_config_dir),
         "list" => provider_list_command(root, &args[1..], env_config_dir),
+        "test" => provider_test_command(root, &args[1..], env_config_dir),
+        "help" => match args.get(1).map(String::as_str) {
+            Some("test") => Ok(HELP_PROVIDER_TEST.to_owned()),
+            Some("discover") => Ok(HELP_PROVIDER_DISCOVER.to_owned()),
+            Some("list") => Ok(HELP_PROVIDER_LIST.to_owned()),
+            _ => Ok(HELP_PROVIDER.to_owned()),
+        },
         _ => Err(argus_core::ArgusError::invalid_input(format!(
-            "unknown provider subcommand `{subcmd}` (supported: discover, list)\nRun 'argus help provider' for details."
+            "unknown provider subcommand `{subcmd}` (supported: discover, list, test)\nRun 'argus help provider' for details."
         ))),
     }
 }
@@ -5393,6 +5474,836 @@ fn provider_list_command(
     }
 
     Ok(output)
+}
+
+fn transport_endpoint_desc(transport: &argus_provider::ProviderTransportProfile) -> String {
+    match transport {
+        argus_provider::ProviderTransportProfile::Lemonade { base_url, .. } => base_url
+            .as_deref()
+            .unwrap_or("http://127.0.0.1:13305/v1")
+            .to_owned(),
+        argus_provider::ProviderTransportProfile::Ollama { base_url } => base_url
+            .as_deref()
+            .unwrap_or("http://127.0.0.1:11434")
+            .to_owned(),
+        argus_provider::ProviderTransportProfile::Openai { .. } => {
+            "https://api.openai.com/v1".to_owned()
+        }
+        argus_provider::ProviderTransportProfile::Anthropic { .. } => {
+            "https://api.anthropic.com/v1".to_owned()
+        }
+        argus_provider::ProviderTransportProfile::LmStudio { base_url, .. } => base_url
+            .as_deref()
+            .unwrap_or("http://127.0.0.1:1234/v1")
+            .to_owned(),
+        argus_provider::ProviderTransportProfile::Watsonx { service_url, .. } => {
+            service_url.clone()
+        }
+        argus_provider::ProviderTransportProfile::Bedrock {
+            region,
+            endpoint_url,
+            ..
+        } => endpoint_url.clone().unwrap_or_else(|| region.clone()),
+    }
+}
+
+struct ProviderTestTargetItem {
+    provider_name: String,
+    model_name: String,
+    config_path: std::path::PathBuf,
+    profile: argus_provider::ProviderRuntimeProfile,
+}
+
+struct TestExecutionResult {
+    provider: String,
+    config_path: std::path::PathBuf,
+    endpoint: String,
+    model: String,
+    deployment: String,
+    passed: bool,
+    credentials_ok: bool,
+    health: Option<String>,
+    latency_ms: Option<u64>,
+    details: String,
+    probe: Option<ProbeExecutionResult>,
+}
+
+struct ProbeExecutionResult {
+    passed: bool,
+    latency_ms: u64,
+    details: String,
+    #[allow(dead_code)]
+    output: Option<serde_json::Value>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonTestSummary {
+    total: usize,
+    passed: usize,
+    failed: usize,
+    all_passed: bool,
+    results: Vec<JsonTestItem>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonTestItem {
+    provider: String,
+    config_path: String,
+    endpoint: String,
+    model: String,
+    deployment: String,
+    status: &'static str,
+    credentials_ok: bool,
+    health: Option<String>,
+    latency_ms: Option<u64>,
+    details: String,
+    probe: Option<JsonProbeItem>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonProbeItem {
+    status: &'static str,
+    latency_ms: u64,
+    details: String,
+    output: Option<serde_json::Value>,
+}
+
+fn load_all_provider_configs(
+    search_dirs: &[std::path::PathBuf],
+) -> Result<Vec<(std::path::PathBuf, argus_provider::ProviderConfig)>, argus_core::ArgusError> {
+    let mut results = Vec::new();
+    let mut seen_providers = std::collections::HashSet::new();
+
+    for dir in search_dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let mut paths = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+            {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+        for path in paths {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if stem == "argus" || stem.is_empty() {
+                continue;
+            }
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let text = match std::str::from_utf8(&bytes) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let substituted = substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
+            if let Ok(config) = serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
+            {
+                if seen_providers.insert(config.provider.clone()) {
+                    results.push((path, config));
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+fn load_provider_spec(
+    root: &std::path::Path,
+    spec: &str,
+    search_dirs: &[std::path::PathBuf],
+    env_config_dir: Option<&std::path::Path>,
+) -> Result<
+    (
+        std::path::PathBuf,
+        Option<argus_provider::ProviderConfig>,
+        Option<argus_provider::ProviderRuntimeProfile>,
+    ),
+    argus_core::ArgusError,
+> {
+    let provider_name = if let Some((prov, _)) = spec.split_once(':') {
+        prov.trim()
+    } else {
+        spec.trim()
+    };
+
+    // 1. Explicit path
+    if is_explicit_path(provider_name) {
+        let candidates = explicit_provider_path_candidates(root, provider_name);
+        for path in candidates {
+            if path.is_file() {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    if let Ok(text) = std::str::from_utf8(&bytes) {
+                        let substituted =
+                            substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
+                        if let Ok(config) =
+                            serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
+                        {
+                            return Ok((path, Some(config), None));
+                        }
+                        if let Ok(profile) = serde_json::from_str::<
+                            argus_provider::ProviderRuntimeProfile,
+                        >(&substituted)
+                        {
+                            return Ok((path, None, Some(profile)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Exact filename in search_dirs
+    for dir in search_dirs {
+        let path = dir.join(format!("{provider_name}.json"));
+        if path.is_file() {
+            if let Ok(bytes) = std::fs::read(&path) {
+                if let Ok(text) = std::str::from_utf8(&bytes) {
+                    let substituted = substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
+                    if let Ok(config) =
+                        serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
+                    {
+                        return Ok((path, Some(config), None));
+                    }
+                    if let Ok(profile) =
+                        serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted)
+                    {
+                        return Ok((path, None, Some(profile)));
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Prefix matching in search_dirs
+    for dir in search_dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+                {
+                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                    let prefix = format!("{stem}-");
+                    if provider_name.starts_with(&prefix) {
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            if let Ok(text) = std::str::from_utf8(&bytes) {
+                                let substituted =
+                                    substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
+                                if let Ok(config) = serde_json::from_str::<
+                                    argus_provider::ProviderConfig,
+                                >(&substituted)
+                                {
+                                    return Ok((path, Some(config), None));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let available = format_available_providers_and_models(env_config_dir);
+    Err(argus_core::ArgusError::invalid_input(format!(
+        "provider configuration `{provider_name}` not found.{available}"
+    )))
+}
+
+fn provider_test_command(
+    root: &std::path::Path,
+    args: &[String],
+    env_config_dir: Option<&std::path::Path>,
+) -> Result<String, argus_core::ArgusError> {
+    if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
+        return Ok(HELP_PROVIDER_TEST.to_owned());
+    }
+
+    let usage = "usage: argus provider test [--provider <name>] [--model <model>] [--probe] [--timeout <seconds>] [--all] [--all-models] [--dir <path>] [--config <path>] [--json]";
+
+    let mut provider_arg: Option<String> = None;
+    let mut model_arg: Option<String> = None;
+    let mut probe = false;
+    let mut timeout_seconds: u64 = 30;
+    let mut test_all = false;
+    let mut all_models = false;
+    let mut custom_dir: Option<String> = None;
+    let mut config_path: Option<String> = None;
+    let mut json_output = false;
+
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        let (flag, inline_val) = match arg.split_once('=') {
+            Some((f, v)) => (f, Some(v.to_owned())),
+            None => (arg.as_str(), None),
+        };
+        match flag {
+            "-p" | "--provider" | "--profile" => {
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                };
+                provider_arg = Some(val);
+            }
+            "-m" | "--model" => {
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                };
+                model_arg = Some(val);
+            }
+            "--probe" => {
+                probe = true;
+            }
+            "--timeout" => {
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                };
+                let parsed = val.parse::<u64>().map_err(|error| {
+                    argus_core::ArgusError::invalid_input("timeout must be an integer > 0")
+                        .with_source(error)
+                })?;
+                if parsed == 0 {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "timeout must be greater than zero",
+                    ));
+                }
+                timeout_seconds = parsed;
+            }
+            "--all" => {
+                test_all = true;
+            }
+            "--all-models" => {
+                all_models = true;
+            }
+            "-d" | "--dir" => {
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                };
+                custom_dir = Some(val);
+            }
+            "-c" | "--config" => {
+                let val = match inline_val {
+                    Some(v) => v,
+                    None => iter
+                        .next()
+                        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?
+                        .clone(),
+                };
+                config_path = Some(val);
+            }
+            "--json" => {
+                json_output = true;
+            }
+            _ => {
+                return Err(argus_core::ArgusError::invalid_input(format!(
+                    "unknown option `{arg}`\n{usage}"
+                )));
+            }
+        }
+    }
+
+    let explicit_config = config_path.as_deref().map(std::path::Path::new);
+    let project_config = load_project_config(root, explicit_config)?;
+
+    let search_dirs: Vec<std::path::PathBuf> = if let Some(ref dir) = custom_dir {
+        vec![std::path::PathBuf::from(dir)]
+    } else {
+        provider_catalog_dirs(env_config_dir)
+    };
+
+    let mut target_items: Vec<ProviderTestTargetItem> = Vec::new();
+
+    if let Some(ref prov_spec) = provider_arg {
+        let (path, config_opt, profile_opt) =
+            load_provider_spec(root, prov_spec, &search_dirs, env_config_dir)?;
+        if let Some(config) = config_opt {
+            if all_models {
+                if config.models.is_empty() {
+                    return Err(argus_core::ArgusError::invalid_input(format!(
+                        "provider `{}` has no configured models",
+                        config.provider
+                    )));
+                }
+                for model_id in config.models.keys() {
+                    let profile =
+                        config
+                            .resolve_runtime_profile(Some(model_id))
+                            .map_err(|err| {
+                                argus_core::ArgusError::invalid_input(format!(
+                                    "cannot resolve model `{model_id}` in provider `{}`: {err}",
+                                    config.provider
+                                ))
+                            })?;
+                    target_items.push(ProviderTestTargetItem {
+                        provider_name: config.provider.clone(),
+                        model_name: model_id.clone(),
+                        config_path: path.clone(),
+                        profile,
+                    });
+                }
+            } else {
+                let model_to_resolve = match (prov_spec.split_once(':'), model_arg.as_deref()) {
+                    (Some((_, colon_m)), Some(m)) => {
+                        if !colon_m.trim().eq_ignore_ascii_case(m.trim()) {
+                            return Err(argus_core::ArgusError::invalid_input(format!(
+                                "conflicting model specified in provider spec `{prov_spec}` and --model `{m}`"
+                            )));
+                        }
+                        Some(m.trim())
+                    }
+                    (Some((_, colon_m)), None) => Some(colon_m.trim()),
+                    (None, Some(m)) => Some(m.trim()),
+                    (None, None) => None,
+                };
+                let profile = config
+                    .resolve_runtime_profile(model_to_resolve)
+                    .map_err(|err| {
+                        argus_core::ArgusError::invalid_input(format!(
+                            "cannot resolve model in provider configuration `{}`: {err}",
+                            path.display()
+                        ))
+                    })?;
+                target_items.push(ProviderTestTargetItem {
+                    provider_name: config.provider.clone(),
+                    model_name: profile.capabilities.identity.model.clone(),
+                    config_path: path,
+                    profile,
+                });
+            }
+        } else if let Some(profile) = profile_opt {
+            target_items.push(ProviderTestTargetItem {
+                provider_name: profile.capabilities.identity.provider.clone(),
+                model_name: profile.capabilities.identity.model.clone(),
+                config_path: path,
+                profile,
+            });
+        }
+    } else if test_all {
+        let configs = load_all_provider_configs(&search_dirs)?;
+        if configs.is_empty() {
+            return Ok(
+                "No provider configurations found.\nRun 'argus provider discover --type <type>' to configure a provider."
+                    .to_owned(),
+            );
+        }
+        for (path, config) in configs {
+            if all_models {
+                for model_id in config.models.keys() {
+                    if let Ok(profile) = config.resolve_runtime_profile(Some(model_id)) {
+                        target_items.push(ProviderTestTargetItem {
+                            provider_name: config.provider.clone(),
+                            model_name: model_id.clone(),
+                            config_path: path.clone(),
+                            profile,
+                        });
+                    }
+                }
+            } else {
+                let model_sel = model_arg.as_deref();
+                if let Ok(profile) = config.resolve_runtime_profile(model_sel) {
+                    target_items.push(ProviderTestTargetItem {
+                        provider_name: config.provider.clone(),
+                        model_name: profile.capabilities.identity.model.clone(),
+                        config_path: path,
+                        profile,
+                    });
+                }
+            }
+        }
+    } else if let Some(ref model_sel) = model_arg {
+        let default_prov = project_config
+            .default_provider
+            .or(project_config.default_profile);
+        if let Some(ref dp) = default_prov {
+            let (path, profile) = resolve_provider_profile_with_env_and_model(
+                root,
+                dp,
+                Some(model_sel),
+                env_config_dir,
+            )?;
+            target_items.push(ProviderTestTargetItem {
+                provider_name: profile.capabilities.identity.provider.clone(),
+                model_name: profile.capabilities.identity.model.clone(),
+                config_path: path,
+                profile,
+            });
+        } else {
+            let configs = load_all_provider_configs(&search_dirs)?;
+            let mut found = false;
+            for (path, config) in configs {
+                if let Ok(profile) = config.resolve_runtime_profile(Some(model_sel)) {
+                    target_items.push(ProviderTestTargetItem {
+                        provider_name: config.provider.clone(),
+                        model_name: profile.capabilities.identity.model.clone(),
+                        config_path: path,
+                        profile,
+                    });
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Err(argus_core::ArgusError::invalid_input(format!(
+                    "model `{model_sel}` not found in any installed provider configuration"
+                )));
+            }
+        }
+    } else {
+        let default_prov = project_config
+            .default_provider
+            .or(project_config.default_profile);
+        let mut resolved_default = false;
+        if let Some(ref dp) = default_prov {
+            if let Ok((path, profile)) =
+                resolve_provider_profile_with_env_and_model(root, dp, None, env_config_dir)
+            {
+                target_items.push(ProviderTestTargetItem {
+                    provider_name: profile.capabilities.identity.provider.clone(),
+                    model_name: profile.capabilities.identity.model.clone(),
+                    config_path: path,
+                    profile,
+                });
+                resolved_default = true;
+            }
+        }
+        if !resolved_default {
+            let configs = load_all_provider_configs(&search_dirs)?;
+            if configs.is_empty() {
+                return Ok(
+                    "No provider configurations found.\nRun 'argus provider discover --type <type>' to configure a provider."
+                        .to_owned(),
+                );
+            }
+            for (path, config) in configs {
+                if let Ok(profile) = config.resolve_runtime_profile(None) {
+                    target_items.push(ProviderTestTargetItem {
+                        provider_name: config.provider.clone(),
+                        model_name: profile.capabilities.identity.model.clone(),
+                        config_path: path,
+                        profile,
+                    });
+                }
+            }
+        }
+    }
+
+    if target_items.is_empty() {
+        return Ok("No matching provider targets found to test.".to_owned());
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(io_error("cannot start provider test runtime"))?;
+
+    let mut results: Vec<TestExecutionResult> = Vec::with_capacity(target_items.len());
+
+    for item in target_items {
+        let endpoint = transport_endpoint_desc(&item.profile.transport);
+        let deployment_str = match item.profile.capabilities.deployment {
+            argus_provider::DeploymentMode::Local => "local",
+            argus_provider::DeploymentMode::SameNetwork => "same_network",
+            argus_provider::DeploymentMode::Online => "online",
+        };
+
+        let built = match item.profile.build_from_environment() {
+            Ok(b) => b,
+            Err(err) => {
+                results.push(TestExecutionResult {
+                    provider: item.provider_name,
+                    config_path: item.config_path,
+                    endpoint,
+                    model: item.model_name,
+                    deployment: deployment_str.to_owned(),
+                    passed: false,
+                    credentials_ok: false,
+                    health: None,
+                    latency_ms: None,
+                    details: format!("credential or profile validation failed: {err}"),
+                    probe: None,
+                });
+                continue;
+            }
+        };
+
+        use argus_provider::ModelProvider as _;
+        let timeout_dur = std::time::Duration::from_secs(timeout_seconds);
+
+        let start = std::time::Instant::now();
+        let health_future = built.provider.health();
+        let health_res = runtime.block_on(async {
+            match tokio::time::timeout(timeout_dur, health_future).await {
+                Ok(res) => (res, start.elapsed()),
+                Err(_) => (
+                    Err(argus_provider::ProviderError::Unavailable(format!(
+                        "health check timed out after {timeout_seconds}s"
+                    ))),
+                    timeout_dur,
+                ),
+            }
+        });
+
+        let elapsed_ms = health_res.1.as_millis() as u64;
+        let (health_passed, health_str, details) = match health_res.0 {
+            Ok(argus_provider::ProviderHealth::Ready) => (
+                true,
+                "ready".to_owned(),
+                "model confirmed available on endpoint".to_owned(),
+            ),
+            Ok(argus_provider::ProviderHealth::Degraded) => (
+                false,
+                "degraded".to_owned(),
+                "endpoint reachable, but returned 0 models".to_owned(),
+            ),
+            Ok(argus_provider::ProviderHealth::Unavailable) => (
+                false,
+                "unavailable".to_owned(),
+                format!(
+                    "model `{}` was not found in provider models list",
+                    item.model_name
+                ),
+            ),
+            Err(err) => (
+                false,
+                "error".to_owned(),
+                format!("connectivity failed: {err}"),
+            ),
+        };
+
+        let mut probe_result = None;
+        let mut overall_passed = health_passed;
+
+        if probe && health_passed {
+            let probe_req = argus_provider::ModelRequest {
+                request_id: format!("test-probe-{}", now_millis()?),
+                attempt: 1,
+                prompt: "Respond with a JSON object with key 'status' equal to 'ok'.".to_owned(),
+                structured_output_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "status": { "type": "string" }
+                    },
+                    "required": ["status"]
+                }),
+                evidence_bytes: 0,
+                estimated_input_tokens: 15,
+                max_output_tokens: 32,
+            };
+            let probe_start = std::time::Instant::now();
+            let probe_future = built.provider.complete(probe_req);
+            let probe_res = runtime.block_on(async {
+                match tokio::time::timeout(timeout_dur, probe_future).await {
+                    Ok(res) => (res, probe_start.elapsed()),
+                    Err(_) => (
+                        Err(argus_provider::ProviderError::Unavailable(format!(
+                            "probe request timed out after {timeout_seconds}s"
+                        ))),
+                        timeout_dur,
+                    ),
+                }
+            });
+            let probe_ms = probe_res.1.as_millis() as u64;
+            match probe_res.0 {
+                Ok(resp) => {
+                    probe_result = Some(ProbeExecutionResult {
+                        passed: true,
+                        latency_ms: probe_ms,
+                        details: "valid response received".to_owned(),
+                        output: Some(resp.output),
+                    });
+                }
+                Err(err) => {
+                    overall_passed = false;
+                    probe_result = Some(ProbeExecutionResult {
+                        passed: false,
+                        latency_ms: probe_ms,
+                        details: format!("probe failed: {err}"),
+                        output: None,
+                    });
+                }
+            }
+        }
+
+        results.push(TestExecutionResult {
+            provider: item.provider_name,
+            config_path: item.config_path,
+            endpoint,
+            model: item.model_name,
+            deployment: deployment_str.to_owned(),
+            passed: overall_passed,
+            credentials_ok: true,
+            health: Some(health_str),
+            latency_ms: Some(elapsed_ms),
+            details,
+            probe: probe_result,
+        });
+    }
+
+    let total = results.len();
+    let passed_count = results.iter().filter(|r| r.passed).count();
+    let failed_count = total - passed_count;
+    let all_passed = failed_count == 0;
+
+    if json_output {
+        let json_summary = JsonTestSummary {
+            total,
+            passed: passed_count,
+            failed: failed_count,
+            all_passed,
+            results: results
+                .into_iter()
+                .map(|r| JsonTestItem {
+                    provider: r.provider,
+                    config_path: r.config_path.display().to_string(),
+                    endpoint: r.endpoint,
+                    model: r.model,
+                    deployment: r.deployment,
+                    status: if r.passed { "passed" } else { "failed" },
+                    credentials_ok: r.credentials_ok,
+                    health: r.health,
+                    latency_ms: r.latency_ms,
+                    details: r.details,
+                    probe: r.probe.map(|p| JsonProbeItem {
+                        status: if p.passed { "passed" } else { "failed" },
+                        latency_ms: p.latency_ms,
+                        details: p.details,
+                        output: p.output,
+                    }),
+                })
+                .collect(),
+        };
+        let json_str = serde_json::to_string_pretty(&json_summary).map_err(|e| {
+            argus_core::ArgusError::invariant("failed to serialize test results to JSON")
+                .with_source(e)
+        })?;
+        if all_passed {
+            return Ok(json_str);
+        } else {
+            return Err(argus_core::ArgusError::invalid_input(json_str));
+        }
+    }
+
+    let mut output = String::new();
+    if results.len() == 1 {
+        let r = &results[0];
+        let status_str = if r.passed { "PASSED" } else { "FAILED" };
+        writeln!(output, "Testing provider: {}", r.provider).unwrap();
+        writeln!(output, "  Config:       {}", r.config_path.display()).unwrap();
+        writeln!(output, "  Endpoint:     {}", r.endpoint).unwrap();
+        writeln!(output, "  Model:        {}", r.model).unwrap();
+        writeln!(output, "  Deployment:   {}", r.deployment).unwrap();
+        let cred_str = if r.credentials_ok { "OK" } else { "FAILED" };
+        writeln!(output, "  Credentials:  {cred_str}").unwrap();
+        if let (Some(health), Some(latency)) = (&r.health, r.latency_ms) {
+            writeln!(output, "  Connectivity: OK ({latency} ms)").unwrap();
+            writeln!(
+                output,
+                "  Health:       {} ({})",
+                health.to_uppercase(),
+                r.details
+            )
+            .unwrap();
+        } else {
+            writeln!(output, "  Details:      {}", r.details).unwrap();
+        }
+        if let Some(ref probe) = r.probe {
+            let probe_status = if probe.passed { "PASSED" } else { "FAILED" };
+            writeln!(
+                output,
+                "  Probe:        {probe_status} ({} ms) - {}",
+                probe.latency_ms, probe.details
+            )
+            .unwrap();
+        }
+        writeln!(output, "  Overall:      {status_str}").unwrap();
+    } else {
+        writeln!(output, "=== Argus Provider Test Results ===").unwrap();
+        for (i, r) in results.iter().enumerate() {
+            let status_str = if r.passed { "PASSED" } else { "FAILED" };
+            writeln!(
+                output,
+                "\n[{}/{}] {}: {} ({})",
+                i + 1,
+                results.len(),
+                status_str,
+                r.provider,
+                r.model
+            )
+            .unwrap();
+            writeln!(output, "  Config:       {}", r.config_path.display()).unwrap();
+            writeln!(output, "  Endpoint:     {}", r.endpoint).unwrap();
+            writeln!(output, "  Deployment:   {}", r.deployment).unwrap();
+            let cred_str = if r.credentials_ok { "OK" } else { "FAILED" };
+            writeln!(output, "  Credentials:  {cred_str}").unwrap();
+            if let (Some(health), Some(latency)) = (&r.health, r.latency_ms) {
+                writeln!(output, "  Connectivity: OK ({latency} ms)").unwrap();
+                writeln!(
+                    output,
+                    "  Health:       {} ({})",
+                    health.to_uppercase(),
+                    r.details
+                )
+                .unwrap();
+            } else {
+                writeln!(output, "  Details:      {}", r.details).unwrap();
+            }
+            if let Some(ref probe) = r.probe {
+                let probe_status = if probe.passed { "PASSED" } else { "FAILED" };
+                writeln!(
+                    output,
+                    "  Probe:        {probe_status} ({} ms) - {}",
+                    probe.latency_ms, probe.details
+                )
+                .unwrap();
+            }
+        }
+        writeln!(output, "\n===================================").unwrap();
+        writeln!(
+            output,
+            "Summary: {passed_count} passed, {failed_count} failed ({total} total)"
+        )
+        .unwrap();
+    }
+
+    if all_passed {
+        Ok(output)
+    } else {
+        Err(argus_core::ArgusError::invalid_input(format!(
+            "{output}\nProvider test failed: {failed_count} of {total} failed"
+        )))
+    }
 }
 
 fn initialize(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
@@ -6046,10 +6957,14 @@ mod tests {
 
         // Leased and succeeded at t=1_000 and t=3_000 (2s elapsed, 1 interval, 0.50 items/s)
         let l1 = queue.lease_next(1_000, 10_000).unwrap().unwrap();
-        queue.complete_at(&l1.id, "key-1", b"outcome-1", 1_000).unwrap();
+        queue
+            .complete_at(&l1.id, "key-1", b"outcome-1", 1_000)
+            .unwrap();
 
         let l2 = queue.lease_next(2_000, 10_000).unwrap().unwrap();
-        queue.complete_at(&l2.id, "key-2", b"outcome-2", 3_000).unwrap();
+        queue
+            .complete_at(&l2.id, "key-2", b"outcome-2", 3_000)
+            .unwrap();
 
         // Item 3 is leased at t=2_500 with a lease deadline of 200ms (expires at t=2_700)
         let l3 = queue.lease_next(2_500, 200).unwrap().unwrap();
@@ -6063,7 +6978,9 @@ mod tests {
         assert!(output.contains("Database size:"));
         assert!(output.contains("WARNING: 1 work item(s) are stalled"));
         assert!(output.contains(&format!("* Work {}", l3.id)));
-        assert!(output.contains("Run 'argus resume' to release expired leases back to pending state"));
+        assert!(
+            output.contains("Run 'argus resume' to release expired leases back to pending state")
+        );
     }
 
     #[test]
@@ -7324,6 +8241,309 @@ mod tests {
     }
 
     #[test]
+    fn provider_test_help_and_argument_validation() {
+        let temporary = tempfile::tempdir().unwrap();
+
+        // 1. Help flag via argus provider test --help
+        let help_out = run(
+            [
+                "provider".to_owned(),
+                "test".to_owned(),
+                "--help".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(help_out.contains("Usage:"));
+        assert!(help_out.contains("argus provider test"));
+
+        // 2. Help subcommand via argus provider help test
+        let help_sub = run(
+            ["provider".to_owned(), "help".to_owned(), "test".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(
+            help_sub.contains("Test provider configuration, credentials, and network connectivity")
+        );
+
+        // 3. Unknown flag rejected
+        let err_unknown = run(
+            [
+                "provider".to_owned(),
+                "test".to_owned(),
+                "--bogus-flag".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(
+            err_unknown
+                .to_string()
+                .contains("unknown option `--bogus-flag`")
+        );
+
+        // 4. Timeout 0 rejected
+        let err_timeout = run(
+            [
+                "provider".to_owned(),
+                "test".to_owned(),
+                "--timeout".to_owned(),
+                "0".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(
+            err_timeout
+                .to_string()
+                .contains("timeout must be greater than zero")
+        );
+
+        // 5. Conflicting model rejected
+        let err_conflict = run(
+            [
+                "provider".to_owned(),
+                "test".to_owned(),
+                "--provider".to_owned(),
+                "lemonade:model-a".to_owned(),
+                "--model".to_owned(),
+                "model-b".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(
+            err_conflict
+                .to_string()
+                .contains("conflicting model specified")
+        );
+    }
+
+    #[test]
+    fn provider_test_offline_bedrock_success_and_json() {
+        let temporary = tempfile::tempdir().unwrap();
+        let providers_dir = temporary.path().join("providers");
+        std::fs::create_dir_all(&providers_dir).unwrap();
+
+        let bedrock_profile = serde_json::json!({
+            "schema_version": 1,
+            "provider": "bedrock",
+            "default_model": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "models": {
+                "anthropic.claude-3-7-sonnet-20250219-v1:0": {
+                    "aliases": ["claude-sonnet"],
+                    "context_window_tokens": 200000,
+                    "max_output_tokens": 8192,
+                    "structured_output": "schema_constrained",
+                    "concurrency_capacity": 4
+                }
+            },
+            "transport": {
+                "kind": "bedrock",
+                "region": "us-east-1",
+                "access_key_id": "AKIA_TEST_STATIC",
+                "secret_access_key": "TEST_SECRET_STATIC",
+                "endpoint_url": null
+            }
+        });
+
+        std::fs::write(
+            providers_dir.join("bedrock.json"),
+            serde_json::to_string_pretty(&bedrock_profile)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+
+        // 1. Text format testing single provider
+        let out = run(
+            [
+                "provider".to_owned(),
+                "test".to_owned(),
+                "--provider".to_owned(),
+                "bedrock".to_owned(),
+                "--dir".to_owned(),
+                providers_dir.display().to_string(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(out.contains("Testing provider: bedrock"));
+        assert!(out.contains("Model:        anthropic.claude-3-7-sonnet-20250219-v1:0"));
+        assert!(out.contains("Credentials:  OK"));
+        assert!(out.contains("Connectivity: OK"));
+        assert!(out.contains("Health:       READY"));
+        assert!(out.contains("Overall:      PASSED"));
+
+        // 2. JSON format testing single provider
+        let json_out = run(
+            [
+                "provider".to_owned(),
+                "test".to_owned(),
+                "--provider".to_owned(),
+                "bedrock".to_owned(),
+                "--dir".to_owned(),
+                providers_dir.display().to_string(),
+                "--json".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_out).unwrap();
+        assert_eq!(parsed["total"], 1);
+        assert_eq!(parsed["passed"], 1);
+        assert_eq!(parsed["failed"], 0);
+        assert_eq!(parsed["all_passed"], true);
+        assert_eq!(parsed["results"][0]["provider"], "bedrock");
+        assert_eq!(parsed["results"][0]["status"], "passed");
+        assert_eq!(parsed["results"][0]["health"], "ready");
+
+        // 3. Test with alias model selector
+        let alias_out = run(
+            [
+                "provider".to_owned(),
+                "test".to_owned(),
+                "--provider".to_owned(),
+                "bedrock".to_owned(),
+                "--model".to_owned(),
+                "claude-sonnet".to_owned(),
+                "--dir".to_owned(),
+                providers_dir.display().to_string(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(alias_out.contains("PASSED"));
+
+        // 4. Test with --all flag
+        let all_out = run(
+            [
+                "provider".to_owned(),
+                "test".to_owned(),
+                "--all".to_owned(),
+                "--dir".to_owned(),
+                providers_dir.display().to_string(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(all_out.contains("PASSED"));
+    }
+
+    #[test]
+    fn provider_test_detects_unavailable_model_and_missing_credentials() {
+        let temporary = tempfile::tempdir().unwrap();
+        let providers_dir = temporary.path().join("providers");
+        std::fs::create_dir_all(&providers_dir).unwrap();
+
+        // Provider 1: missing credentials
+        let missing_creds = serde_json::json!({
+            "schema_version": 1,
+            "provider": "openai",
+            "default_model": "gpt-4o",
+            "models": {
+                "gpt-4o": {
+                    "aliases": [],
+                    "context_window_tokens": 128000,
+                    "max_output_tokens": 4096,
+                    "structured_output": "schema_constrained",
+                    "concurrency_capacity": 2
+                }
+            },
+            "transport": {
+                "kind": "openai",
+                "api_key": "${ARGUS_DEFINITELY_UNSET_VAR_XYZ}"
+            }
+        });
+        std::fs::write(
+            providers_dir.join("openai.json"),
+            serde_json::to_string_pretty(&missing_creds)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+
+        let err_creds = run(
+            [
+                "provider".to_owned(),
+                "test".to_owned(),
+                "--provider".to_owned(),
+                "openai".to_owned(),
+                "--dir".to_owned(),
+                providers_dir.display().to_string(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(err_creds.to_string().contains("Credentials:  FAILED"));
+        assert!(
+            err_creds
+                .to_string()
+                .contains("ARGUS_DEFINITELY_UNSET_VAR_XYZ")
+        );
+
+        // Provider 2: model not recognized by provider
+        let unavailable_model = serde_json::json!({
+            "schema_version": 1,
+            "provider": "bedrock",
+            "default_model": "non-existent-claude-99",
+            "models": {
+                "non-existent-claude-99": {
+                    "aliases": [],
+                    "context_window_tokens": 100000,
+                    "max_output_tokens": 4096,
+                    "structured_output": "schema_constrained",
+                    "concurrency_capacity": 2
+                }
+            },
+            "transport": {
+                "kind": "bedrock",
+                "region": "us-east-1",
+                "access_key_id": "AKIA_TEST_STATIC",
+                "secret_access_key": "TEST_SECRET_STATIC",
+                "endpoint_url": null
+            }
+        });
+        std::fs::write(
+            providers_dir.join("bedrock.json"),
+            serde_json::to_string_pretty(&unavailable_model)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+
+        let err_unavail = run(
+            [
+                "provider".to_owned(),
+                "test".to_owned(),
+                "--provider".to_owned(),
+                "bedrock".to_owned(),
+                "--dir".to_owned(),
+                providers_dir.display().to_string(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(err_unavail.to_string().contains("UNAVAILABLE"));
+        assert!(
+            err_unavail
+                .to_string()
+                .contains("was not found in provider models list")
+        );
+    }
+
+    #[test]
     fn audit_and_report_backlog_and_gaps_pipeline() {
         let temporary = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -7444,8 +8664,14 @@ mod tests {
 
     #[test]
     fn pipeline_preset_parsing() {
-        assert_eq!(PipelinePreset::parse("local").unwrap(), PipelinePreset::Local);
-        assert_eq!(PipelinePreset::parse("LOCAL").unwrap(), PipelinePreset::Local);
+        assert_eq!(
+            PipelinePreset::parse("local").unwrap(),
+            PipelinePreset::Local
+        );
+        assert_eq!(
+            PipelinePreset::parse("LOCAL").unwrap(),
+            PipelinePreset::Local
+        );
         assert_eq!(PipelinePreset::parse("ci").unwrap(), PipelinePreset::Ci);
         assert_eq!(PipelinePreset::parse("CI").unwrap(), PipelinePreset::Ci);
         assert!(PipelinePreset::parse("invalid").is_err());
@@ -7454,18 +8680,22 @@ mod tests {
     #[test]
     fn filter_changed_and_impacted_targets_computes_1st_degree() {
         use argus_core::{
-            ByteSpan, InventoryState, LineColumn, PortableTargetKind, Relation,
-            RelationId, RelationProvenance, ResolutionQuality, SourceLocation, SourcePath,
-            Target, TargetId, TargetKind, TargetVisibility,
+            ByteSpan, InventoryState, LineColumn, PortableTargetKind, Relation, RelationId,
+            RelationProvenance, ResolutionQuality, SourceLocation, SourcePath, Target, TargetId,
+            TargetKind, TargetVisibility,
         };
         use std::collections::BTreeSet;
 
         let make_target = |name: &str, path: &str, is_ws: bool| -> Target {
             let id = TargetId::derive([name.as_bytes()]);
             let kind = if is_ws {
-                TargetKind::Portable { kind: PortableTargetKind::Workspace }
+                TargetKind::Portable {
+                    kind: PortableTargetKind::Workspace,
+                }
             } else {
-                TargetKind::Portable { kind: PortableTargetKind::Module }
+                TargetKind::Portable {
+                    kind: PortableTargetKind::Module,
+                }
             };
             Target {
                 id,
@@ -7477,7 +8707,10 @@ mod tests {
                     path: SourcePath::new(path).unwrap(),
                     bytes: ByteSpan { start: 0, end: 100 },
                     start: Some(LineColumn { line: 1, column: 1 }),
-                    end: Some(LineColumn { line: 10, column: 1 }),
+                    end: Some(LineColumn {
+                        line: 10,
+                        column: 1,
+                    }),
                 }),
                 inventory: InventoryState::Represented,
                 capabilities: Vec::new(),
@@ -7530,17 +8763,29 @@ mod tests {
     #[test]
     fn run_help_text_is_accessible() {
         let temporary = tempfile::tempdir().unwrap();
-        let help = run(["run".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        let help = run(
+            ["run".to_owned(), "--help".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
         assert!(help.contains("Execute complete review lifecycle"));
         assert!(help.contains("--preset <local|ci>"));
         assert!(help.contains("--base <ref>"));
         assert!(help.contains("--fail-fast"));
 
-        let audit_help = run(["audit".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        let audit_help = run(
+            ["audit".to_owned(), "--help".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
         assert!(audit_help.contains("--preset <local|ci>"));
         assert!(audit_help.contains("--base <ref>"));
 
-        let work_help = run(["work".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        let work_help = run(
+            ["work".to_owned(), "--help".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
         assert!(work_help.contains("--preset <local|ci>"));
         assert!(work_help.contains("--fail-fast"));
     }
@@ -7635,7 +8880,9 @@ mod tests {
         assert_eq!(queue.status(1_150).unwrap().pending, 1);
 
         // Voluntary release of in-flight lease (as done on graceful shutdown / signal)
-        let released = queue.release_in_flight_leases_for_run(&run_id, 1_160).unwrap();
+        let released = queue
+            .release_in_flight_leases_for_run(&run_id, 1_160)
+            .unwrap();
         assert_eq!(released, 1);
         assert_eq!(queue.status(1_170).unwrap().leased, 0);
         assert_eq!(queue.status(1_170).unwrap().pending, 2);
@@ -7683,8 +8930,10 @@ mod tests {
         assert_eq!(records.outcomes.len(), 4);
         let mut seen_keys = std::collections::BTreeSet::new();
         for outcome in &records.outcomes {
-            assert!(seen_keys.insert(outcome.key.clone()), "duplicate outcome detected");
+            assert!(
+                seen_keys.insert(outcome.key.clone()),
+                "duplicate outcome detected"
+            );
         }
     }
 }
-

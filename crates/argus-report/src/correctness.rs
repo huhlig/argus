@@ -327,10 +327,7 @@ impl CorrectnessReport {
             out,
             "| Candidate clusters | Unadjudicated | Accepted | Rejected | Deferred |"
         );
-        let _ = writeln!(
-            out,
-            "| ---: | ---: | ---: | ---: | ---: |"
-        );
+        let _ = writeln!(out, "| ---: | ---: | ---: | ---: | ---: |");
         let _ = writeln!(
             out,
             "| {} | {} | {} | {} | {} |\n",
@@ -556,7 +553,9 @@ mod tests {
             severity: Severity::High,
             confidence: Confidence::from_basis_points(9_000).unwrap(),
             failure_path: "foo -> bar".to_owned(),
-            dimensions: std::collections::BTreeSet::from([CorrectnessDimension::BoundaryConditions]),
+            dimensions: std::collections::BTreeSet::from([
+                CorrectnessDimension::BoundaryConditions,
+            ]),
             citations: vec![citation],
         };
         let cluster = CorrectnessFindingCluster {
@@ -608,7 +607,9 @@ mod tests {
             severity: Severity::High,
             confidence: Confidence::from_basis_points(9_000).unwrap(),
             failure_path: "foo -> bar".to_owned(),
-            dimensions: std::collections::BTreeSet::from([CorrectnessDimension::BoundaryConditions]),
+            dimensions: std::collections::BTreeSet::from([
+                CorrectnessDimension::BoundaryConditions,
+            ]),
             citations: vec![citation],
         };
         let work_id = WorkItemId::derive([b"work-1".as_slice()]);
@@ -619,12 +620,7 @@ mod tests {
             target_kind: "callable".to_owned(),
             policy: "correctness@1".to_owned(),
         };
-        let work = QueueWork::pending_for(
-            work_id.clone(),
-            vec![],
-            run_id.clone(),
-            coverage,
-        );
+        let work = QueueWork::pending_for(work_id.clone(), vec![], run_id.clone(), coverage);
         let mut work_succeeded = work.clone();
         work_succeeded.state = QueueState::Succeeded;
         let assessment = CorrectnessAssessment {
@@ -647,7 +643,11 @@ mod tests {
         };
         let artifact_bytes = serde_json::to_vec(&assessment).unwrap();
         let content_hash = argus_core::ContentHash::digest(&artifact_bytes);
-        let reference = format!("artifact:{}:{}", CORRECTNESS_ASSESSMENT_ARTIFACT_KIND, content_hash.as_str());
+        let reference = format!(
+            "artifact:{}:{}",
+            CORRECTNESS_ASSESSMENT_ARTIFACT_KIND,
+            content_hash.as_str()
+        );
         let artifact = StoredArtifact {
             reference: reference.clone(),
             kind: CORRECTNESS_ASSESSMENT_ARTIFACT_KIND.to_owned(),
@@ -699,7 +699,10 @@ mod tests {
         assert_eq!(report.summary.candidate_findings, 1);
         assert_eq!(report.summary.unadjudicated_findings, 1);
         assert_eq!(report.summary.accepted_findings, 0);
-        assert_eq!(report.finding_clusters[0].adjudication, AdjudicationState::Unreviewed);
+        assert_eq!(
+            report.finding_clusters[0].adjudication,
+            AdjudicationState::Unreviewed
+        );
         let md = report.to_markdown();
         assert!(md.contains("- **Adjudication**: `Unreviewed`"));
         assert!(md.contains("| 1 | 1 | 0 | 0 | 0 |"));
@@ -728,7 +731,10 @@ mod tests {
         assert_eq!(report_adj.summary.candidate_findings, 1);
         assert_eq!(report_adj.summary.unadjudicated_findings, 0);
         assert_eq!(report_adj.summary.accepted_findings, 1);
-        assert_eq!(report_adj.finding_clusters[0].adjudication, AdjudicationState::Accepted);
+        assert_eq!(
+            report_adj.finding_clusters[0].adjudication,
+            AdjudicationState::Accepted
+        );
         let md_adj = report_adj.to_markdown();
         assert!(md_adj.contains("- **Adjudication**: `Accepted`"));
         assert!(md_adj.contains("| 1 | 0 | 1 | 0 | 0 |"));

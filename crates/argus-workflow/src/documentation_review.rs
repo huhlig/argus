@@ -967,7 +967,10 @@ mod tests {
 
     #[test]
     fn documentation_instructions_require_listing_gaps_stubs_and_unimplemented_aspects_with_todo() {
-        assert!(DOCUMENTATION_INSTRUCTIONS.contains("gaps, inconsistencies, stubs, or unimplemented aspects"));
+        assert!(
+            DOCUMENTATION_INSTRUCTIONS
+                .contains("gaps, inconsistencies, stubs, or unimplemented aspects")
+        );
         assert!(DOCUMENTATION_INSTRUCTIONS.contains("listed with `TODO` in the comments"));
     }
 }

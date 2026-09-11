@@ -179,7 +179,8 @@ impl BacklogReport {
     pub fn to_beads_script(&self) -> String {
         let mut lines = vec![
             format!("# Beads backlog export for Argus run {}", self.run_id),
-            "# Run these commands to import surfaced gap findings into the project tracker:".to_owned(),
+            "# Run these commands to import surfaced gap findings into the project tracker:"
+                .to_owned(),
             String::new(),
         ];
         for item in &self.items {
@@ -191,7 +192,14 @@ impl BacklogReport {
 
 fn format_loc(loc: &SourceLocation) -> String {
     loc.start.map_or_else(
-        || format!("{}:{}-{}", loc.path.as_str(), loc.bytes.start, loc.bytes.end),
+        || {
+            format!(
+                "{}:{}-{}",
+                loc.path.as_str(),
+                loc.bytes.start,
+                loc.bytes.end
+            )
+        },
         |start| format!("{}:{}:{}", loc.path.as_str(), start.line, start.column),
     )
 }
@@ -255,9 +263,7 @@ pub fn classify_backlog_finding(
 
 /// Extract backlog items from documentation report clusters.
 #[must_use]
-pub fn extract_documentation_backlog_items(
-    report: &DocumentationReport,
-) -> Vec<BacklogItem> {
+pub fn extract_documentation_backlog_items(report: &DocumentationReport) -> Vec<BacklogItem> {
     let mut items = Vec::new();
     for cluster in &report.finding_clusters {
         let dimensions: Vec<String> = cluster
@@ -310,9 +316,7 @@ pub fn extract_documentation_backlog_items(
 
 /// Extract backlog items from correctness report clusters.
 #[must_use]
-pub fn extract_correctness_backlog_items(
-    report: &CorrectnessReport,
-) -> Vec<BacklogItem> {
+pub fn extract_correctness_backlog_items(report: &CorrectnessReport) -> Vec<BacklogItem> {
     let mut items = Vec::new();
     for cluster in &report.finding_clusters {
         let dimensions: Vec<String> = cluster
@@ -365,9 +369,7 @@ pub fn extract_correctness_backlog_items(
 
 /// Extract backlog items from architecture report clusters.
 #[must_use]
-pub fn extract_architecture_backlog_items(
-    report: &ArchitectureReport,
-) -> Vec<BacklogItem> {
+pub fn extract_architecture_backlog_items(report: &ArchitectureReport) -> Vec<BacklogItem> {
     let mut items = Vec::new();
     for cluster in &report.finding_clusters {
         let dimensions: Vec<String> = cluster
@@ -378,11 +380,9 @@ pub fn extract_architecture_backlog_items(
             .collect();
 
         let title = format!("{:?}", cluster.representative.defect_kind);
-        if let Some(category) = classify_backlog_finding(
-            &title,
-            &cluster.representative.explanation,
-            &dimensions,
-        ) {
+        if let Some(category) =
+            classify_backlog_finding(&title, &cluster.representative.explanation, &dimensions)
+        {
             let locs = cluster
                 .representative
                 .citations

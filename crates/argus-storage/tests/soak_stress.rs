@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use argus_core::{
-    AdjudicationState, ConfigurationId, FindingId, HumanAdjudication, RunId, SnapshotId,
-    WorkItemId,
+    AdjudicationState, ConfigurationId, FindingId, HumanAdjudication, RunId, SnapshotId, WorkItemId,
 };
 use argus_provider::{ProviderHealth, ProviderIdentity, ProviderTelemetry};
 use argus_storage::{
@@ -150,7 +149,10 @@ fn soak_fault_injection_worker_crashes_and_recovery() {
         round += 1;
         let mut progress_in_round = 0;
 
-        while let Some(leased) = queue.lease_next(current_time, lease_duration_millis).unwrap() {
+        while let Some(leased) = queue
+            .lease_next(current_time, lease_duration_millis)
+            .unwrap()
+        {
             progress_in_round += 1;
             let work_str = leased.id.as_str().to_owned();
             let hash_byte = work_str.as_bytes().last().copied().unwrap_or(0) as usize;
@@ -325,9 +327,13 @@ fn soak_storage_growth_and_memory_stability() {
 
     // Finalize run bundle to verify transaction log and index integrity
     let bundle_dir = temporary.path().join("soak-bundle");
-    let manifest =
-        finalize_run_bundle(&queue, &audit_run.id, &bundle_dir, clock.load(Ordering::SeqCst))
-            .unwrap();
+    let manifest = finalize_run_bundle(
+        &queue,
+        &audit_run.id,
+        &bundle_dir,
+        clock.load(Ordering::SeqCst),
+    )
+    .unwrap();
     assert_eq!(manifest.work_records, total_items);
     assert_eq!(manifest.outcome_records, total_items);
     assert!(manifest.adjudication_records > 0);

@@ -343,7 +343,10 @@ pub fn git_diff_changed_paths(
     }
 
     // 2. Also check untracked and unstaged working-tree changes
-    if let Some(status_output) = git(repository_root, &["status", "--porcelain", "--untracked-files=all"]) {
+    if let Some(status_output) = git(
+        repository_root,
+        &["status", "--porcelain", "--untracked-files=all"],
+    ) {
         for line in status_output.lines() {
             if line.len() >= 4 {
                 let file_path = line[3..].trim();
@@ -378,4 +381,3 @@ fn path_text(path: &Path) -> String {
 fn io_error(message: &'static str) -> impl FnOnce(std::io::Error) -> argus_core::ArgusError {
     move |error| argus_core::ArgusError::new(argus_core::ErrorCode::Io, message).with_source(error)
 }
-

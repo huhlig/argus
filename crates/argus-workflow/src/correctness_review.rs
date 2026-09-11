@@ -503,8 +503,12 @@ mod tests {
     }
 
     #[test]
-    fn correctness_instructions_require_reporting_gaps_stubs_and_unimplemented_aspects_even_if_documented() {
-        assert!(CORRECTNESS_INSTRUCTIONS.contains("gaps, inconsistencies, stubs, and unimplemented aspects"));
+    fn correctness_instructions_require_reporting_gaps_stubs_and_unimplemented_aspects_even_if_documented()
+     {
+        assert!(
+            CORRECTNESS_INSTRUCTIONS
+                .contains("gaps, inconsistencies, stubs, and unimplemented aspects")
+        );
         assert!(CORRECTNESS_INSTRUCTIONS.contains("Missing behavior that the documentation specifies or that is implied by the function's scope"));
         assert!(CORRECTNESS_INSTRUCTIONS.contains("MUST ALWAYS be surfaced and reported"));
         assert!(CORRECTNESS_INSTRUCTIONS.contains("indication of future work that MUST be surfaced so it can be documented at the top level and placed in the backlog"));

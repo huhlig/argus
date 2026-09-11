@@ -21,9 +21,6 @@ mod correctness;
 mod correctness_evaluation;
 mod evaluation;
 
-pub use backlog::{
-    BacklogCategory, BacklogItem, BacklogReport, classify_backlog_finding, extract_backlog_report,
-};
 pub use architecture::{
     ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ARCHITECTURE_REPORT_SCHEMA_VERSION,
     ArchitectureFindingCluster, ArchitectureFindingOccurrence, ArchitectureReport,
@@ -34,6 +31,9 @@ pub use architecture_evaluation::{
     ARCHITECTURE_CORPUS_SCHEMA_VERSION, ARCHITECTURE_EVALUATION_SCHEMA_VERSION,
     ArchitectureEvaluation, ArchitectureEvaluationCorpus, ArchitectureEvaluationThresholds,
     ExpectedArchitectureIssue, evaluate_architecture,
+};
+pub use backlog::{
+    BacklogCategory, BacklogItem, BacklogReport, classify_backlog_finding, extract_backlog_report,
 };
 pub use correctness::{
     CORRECTNESS_ASSESSMENT_ARTIFACT_KIND, CORRECTNESS_REPORT_SCHEMA_VERSION,
@@ -763,7 +763,14 @@ fn extract_target_location(assessment: &DocumentationAssessment) -> String {
         for cit in &dim.citations {
             if let Some(loc) = &cit.location {
                 locs.insert(loc.start.map_or_else(
-                    || format!("`{}:{}-{}`", loc.path.as_str(), loc.bytes.start, loc.bytes.end),
+                    || {
+                        format!(
+                            "`{}:{}-{}`",
+                            loc.path.as_str(),
+                            loc.bytes.start,
+                            loc.bytes.end
+                        )
+                    },
                     |start| format!("`{}:{}:{}`", loc.path.as_str(), start.line, start.column),
                 ));
             }
@@ -1079,8 +1086,14 @@ mod tests {
             location: Some(SourceLocation {
                 path: SourcePath::new("crates/example/src/lib.rs").unwrap(),
                 bytes: ByteSpan::new(0, 100).unwrap(),
-                start: Some(LineColumn { line: 10, column: 1 }),
-                end: Some(LineColumn { line: 15, column: 1 }),
+                start: Some(LineColumn {
+                    line: 10,
+                    column: 1,
+                }),
+                end: Some(LineColumn {
+                    line: 15,
+                    column: 1,
+                }),
             }),
         };
         let candidate = DocumentationCandidate {
@@ -1101,7 +1114,9 @@ mod tests {
         assert!(md.contains("## Finding clusters"));
         assert!(md.contains(&format!("Target: `{target_id}`")));
         assert!(md.contains("Location: `crates/example/src/lib.rs:10:1`"));
-        assert!(md.contains(&format!("## Target `{target_id}`\n\nLocation: `crates/example/src/lib.rs:10:1`")));
+        assert!(md.contains(&format!(
+            "## Target `{target_id}`\n\nLocation: `crates/example/src/lib.rs:10:1`"
+        )));
     }
 
     #[test]
@@ -1135,14 +1150,19 @@ mod tests {
         };
         let artifact_bytes = serde_json::to_vec(&doc_assessment).unwrap();
         let content_hash = argus_core::ContentHash::digest(&artifact_bytes);
-        let reference = format!("artifact:{}:{}", DOCUMENTATION_ASSESSMENT_ARTIFACT_KIND, content_hash.as_str());
+        let reference = format!(
+            "artifact:{}:{}",
+            DOCUMENTATION_ASSESSMENT_ARTIFACT_KIND,
+            content_hash.as_str()
+        );
         let artifact = StoredArtifact {
             reference: reference.clone(),
             kind: DOCUMENTATION_ASSESSMENT_ARTIFACT_KIND.to_owned(),
             content_hash,
             payload: artifact_bytes,
         };
-        let mut outcome: EffectiveOutcome = serde_json::from_slice(&fixture.outcomes[0].payload).unwrap();
+        let mut outcome: EffectiveOutcome =
+            serde_json::from_slice(&fixture.outcomes[0].payload).unwrap();
         outcome.result_ref = reference.clone();
         outcome.kind = OutcomeKind::CandidateFindings;
         let mut outcome_rec = fixture.outcomes[0].clone();
@@ -1163,7 +1183,10 @@ mod tests {
         assert_eq!(unadj_report.summary.finding_clusters, 1);
         assert_eq!(unadj_report.summary.unadjudicated_findings, 1);
         assert_eq!(unadj_report.summary.accepted_findings, 0);
-        assert_eq!(unadj_report.finding_clusters[0].adjudication, AdjudicationState::Unreviewed);
+        assert_eq!(
+            unadj_report.finding_clusters[0].adjudication,
+            AdjudicationState::Unreviewed
+        );
         let md = unadj_report.to_markdown();
         assert!(md.contains("## Adjudication status"));
         assert!(md.contains("| 1 | 1 | 0 | 0 | 0 |"));
@@ -1194,7 +1217,10 @@ mod tests {
         assert_eq!(adj_report.summary.finding_clusters, 1);
         assert_eq!(adj_report.summary.unadjudicated_findings, 0);
         assert_eq!(adj_report.summary.accepted_findings, 1);
-        assert_eq!(adj_report.finding_clusters[0].adjudication, AdjudicationState::Accepted);
+        assert_eq!(
+            adj_report.finding_clusters[0].adjudication,
+            AdjudicationState::Accepted
+        );
         let md_adj = adj_report.to_markdown();
         assert!(md_adj.contains("| 1 | 0 | 1 | 0 | 0 |"));
         assert!(md_adj.contains("Adjudication: `Accepted`"));

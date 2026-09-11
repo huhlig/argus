@@ -130,7 +130,11 @@ fn voluntary_lease_release_enables_immediate_reacquisition_without_timeout() {
     assert_eq!(reacquired.attempt_number, 2);
 
     // Releasing an item that is not leased returns Ok(false)
-    assert!(!queue.release_lease(&WorkItemId::derive([b"non-existent".as_slice()]), 1_080).unwrap());
+    assert!(
+        !queue
+            .release_lease(&WorkItemId::derive([b"non-existent".as_slice()]), 1_080)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -186,7 +190,9 @@ fn run_in_flight_lease_release_releases_all_active_leases_for_target_run() {
     let _l3 = queue.lease_next(1_000, 50_000).unwrap().unwrap();
 
     // Release only in-flight leases for run1
-    let released_count = queue.release_in_flight_leases_for_run(&run1.id, 1_010).unwrap();
+    let released_count = queue
+        .release_in_flight_leases_for_run(&run1.id, 1_010)
+        .unwrap();
     assert_eq!(released_count, 2);
 
     // run1 items can be re-leased immediately
@@ -944,11 +950,15 @@ fn telemetry_reports_completion_range_and_stalled_items() {
 
     // Item 1 is leased at t=100 and completed at t=150
     let l1 = queue.lease_next(100, 1_000).unwrap().unwrap();
-    queue.complete_at(&l1.id, "key-1", b"outcome-1", 150).unwrap();
+    queue
+        .complete_at(&l1.id, "key-1", b"outcome-1", 150)
+        .unwrap();
 
     // Item 2 is leased at t=200 and completed at t=300
     let l2 = queue.lease_next(200, 1_000).unwrap().unwrap();
-    queue.complete_at(&l2.id, "key-2", b"outcome-2", 300).unwrap();
+    queue
+        .complete_at(&l2.id, "key-2", b"outcome-2", 300)
+        .unwrap();
 
     // Item 3 is leased at t=250 with short lease duration 50 (expires at 300)
     let l3 = queue.lease_next(250, 50).unwrap().unwrap();
@@ -968,4 +978,3 @@ fn telemetry_reports_completion_range_and_stalled_items() {
     assert_eq!(stalled.attempt_count, 1);
     assert_eq!(stalled.lease_until_millis, Some(300));
 }
-
