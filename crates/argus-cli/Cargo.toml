@@ -24,6 +24,10 @@ rust-version.workspace = true
 name = "argus"
 path = "src/main.rs"
 
+[features]
+default = []
+treesitter = ["dep:argus-treesitter"]
+
 [dependencies]
 argus-core = { path = "../argus-core" }
 argus-evidence = { path = "../argus-evidence" }
@@ -37,6 +41,7 @@ argus-storage = { path = "../argus-storage" }
 argus-typescript = { path = "../argus-typescript" }
 argus-python = { path = "../argus-python" }
 argus-java = { path = "../argus-java" }
+argus-treesitter = { path = "../argus-treesitter", optional = true }
 argus-workflow = { path = "../argus-workflow" }
 serde_json.workspace = true
 serde.workspace = true

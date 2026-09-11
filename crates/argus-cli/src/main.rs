@@ -108,7 +108,7 @@ Description:
   durable queue.
 
 Options:
-  --adapter <adapter>   Language adapter to run (supported: rust, typescript, javascript, all). Default: none
+  --adapter <adapter>   Language adapter to run (supported: rust, typescript, javascript, python, java, treesitter, go, c, cpp, c#, haskell, zig, swift, kotlin, all). Default: none
   --relationships <jsonl>  Captured Rust semantic relations to validate and merge
 
   With the Rust adapter, `.argus/input/rust-relations.jsonl` is discovered
@@ -3506,9 +3506,19 @@ fn prime_command(
                 "python" | "py" => adapter = Some("python".to_owned()),
                 "java" => adapter = Some("java".to_owned()),
                 "all" => adapter = Some("all".to_owned()),
+                "treesitter" => adapter = Some("treesitter".to_owned()),
+                "go" | "golang" => adapter = Some("go".to_owned()),
+                "c" => adapter = Some("c".to_owned()),
+                "cpp" | "c++" | "cxx" => adapter = Some("cpp".to_owned()),
+                "c#" | "csharp" | "cs" => adapter = Some("c_sharp".to_owned()),
+                "haskell" | "hs" => adapter = Some("haskell".to_owned()),
+                "zig" => adapter = Some("zig".to_owned()),
+                "swift" => adapter = Some("swift".to_owned()),
+                "kotlin" | "kt" => adapter = Some("kotlin".to_owned()),
+                s if s.starts_with("treesitter:") => adapter = Some(s.to_owned()),
                 _ => {
                     return Err(argus_core::ArgusError::invalid_input(format!(
-                        "unknown adapter `{value}`; supported adapters: rust, typescript (ts), javascript (js), python (py), java, all"
+                        "unknown adapter `{value}`; supported adapters: rust, typescript (ts), javascript (js), python (py), java, treesitter, go, c, cpp, c#, haskell, zig, swift, kotlin, all"
                     )));
                 }
             },
@@ -3533,6 +3543,21 @@ fn prime_command(
         if discovered.is_file() {
             relationships = Some(discovered);
         }
+    }
+
+    let is_treesitter_req = match adapter.as_deref() {
+        Some(
+            "treesitter" | "go" | "c" | "cpp" | "c_sharp" | "haskell" | "zig" | "swift"
+            | "kotlin",
+        ) => true,
+        Some(s) if s.starts_with("treesitter:") => true,
+        _ => false,
+    };
+    if is_treesitter_req && !cfg!(feature = "treesitter") {
+        return Err(argus_core::ArgusError::invalid_input(format!(
+            "adapter `{}` requires tree-sitter support; rebuild argus with `--features treesitter`",
+            adapter.as_deref().unwrap_or("")
+        )));
     }
 
     let should_run_rust = match adapter.as_deref() {
@@ -3566,6 +3591,25 @@ fn prime_command(
         }
         _ => false,
     };
+    #[cfg(feature = "treesitter")]
+    let should_run_treesitter = match adapter.as_deref() {
+        Some(
+            "treesitter" | "go" | "c" | "cpp" | "c_sharp" | "haskell" | "zig" | "swift"
+            | "kotlin",
+        ) => true,
+        Some(s) if s.starts_with("treesitter:") => true,
+        Some("all") => {
+            root.join("go.mod").is_file()
+                || root.join("CMakeLists.txt").is_file()
+                || root.join("Makefile").is_file()
+                || root.join("build.zig").is_file()
+                || root.join("Package.swift").is_file()
+                || root.join("stack.yaml").is_file()
+        }
+        _ => false,
+    };
+    #[cfg(not(feature = "treesitter"))]
+    let should_run_treesitter = false;
 
     let metadata = if should_run_rust {
         Some(cargo_metadata(root)?)
@@ -3579,7 +3623,7 @@ fn prime_command(
         &argus_snapshot::CaptureOptions::default(),
     )?;
 
-    let inventory_count = if should_run_rust || should_run_ts || should_run_python || should_run_java {
+    let inventory_count = if should_run_rust || should_run_ts || should_run_python || should_run_java || should_run_treesitter {
         let repository =
             argus_snapshot::SnapshotRepository::open(root.join(".argus/state/sources"))?;
         let source = SnapshotSource(repository.reader(snapshot.clone()));
@@ -3649,6 +3693,25 @@ fn prime_command(
             java.inventory_into(&source, &mut sink)?;
         }
 
+        #[cfg(feature = "treesitter")]
+        if should_run_treesitter {
+            let candidate_files = snapshot.files.keys().cloned().collect::<Vec<_>>();
+            let ts_lang = match adapter.as_deref() {
+                Some("treesitter" | "all") => None,
+                Some(s) if s.starts_with("treesitter:") => {
+                    Some(s["treesitter:".len()..].to_owned())
+                }
+                Some(other) => Some(other.to_owned()),
+                None => None,
+            };
+            let ts_adapter = argus_treesitter::TreeSitterWorkspaceAdapter::new(
+                snapshot.configuration.id.clone(),
+                candidate_files,
+                ts_lang,
+            );
+            ts_adapter.inventory_into(&source, &mut sink)?;
+        }
+
         sink.target_count()
     } else {
         0
@@ -3676,6 +3739,16 @@ fn prime_command(
             "javascript" | "js" => "JavaScript",
             "python" | "py" => "Python",
             "java" => "Java",
+            "treesitter" => "Tree-Sitter",
+            "go" => "Go",
+            "c" => "C",
+            "cpp" => "C++",
+            "c_sharp" => "C#",
+            "haskell" => "Haskell",
+            "zig" => "Zig",
+            "swift" => "Swift",
+            "kotlin" => "Kotlin",
+            s if s.starts_with("treesitter:") => "Tree-Sitter",
             _ => "discovered",
         };
         format!(" with {inventory_count} {label} targets")
@@ -10002,6 +10075,66 @@ public class App {
             }
         }
         assert!(found_inventory, "Java inventory targets found in stream");
+    }
+
+    #[cfg(feature = "treesitter")]
+    #[test]
+    fn treesitter_go_prime_extracts_inventory() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temporary.path().join("go.mod"),
+            b"module example.com/testservice\n\ngo 1.22\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temporary.path().join("main.go"),
+            b"package main\n\nfunc main() {}\n",
+        )
+        .unwrap();
+
+        let output = run(
+            ["prime".to_owned(), "--adapter".to_owned(), "go".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(output.contains("Go targets"));
+        assert!(temporary.path().join(".argus/state/sources").exists());
+        assert!(temporary.path().join(".argus/state/current-run").exists());
+    }
+
+    #[cfg(feature = "treesitter")]
+    #[test]
+    fn treesitter_c_prime_extracts_inventory() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temporary.path().join("main.c"),
+            b"int main() { return 0; }\n",
+        )
+        .unwrap();
+
+        let output = run(
+            ["prime".to_owned(), "--adapter".to_owned(), "c".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(output.contains("C targets"));
+        assert!(temporary.path().join(".argus/state/sources").exists());
+        assert!(temporary.path().join(".argus/state/current-run").exists());
+    }
+
+    #[cfg(not(feature = "treesitter"))]
+    #[test]
+    fn treesitter_adapter_requires_feature_gate() {
+        let temporary = tempfile::tempdir().unwrap();
+        let err = run(
+            ["prime".to_owned(), "--adapter".to_owned(), "go".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("requires tree-sitter support"));
     }
 }
 
