@@ -3495,7 +3495,7 @@ fn prime_command(
     while let Some(flag) = iter.next() {
         let value = iter.next().ok_or_else(|| {
             argus_core::ArgusError::invalid_input(
-                "usage: argus prime [--adapter rust|typescript] [--relationships <jsonl>]",
+                "usage: argus prime [--adapter rust|typescript|python] [--relationships <jsonl>]",
             )
         })?;
         match flag.as_str() {
@@ -3503,10 +3503,11 @@ fn prime_command(
                 "rust" => adapter = Some("rust".to_owned()),
                 "typescript" | "ts" => adapter = Some("typescript".to_owned()),
                 "javascript" | "js" => adapter = Some("javascript".to_owned()),
+                "python" | "py" => adapter = Some("python".to_owned()),
                 "all" => adapter = Some("all".to_owned()),
                 _ => {
                     return Err(argus_core::ArgusError::invalid_input(format!(
-                        "unknown adapter `{value}`; supported adapters: rust, typescript (ts), javascript (js), all"
+                        "unknown adapter `{value}`; supported adapters: rust, typescript (ts), javascript (js), python (py), all"
                     )));
                 }
             },
@@ -3515,7 +3516,7 @@ fn prime_command(
             }
             _ => {
                 return Err(argus_core::ArgusError::invalid_input(
-                    "usage: argus prime [--adapter rust|typescript] [--relationships <jsonl>]",
+                    "usage: argus prime [--adapter rust|typescript|python] [--relationships <jsonl>]",
                 ));
             }
         }
@@ -3543,6 +3544,16 @@ fn prime_command(
         Some("all") => root.join("package.json").is_file(),
         _ => false,
     };
+    let should_run_python = match adapter.as_deref() {
+        Some("python") => true,
+        Some("all") => {
+            root.join("pyproject.toml").is_file()
+                || root.join("setup.cfg").is_file()
+                || root.join("setup.py").is_file()
+                || root.join("requirements.txt").is_file()
+        }
+        _ => false,
+    };
 
     let metadata = if should_run_rust {
         Some(cargo_metadata(root)?)
@@ -3556,7 +3567,7 @@ fn prime_command(
         &argus_snapshot::CaptureOptions::default(),
     )?;
 
-    let inventory_count = if should_run_rust || should_run_ts {
+    let inventory_count = if should_run_rust || should_run_ts || should_run_python {
         let repository =
             argus_snapshot::SnapshotRepository::open(root.join(".argus/state/sources"))?;
         let source = SnapshotSource(repository.reader(snapshot.clone()));
@@ -3608,6 +3619,15 @@ fn prime_command(
             ts.inventory_into(&source, &mut sink)?;
         }
 
+        if should_run_python {
+            let candidate_files = snapshot.files.keys().cloned().collect::<Vec<_>>();
+            let py = argus_python::PythonWorkspaceAdapter::new(
+                snapshot.configuration.id.clone(),
+                candidate_files,
+            );
+            py.inventory_into(&source, &mut sink)?;
+        }
+
         sink.target_count()
     } else {
         0
@@ -3633,6 +3653,7 @@ fn prime_command(
             "rust" => "Rust",
             "typescript" | "ts" => "TypeScript",
             "javascript" | "js" => "JavaScript",
+            "python" | "py" => "Python",
             _ => "discovered",
         };
         format!(" with {inventory_count} {label} targets")
@@ -9859,6 +9880,50 @@ mod tests {
             }
         }
         assert!(found_inventory, "TypeScript inventory targets found in stream");
+    }
+
+    #[test]
+    fn python_prime_extracts_inventory() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(
+            temporary.path().join("pyproject.toml"),
+            b"[project]\nname = \"py-test-app\"\nversion = \"0.1.0\"\ndependencies = [\"requests\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temporary.path().join("src/main.py"),
+            b"def hello(name: str) -> str:\n    return f'Hello, {name}'\n",
+        )
+        .unwrap();
+
+        let output = run(
+            ["prime".to_owned(), "--adapter".to_owned(), "python".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(output.contains("Python targets"));
+        assert!(temporary.path().join(".argus/state/sources").exists());
+        assert!(temporary.path().join(".argus/state/current-run").exists());
+
+        let run_id = std::fs::read_to_string(temporary.path().join(".argus/state/current-run")).unwrap();
+        assert!(!run_id.trim().is_empty());
+
+        let snapshot_dir = std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
+        let mut found_inventory = false;
+        for entry in snapshot_dir {
+            let entry = entry.unwrap();
+            let stream_file = entry.path().join("rust.jsonl");
+            if stream_file.exists() {
+                let content = std::fs::read_to_string(stream_file).unwrap();
+                if content.contains("py-test-app") && content.contains("hello") {
+                    found_inventory = true;
+                    break;
+                }
+            }
+        }
+        assert!(found_inventory, "Python inventory targets found in stream");
     }
 }
 

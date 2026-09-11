@@ -26,6 +26,7 @@ members = [
     "crates/argus-storage",
     "crates/argus-test-support",
     "crates/argus-typescript",
+    "crates/argus-python",
     "crates/argus-workflow",
 ]
 resolver = "2"
@@ -48,6 +49,10 @@ oxc_allocator = "0.75"
 oxc_parser = "0.75"
 oxc_ast = "0.75"
 oxc_span = "0.75"
+ruff_python_parser = "0.0.13"
+ruff_python_ast = "0.0.13"
+ruff_text_size = "0.0.13"
+toml = "0.8"
 async-trait = "0.1"
 futures = "0.3"
 langchart-model = { git = "https://github.com/huhlig/langchart.git" }
