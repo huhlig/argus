@@ -20,6 +20,7 @@ pub mod backlog;
 mod correctness;
 mod correctness_evaluation;
 mod evaluation;
+mod optimization;
 
 pub use architecture::{
     ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ARCHITECTURE_REPORT_SCHEMA_VERSION,
@@ -50,6 +51,12 @@ pub use evaluation::{
     DOCUMENTATION_CORPUS_SCHEMA_VERSION, DOCUMENTATION_EVALUATION_SCHEMA_VERSION,
     DocumentationEvaluation, DocumentationEvaluationCorpus, DocumentationEvaluationThresholds,
     EvaluationRate, ExpectedDocumentationIssue, evaluate_documentation,
+};
+pub use optimization::{
+    OPTIMIZATION_ASSESSMENT_ARTIFACT_KIND, OPTIMIZATION_REPORT_SCHEMA_VERSION,
+    OptimizationFindingCluster, OptimizationFindingOccurrence, OptimizationReport,
+    OptimizationReportAssessment, OptimizationReportSummary, optimization_report_from_queue,
+    write_optimization_bundle_reports,
 };
 
 use argus_core::{

@@ -17,6 +17,7 @@
 mod architecture;
 mod correctness;
 mod documentation;
+mod optimization;
 
 pub use architecture::{
     ALL_ARCHITECTURE_DIMENSIONS, ARCHITECTURE_ASSESSMENT_SCHEMA_VERSION,
@@ -49,4 +50,15 @@ pub use documentation::{
     DocumentationDimensionStatus, DocumentationResult, DocumentationResultDraft,
     DocumentationTargetClass, DocumentationTargetProfile, DocumentationVisibility,
     EvidenceCitation, SourceMateriality,
+};
+pub use optimization::{
+    ALL_OPTIMIZATION_DIMENSIONS, OPTIMIZATION_ASSESSMENT_SCHEMA_VERSION,
+    OptimizationApplicabilityDecision, OptimizationApplicabilityPolicy,
+    OptimizationApplicabilityRule, OptimizationAssessment, OptimizationAssessmentBinding,
+    OptimizationAssessmentDraft, OptimizationCandidate, OptimizationCandidateDraft,
+    OptimizationDimension, OptimizationDimensionDraft, OptimizationDimensionResult,
+    OptimizationDimensionStatus, OptimizationEvidenceCitation, OptimizationFindingKind,
+    OptimizationImpactAnalysis, OptimizationImpactAnalysisDraft, OptimizationResult,
+    OptimizationResultDraft, OptimizationTargetClass, OptimizationTargetProfile,
+    OptimizationVisibility,
 };

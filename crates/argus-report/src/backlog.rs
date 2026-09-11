@@ -15,7 +15,7 @@
 //! Backlog and gap conversion for candidate findings representing stubs,
 //! scope gaps, and documented future work.
 
-use crate::{ArchitectureReport, CorrectnessReport, DocumentationReport};
+use crate::{ArchitectureReport, CorrectnessReport, DocumentationReport, OptimizationReport};
 use argus_core::{Confidence, FindingId, RunId, Severity, SourceLocation, TargetId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -412,6 +412,59 @@ pub fn extract_architecture_backlog_items(report: &ArchitectureReport) -> Vec<Ba
     items
 }
 
+/// Extract backlog items from optimization report clusters.
+#[must_use]
+pub fn extract_optimization_backlog_items(report: &OptimizationReport) -> Vec<BacklogItem> {
+    let mut items = Vec::new();
+    for cluster in &report.finding_clusters {
+        let dimensions: Vec<String> = cluster
+            .representative
+            .dimensions
+            .iter()
+            .map(|d| format!("{d:?}").to_lowercase())
+            .collect();
+
+        if let Some(category) = classify_backlog_finding(
+            &cluster.representative.title,
+            &cluster.representative.description,
+            &dimensions,
+        ) {
+            let locs = cluster
+                .representative
+                .citations
+                .iter()
+                .filter_map(|c| c.location.as_ref().map(format_loc))
+                .collect::<BTreeSet<_>>();
+            let location = if !locs.is_empty() {
+                locs.into_iter().collect::<Vec<_>>().join(", ")
+            } else {
+                "none".to_owned()
+            };
+            let targets = cluster
+                .occurrences
+                .iter()
+                .map(|o| o.target.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+
+            items.push(BacklogItem {
+                cluster_id: cluster.id.clone(),
+                title: cluster.representative.title.clone(),
+                category,
+                severity: cluster.representative.severity,
+                confidence: cluster.representative.confidence,
+                targets,
+                location,
+                policy: "optimization".to_owned(),
+                description: cluster.representative.description.clone(),
+                dimensions,
+            });
+        }
+    }
+    items
+}
+
 /// Aggregate all backlog items across active reports into a unified `BacklogReport`.
 #[must_use]
 pub fn extract_backlog_report(
@@ -419,6 +472,7 @@ pub fn extract_backlog_report(
     documentation: Option<&DocumentationReport>,
     correctness: Option<&CorrectnessReport>,
     architecture: Option<&ArchitectureReport>,
+    optimization: Option<&OptimizationReport>,
 ) -> BacklogReport {
     let mut items = Vec::new();
     if let Some(report) = documentation {
@@ -429,6 +483,9 @@ pub fn extract_backlog_report(
     }
     if let Some(report) = architecture {
         items.extend(extract_architecture_backlog_items(report));
+    }
+    if let Some(report) = optimization {
+        items.extend(extract_optimization_backlog_items(report));
     }
     BacklogReport { run_id, items }
 }

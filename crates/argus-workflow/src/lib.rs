@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#![recursion_limit = "256"]
 
 //! Versioned Langchart workflows owned by Argus.
 
@@ -34,6 +35,11 @@ mod documentation_review;
 mod documentation_runtime;
 mod documentation_worker;
 mod evidence_actor;
+mod optimization_outcome_actor;
+mod optimization_plan;
+mod optimization_review;
+mod optimization_runtime;
+mod optimization_worker;
 mod outcome;
 mod outcome_actor;
 mod recovery;
@@ -104,6 +110,24 @@ pub use documentation_worker::{
     DocumentationWorkerRuntime, WorkflowFailureDiagnostics,
 };
 pub use evidence_actor::{EvidenceExpander, EvidenceExpansionActor, EvidenceRequestEvaluatorActor};
+pub use optimization_outcome_actor::{
+    DurableOptimizationOutcomeActor, OPTIMIZATION_ASSESSMENT_ARTIFACT_KIND,
+    OptimizationOutcomeActor,
+};
+pub use optimization_plan::{
+    OPTIMIZATION_EVIDENCE_PACKAGE_ARTIFACT_KIND, OPTIMIZATION_REVIEW_CONTEXT_ARTIFACT_KIND,
+    OPTIMIZATION_REVIEW_PLAN_SCHEMA_VERSION, OptimizationEvidenceCatalog,
+    OptimizationReviewAdmission, OptimizationReviewBatch, OptimizationReviewMaterialization,
+    OptimizationReviewPlan, OptimizationReviewPlanner, OptimizationReviewUnit,
+};
+pub use optimization_review::{
+    OptimizationAssessmentContract, OptimizationReviewTransportValidator,
+    optimization_assessment_draft_schema,
+};
+pub use optimization_runtime::{OptimizationRuntimeIdentity, optimization_actor_registry};
+pub use optimization_worker::{
+    OptimizationWorker, OptimizationWorkerConfig, OptimizationWorkerResult,
+};
 pub use outcome::{
     EffectiveOutcome, LogicalOutcomeKey, OutcomeDisposition, OutcomeError, OutcomeKind,
     OutcomeProvenance, OutcomeReceipt, OutcomeRecorder,

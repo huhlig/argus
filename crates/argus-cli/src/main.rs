@@ -131,7 +131,7 @@ Description:
   durable redb working queue for the active run.
 
 Options:
-  --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, correctness, architecture, full)
+  --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, correctness, architecture, optimization, full)
   --preset <preset>       Execution preset: local (default, developer interactive) or ci (strict budget, automated gating)
   --ci                    Non-interactive CI execution mode (equivalent to --preset ci)
   --base <ref>            Examine targets changed and impacted relative to git base ref (merge-base vs HEAD)
@@ -146,6 +146,7 @@ Examples:
   argus audit --pipeline documentation
   argus audit --pipeline correctness
   argus audit --pipeline architecture
+  argus audit --pipeline optimization
   argus audit --pipeline full
   argus audit --pipeline full --preset ci
   argus audit --pipeline full --ci
@@ -154,7 +155,7 @@ Examples:
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work [documentation|correctness|architecture|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
+Usage: argus work [documentation|correctness|architecture|optimization|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -162,7 +163,7 @@ Description:
   and records durable outcomes (pass, candidate finding, unable-to-verify, failure).
 
 Arguments & Options:
-  documentation | correctness | architecture | all  Review policy to execute (default: all)
+  documentation | correctness | architecture | optimization | all  Review policy to execute (default: all)
   --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency)
   --ci                                        Non-interactive CI execution mode (equivalent to --preset ci)
   -p, --provider, --profile <name[:model]>    Provider configuration (e.g. 'bedrock:claude-3-haiku', 'lemonade:default') or path
@@ -185,7 +186,8 @@ Examples:
   argus work --provider bedrock:sonnet --no-limit -j 4
   argus work --preset ci --provider bedrock:claude-3-haiku --no-limit
   argus work documentation --provider ollama:llama3.2 --no-limit
-  argus work correctness --provider bedrock:claude-3-haiku --limit 5";
+  argus work correctness --provider bedrock:claude-3-haiku --limit 5
+  argus work optimization --provider bedrock:claude-3-haiku --limit 5";
 
 const HELP_RUN: &str = "Execute complete review lifecycle (prime -> audit -> work -> finalize -> report)
 
@@ -1958,7 +1960,7 @@ fn audit_command(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_AUDIT.to_owned());
     }
-    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|full> [--preset <local|ci>] [--ci] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
+    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|optimization|full> [--preset <local|ci>] [--ci] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
     let mut iter = args.into_iter().peekable();
     let mut pipeline = None;
     let mut preset = PipelinePreset::Local;
@@ -1973,7 +1975,7 @@ fn audit_command(
                     .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
                 if !matches!(
                     val.as_str(),
-                    "documentation" | "correctness" | "architecture" | "full"
+                    "documentation" | "correctness" | "architecture" | "optimization" | "performance" | "full"
                 ) {
                     return Err(argus_core::ArgusError::invalid_input(usage));
                 }
@@ -2060,7 +2062,7 @@ fn audit_command(
         .collect();
 
     // Budget configurations per preset
-    let (doc_budget, corr_budget, arch_budget) = match preset {
+    let (doc_budget, corr_budget, arch_budget, opt_budget) = match preset {
         PipelinePreset::Local => (
             argus_evidence::EvidenceBudget {
                 max_bytes: 400_000,
@@ -2079,6 +2081,12 @@ fn audit_command(
                 max_tokens: 80_000,
                 max_items: 64,
                 max_relation_depth: 2,
+            },
+            argus_evidence::EvidenceBudget {
+                max_bytes: 400_000,
+                max_tokens: 80_000,
+                max_items: 32,
+                max_relation_depth: 0,
             },
         ),
         PipelinePreset::Ci => (
@@ -2099,6 +2107,12 @@ fn audit_command(
                 max_tokens: 60_000,
                 max_items: 32,
                 max_relation_depth: 1,
+            },
+            argus_evidence::EvidenceBudget {
+                max_bytes: 250_000,
+                max_tokens: 50_000,
+                max_items: 16,
+                max_relation_depth: 0,
             },
         ),
     };
@@ -2269,6 +2283,60 @@ fn audit_command(
         ))
     };
 
+    let plan_optimization = || -> Result<String, argus_core::ArgusError> {
+        let policy = argus_policies::OptimizationApplicabilityPolicy::conservative()?;
+        let planner = argus_workflow::OptimizationReviewPlanner::new(
+            &policy,
+            argus_core::PolicyId::derive([b"optimization-conservative-v1".as_slice()]),
+            "optimization-conservative@1",
+        )?;
+        let plan = planner.plan(
+            &run.snapshot,
+            &run.configuration,
+            &targets_to_plan,
+            &evidence_to_plan,
+        )?;
+        let applicable = plan
+            .units
+            .iter()
+            .filter(|unit| unit.applicability.state == argus_core::ApplicabilityState::Applicable)
+            .count();
+        let not_applicable = plan
+            .units
+            .iter()
+            .filter(|unit| {
+                unit.applicability.state == argus_core::ApplicabilityState::NotApplicable
+            })
+            .count();
+        let pending = plan.units.len() - applicable - not_applicable;
+        let catalog = argus_workflow::OptimizationEvidenceCatalog::ingest(
+            &evidence_store,
+            &run.snapshot,
+            argus_evidence::DataClassification::Internal,
+            &evidence_to_plan,
+        )?;
+        let batch = plan.materialize_admissible(
+            &evidence_store,
+            &catalog,
+            &run.snapshot,
+            &run.configuration,
+            &opt_budget,
+            argus_evidence::DataClassification::Internal,
+        )?;
+        let admitted = batch.admit(
+            &queue,
+            &run.id,
+            &run.snapshot,
+            &run.configuration,
+            "rust",
+            now_millis()?,
+        )?;
+        Ok(format!(
+            "Optimization plan for run {}: {} applicable, {} not applicable, {} pending; {} newly admitted",
+            run.id, applicable, not_applicable, pending, admitted
+        ))
+    };
+
     let next_step = match preset {
         PipelinePreset::Local => {
             "\nNext step: Run 'argus work' to process admitted review items with an LLM profile."
@@ -2283,12 +2351,14 @@ fn audit_command(
         "documentation" => plan_documentation().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "correctness" => plan_correctness().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "architecture" => plan_architecture().map(|msg| format!("{preset_note}{msg}{next_step}")),
+        "optimization" | "performance" => plan_optimization().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "full" => {
             let doc_msg = plan_documentation()?;
             let corr_msg = plan_correctness()?;
             let arch_msg = plan_architecture()?;
+            let opt_msg = plan_optimization()?;
             Ok(format!(
-                "{preset_note}{doc_msg}\n{corr_msg}\n{arch_msg}{next_step}"
+                "{preset_note}{doc_msg}\n{corr_msg}\n{arch_msg}\n{opt_msg}{next_step}"
             ))
         }
         _ => unreachable!(),
@@ -2312,7 +2382,7 @@ fn work_command_with_env(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
     }
-    let usage = "usage: argus work [documentation|correctness|architecture|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
+    let usage = "usage: argus work [documentation|correctness|architecture|optimization|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
     let mut iter = args.into_iter().peekable();
     let policy_arg = if iter.peek().is_some_and(|a| !a.starts_with('-')) {
         iter.next().map(|arg| arg.to_lowercase())
@@ -2324,6 +2394,7 @@ fn work_command_with_env(
         Some("documentation") => "documentation",
         Some("correctness") => "correctness",
         Some("architecture") => "architecture",
+        Some("optimization") | Some("performance") => "optimization",
         Some("all") | None => "all",
         _ => return Err(argus_core::ArgusError::invalid_input(usage)),
     };
@@ -2456,6 +2527,13 @@ fn work_command_with_env(
             fail_fast,
         )),
         "architecture" => runtime.block_on(execute_architecture_work(
+            root,
+            profile,
+            limit,
+            concurrency,
+            fail_fast,
+        )),
+        "optimization" => runtime.block_on(execute_optimization_work(
             root,
             profile,
             limit,
@@ -2915,8 +2993,11 @@ async fn execute_all_work(
         execute_documentation_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
     let corr_res =
         execute_correctness_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
-    let arch_res = execute_architecture_work(root, profile, limit, concurrency, fail_fast).await?;
-    Ok(format!("{doc_res}\n{corr_res}\n{arch_res}"))
+    let arch_res =
+        execute_architecture_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
+    let opt_res =
+        execute_optimization_work(root, profile, limit, concurrency, fail_fast).await?;
+    Ok(format!("{doc_res}\n{corr_res}\n{arch_res}\n{opt_res}"))
 }
 
 fn check_unadmitted_run_warning(
@@ -2929,7 +3010,7 @@ fn check_unadmitted_run_warning(
         tracing::warn!(
             run_id = %run_id,
             policy = policy_name,
-            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|correctness|architecture|full>'?"
+            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|correctness|architecture|optimization|full>'?"
         );
     }
     Ok(())
@@ -3238,6 +3319,110 @@ async fn execute_architecture_work(
                     Ok(WorkerStepResult::RetryScheduled { work_id, error })
                 }
                 argus_workflow::ArchitectureWorkerResult::Failed { work_id, error } => {
+                    Ok(WorkerStepResult::Failed { work_id, error })
+                }
+            }
+        },
+        fail_fast,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn execute_optimization_work(
+    root: &std::path::Path,
+    profile: argus_provider::ProviderRuntimeProfile,
+    limit: Option<usize>,
+    concurrency: usize,
+    fail_fast: bool,
+) -> Result<String, argus_core::ArgusError> {
+    let queue = std::sync::Arc::new(working_queue(root)?);
+    let run_id = current_run(root)?;
+    let run = queue
+        .get_run(&run_id)?
+        .ok_or_else(|| argus_core::ArgusError::invariant("current run is missing"))?;
+    if run.state != argus_storage::RunState::Active || run.finalized_at_millis.is_some() {
+        return Err(argus_core::ArgusError::invariant(
+            "optimization work requires an active current run",
+        ));
+    }
+    check_unadmitted_run_warning(&queue, &run_id, "optimization")?;
+    let built = profile.build_from_environment().map_err(|error| {
+        argus_core::ArgusError::invalid_input("cannot build provider runtime").with_source(error)
+    })?;
+    let session_id = format!("worker-{}-{}", std::process::id(), now_millis()?);
+    let telemetry = std::sync::Arc::new(argus_storage::DurableProviderTelemetryPublisher::new(
+        queue.clone(),
+        session_id,
+    )?);
+    let executor = std::sync::Arc::new(
+        argus_provider::ProviderExecutor::new(
+            built.provider,
+            profile.capabilities.identity.clone(),
+            profile.policy.clone(),
+            profile.repair,
+            std::sync::Arc::new(argus_workflow::OptimizationReviewTransportValidator),
+        )
+        .map_err(|error| {
+            argus_core::ArgusError::invalid_input("cannot configure provider executor")
+                .with_source(error)
+        })?
+        .with_telemetry_sink(telemetry),
+    );
+    let state_directory = root.join(".argus/state/workflow");
+    let workflow_data = std::sync::Arc::new(
+        argus_workflow::WorkflowDataStore::open(&state_directory).map_err(|error| {
+            argus_core::ArgusError::invariant("cannot open workflow data").with_source(error)
+        })?,
+    );
+    let provider_identity = profile.capabilities.identity.clone();
+    let max_output_tokens = profile.capabilities.max_output_tokens;
+    let worker = std::sync::Arc::new(argus_workflow::OptimizationWorker::new(
+        queue.clone(),
+        workflow_data,
+        argus_workflow::documentation_worker_runtime(executor, built.adapter),
+        argus_workflow::OptimizationWorkerConfig {
+            state_directory,
+            identity: argus_workflow::OptimizationRuntimeIdentity {
+                audit_snapshot: run.snapshot,
+                audit_run: run.id,
+                provenance: argus_workflow::OutcomeProvenance {
+                    prompt_version: "optimization-review@1".to_owned(),
+                    actor_id: "argus.review".to_owned(),
+                    actor_version: "1.0.0".to_owned(),
+                    workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),
+                    workflow_version: argus_workflow::TARGET_REVIEW_WORKFLOW_VERSION.to_owned(),
+                    provider: provider_identity.clone(),
+                },
+                max_output_tokens,
+            },
+            adapter: "rust".to_owned(),
+            policy: "optimization-conservative@1".to_owned(),
+            lease_duration_millis: 120_000,
+            maximum_attempts: 3,
+        },
+    )?);
+
+    execute_concurrent_worker_pool(
+        "optimization",
+        "Optimization",
+        concurrency,
+        limit,
+        &provider_identity.provider,
+        &provider_identity.model,
+        queue,
+        &run_id,
+        worker,
+        |w| async move {
+            match w.run_next(now_millis()?).await? {
+                argus_workflow::OptimizationWorkerResult::Idle => Ok(WorkerStepResult::Idle),
+                argus_workflow::OptimizationWorkerResult::Succeeded { work_id } => {
+                    Ok(WorkerStepResult::Succeeded { work_id })
+                }
+                argus_workflow::OptimizationWorkerResult::RetryScheduled { work_id, error } => {
+                    Ok(WorkerStepResult::RetryScheduled { work_id, error })
+                }
+                argus_workflow::OptimizationWorkerResult::Failed { work_id, error } => {
                     Ok(WorkerStepResult::Failed { work_id, error })
                 }
             }
@@ -3974,9 +4159,13 @@ fn finalize_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("documentation"));
+    let is_optimization = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("optimization"));
 
     let mut report_summaries = Vec::new();
-    if is_documentation || (!is_architecture && !is_correctness) {
+    if is_documentation || (!is_architecture && !is_correctness && !is_optimization) {
         let report = argus_report::write_documentation_bundle_reports(
             &destination,
             id.clone(),
@@ -4012,6 +4201,19 @@ fn finalize_command(
             "{} architecture assessments ({} candidates, {} unadjudicated)",
             report.assessments.len(),
             report.summary.candidate_assessments,
+            report.summary.unadjudicated_findings,
+        ));
+    }
+    if is_optimization {
+        let report = argus_report::write_optimization_bundle_reports(
+            &destination,
+            id.clone(),
+            "optimization-conservative@1",
+        )?;
+        report_summaries.push(format!(
+            "{} optimization assessments ({} candidates, {} unadjudicated)",
+            report.assessments.len(),
+            report.summary.candidate_findings,
             report.summary.unadjudicated_findings,
         ));
     }
@@ -4484,8 +4686,14 @@ fn report_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("documentation"));
-    let policy_count =
-        usize::from(is_architecture) + usize::from(is_correctness) + usize::from(is_documentation);
+    let is_optimization = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("optimization"));
+    let policy_count = usize::from(is_architecture)
+        + usize::from(is_correctness)
+        + usize::from(is_documentation)
+        + usize::from(is_optimization);
 
     if format == "backlog" || format == "beads" || gaps_only {
         let documentation = is_documentation
@@ -4515,12 +4723,22 @@ fn report_command(
                 )
             })
             .transpose()?;
+        let optimization = is_optimization
+            .then(|| {
+                argus_report::optimization_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "optimization-conservative@1",
+                )
+            })
+            .transpose()?;
 
         let mut backlog = argus_report::extract_backlog_report(
             id,
             documentation.as_ref(),
             correctness.as_ref(),
             architecture.as_ref(),
+            optimization.as_ref(),
         );
 
         if let Some(sev) = severity_filter {
@@ -4590,12 +4808,22 @@ fn report_command(
                 )
             })
             .transpose()?;
+        let optimization = is_optimization
+            .then(|| {
+                argus_report::optimization_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "optimization-conservative@1",
+                )
+            })
+            .transpose()?;
         return match format {
             "json" => serde_json::to_string_pretty(&serde_json::json!({
                 "run_id": id,
                 "documentation": documentation,
                 "correctness": correctness,
                 "architecture": architecture,
+                "optimization": optimization,
             }))
             .map_err(|error| {
                 argus_core::ArgusError::invariant("cannot serialize mixed policy report")
@@ -4618,6 +4846,11 @@ fn report_command(
                         |finding| serde_json::json!({"policy": "architecture", "finding": finding}),
                     ));
                 }
+                if let Some(report) = &optimization {
+                    lines.extend(report.finding_clusters.iter().map(
+                        |finding| serde_json::json!({"policy": "optimization", "finding": finding}),
+                    ));
+                }
                 lines
                     .into_iter()
                     .map(|line| serde_json::to_string(&line))
@@ -4632,6 +4865,7 @@ fn report_command(
                 documentation.map(|report| report.to_markdown()),
                 correctness.map(|report| report.to_markdown()),
                 architecture.map(|report| report.to_markdown()),
+                optimization.map(|report| report.to_markdown()),
             ]
             .into_iter()
             .flatten()
@@ -4720,6 +4954,55 @@ fn report_command(
             "json" => {
                 let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
                     argus_core::ArgusError::invariant("cannot serialize correctness report")
+                        .with_source(error)
+                })?;
+                String::from_utf8(bytes).map_err(|error| {
+                    argus_core::ArgusError::invariant("invalid utf-8 in serialized report")
+                        .with_source(error)
+                })
+            }
+            "jsonl" => {
+                let mut out = String::new();
+                for cluster in &report.finding_clusters {
+                    let line = serde_json::to_string(cluster).map_err(|error| {
+                        argus_core::ArgusError::invariant("cannot serialize finding cluster")
+                            .with_source(error)
+                    })?;
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+                Ok(out.trim_end().to_owned())
+            }
+            _ => Ok(report.to_markdown()),
+        }
+    } else if is_optimization {
+        let mut report =
+            argus_report::optimization_report_from_queue(&queue, id, "optimization-conservative@1")?;
+
+        if let Some(dim_name) = dimension_str {
+            let dim: argus_policies::OptimizationDimension = serde_json::from_value(
+                serde_json::Value::String(dim_name.clone()),
+            )
+            .map_err(|error| {
+                argus_core::ArgusError::invalid_input(format!(
+                    "unknown optimization dimension `{dim_name}`"
+                ))
+                .with_source(error)
+            })?;
+            report
+                .finding_clusters
+                .retain(|cluster| cluster.representative.dimensions.contains(&dim));
+        }
+        if let Some(sev) = severity_filter {
+            report
+                .finding_clusters
+                .retain(|cluster| cluster.representative.severity == sev);
+        }
+
+        match format {
+            "json" => {
+                let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
+                    argus_core::ArgusError::invariant("cannot serialize optimization report")
                         .with_source(error)
                 })?;
                 String::from_utf8(bytes).map_err(|error| {
@@ -4869,6 +5152,10 @@ fn adjudicate_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("correctness"));
+    let is_optimization = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("optimization"));
 
     let finding_exists = if is_architecture {
         let report = argus_report::architecture_report_from_queue(
@@ -4885,6 +5172,16 @@ fn adjudicate_command(
             &queue,
             run_id.clone(),
             "correctness-conservative@1",
+        )?;
+        report
+            .finding_clusters
+            .iter()
+            .any(|cluster| cluster.id == finding)
+    } else if is_optimization {
+        let report = argus_report::optimization_report_from_queue(
+            &queue,
+            run_id.clone(),
+            "optimization-conservative@1",
         )?;
         report
             .finding_clusters
@@ -10292,6 +10589,101 @@ public class App {
         assert!(found_py, "Python targets must be in stream");
         #[cfg(feature = "treesitter")]
         assert!(found_go, "Go targets must be in stream");
+    }
+
+    #[test]
+    fn optimization_pipeline_audit_work_and_reporting() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temporary.path().join("Cargo.toml"),
+            b"[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(temporary.path().join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        let primed = run(
+            ["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let run_id = primed.split_whitespace().nth(2).unwrap().to_owned();
+
+        // 1. Audit --pipeline optimization
+        let audit_out = run(
+            [
+                "audit".to_owned(),
+                "--pipeline".to_owned(),
+                "optimization".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(audit_out.contains("Optimization plan for run"));
+
+        // 2. Audit --pipeline performance (alias)
+        let perf_audit_out = run(
+            [
+                "audit".to_owned(),
+                "--pipeline".to_owned(),
+                "performance".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(perf_audit_out.contains("Optimization plan for run"));
+
+        // 3. Cancel remaining pending items so run can be finalized
+        run(
+            ["cancel".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        let finalize_out = run(
+            ["finalize".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(finalize_out.contains("Finalized run"));
+
+        for name in [
+            "optimization-report.json",
+            "optimization-report.jsonl",
+            "optimization-report.md",
+        ] {
+            assert!(
+                temporary
+                    .path()
+                    .join(".argus/reviews")
+                    .join(&run_id)
+                    .join(name)
+                    .is_file()
+            );
+        }
+
+        let report_out = run(
+            ["report".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(report_out.contains("Optimization Review Report"));
+        assert!(report_out.contains("optimization-conservative@1"));
+
+        // 4. Backlog format
+        let backlog_out = run(
+            [
+                "report".to_owned(),
+                run_id,
+                "--format".to_owned(),
+                "backlog".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(backlog_out.contains("# Project Backlog & Gap Tracking"));
     }
 }
 
