@@ -93,7 +93,61 @@ impl DocumentationEvaluation {
         &self,
         thresholds: &DocumentationEvaluationThresholds,
     ) -> Result<(), Vec<String>> {
+        self.check_thresholds_with_mode(thresholds, false)
+    }
+
+    pub fn check_thresholds_with_mode(
+        &self,
+        thresholds: &DocumentationEvaluationThresholds,
+        ci_mode: bool,
+    ) -> Result<(), Vec<String>> {
         let mut violations = Vec::new();
+        if let Some(min_runs) = thresholds.min_runs
+            && self.runs < min_runs
+        {
+            violations.push(format!(
+                "{} evaluated runs is below minimum {min_runs}",
+                self.runs
+            ));
+        }
+        let adjudicated = self.accepted_findings + self.rejected_findings;
+        if !(ci_mode && adjudicated == 0) {
+            if let Some(minimum) = thresholds.min_adjudicated_findings
+                && adjudicated < minimum
+            {
+                violations.push(format!(
+                    "{adjudicated} adjudicated findings is below minimum {minimum}"
+                ));
+            }
+            if let Some(maximum) = thresholds.max_unadjudicated_findings
+                && self.unadjudicated_findings > maximum
+            {
+                violations.push(format!(
+                    "{} unadjudicated findings exceeds maximum {maximum}",
+                    self.unadjudicated_findings
+                ));
+            }
+        }
+        for (name, value) in [
+            ("minimum precision", thresholds.min_precision_basis_points),
+            ("minimum recall", thresholds.min_recall_basis_points),
+            (
+                "maximum duplicate rate",
+                thresholds.max_duplicate_rate_basis_points,
+            ),
+            (
+                "maximum unable-to-verify rate",
+                thresholds.max_unable_to_verify_rate_basis_points,
+            ),
+            (
+                "minimum repeated-run stability",
+                thresholds.min_repeated_run_stability_basis_points,
+            ),
+        ] {
+            if value.is_some_and(|basis_points| basis_points > 10_000) {
+                violations.push(format!("{name} must not exceed 10000 basis points"));
+            }
+        }
         if let Some(min_precision) = thresholds.min_precision_basis_points {
             match self.precision {
                 Some(precision) if precision.basis_points < min_precision => {
@@ -103,7 +157,7 @@ impl DocumentationEvaluation {
                         f64::from(min_precision) / 100.0
                     ));
                 }
-                None => {
+                None if !ci_mode || adjudicated > 0 => {
                     violations.push(
                         "precision was unmeasured (no accepted or rejected findings)".to_owned(),
                     );
@@ -167,6 +221,12 @@ impl DocumentationEvaluation {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DocumentationEvaluationThresholds {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_runs: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_adjudicated_findings: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_unadjudicated_findings: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_precision_basis_points: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -575,5 +635,53 @@ mod tests {
         assert!(
             serde_json::from_slice::<serde_json::Value>(&evaluation.to_json().unwrap()).is_ok()
         );
+    }
+
+    #[test]
+    fn check_thresholds_ci_mode_and_unadjudicated_handling() {
+        let first = report("first", false);
+        let corpus = DocumentationEvaluationCorpus {
+            schema_version: DOCUMENTATION_CORPUS_SCHEMA_VERSION,
+            name: "seeded-documentation".to_owned(),
+            version: "1.0.0".to_owned(),
+            policy_version: "documentation-public-api@1".to_owned(),
+            expected_issues: vec![ExpectedDocumentationIssue {
+                id: "missing-errors".to_owned(),
+                target: TargetId::derive([b"seeded-target".as_slice()]),
+                dimensions: BTreeSet::from([DocumentationDimension::Errors]),
+            }],
+            known_clean_targets: Vec::new(),
+        };
+
+        // Evaluation without adjudications
+        let unadjudicated_eval = evaluate_documentation(&corpus, &[first], &[]).unwrap();
+        assert_eq!(unadjudicated_eval.accepted_findings, 0);
+        assert_eq!(unadjudicated_eval.rejected_findings, 0);
+        assert!(unadjudicated_eval.precision.is_none());
+
+        let thresholds = DocumentationEvaluationThresholds {
+            min_precision_basis_points: Some(8_000),
+            min_recall_basis_points: Some(0),
+            min_adjudicated_findings: Some(1),
+            max_unadjudicated_findings: Some(0),
+            ..Default::default()
+        };
+
+        // Non-CI mode: fails because precision is unmeasured and min_adjudicated_findings unmet
+        let non_ci_err = unadjudicated_eval.check_thresholds(&thresholds).unwrap_err();
+        assert!(non_ci_err.iter().any(|v| v.contains("precision was unmeasured")));
+        assert!(non_ci_err.iter().any(|v| v.contains("adjudicated findings is below minimum")));
+        assert!(non_ci_err.iter().any(|v| v.contains("unadjudicated findings exceeds maximum")));
+
+        // CI mode: does not block on human adjudication
+        assert!(unadjudicated_eval.check_thresholds_with_mode(&thresholds, true).is_ok());
+
+        // CI mode: still strictly enforces automated thresholds (e.g. min_recall 100%)
+        let strict_recall = DocumentationEvaluationThresholds {
+            min_recall_basis_points: Some(10_000),
+            ..Default::default()
+        };
+        let ci_recall_err = unadjudicated_eval.check_thresholds_with_mode(&strict_recall, true).unwrap_err();
+        assert!(ci_recall_err.iter().any(|v| v.contains("recall 0.00% is below threshold 100.00%")));
     }
 }

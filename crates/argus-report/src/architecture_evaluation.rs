@@ -106,6 +106,14 @@ impl ArchitectureEvaluation {
         &self,
         thresholds: &ArchitectureEvaluationThresholds,
     ) -> Result<(), Vec<String>> {
+        self.check_thresholds_with_mode(thresholds, false)
+    }
+
+    pub fn check_thresholds_with_mode(
+        &self,
+        thresholds: &ArchitectureEvaluationThresholds,
+        ci_mode: bool,
+    ) -> Result<(), Vec<String>> {
         let mut violations = Vec::new();
         if let Some(min_runs) = thresholds.min_runs
             && self.runs < min_runs
@@ -116,20 +124,22 @@ impl ArchitectureEvaluation {
             ));
         }
         let adjudicated = self.accepted_findings + self.rejected_findings;
-        if let Some(minimum) = thresholds.min_adjudicated_findings
-            && adjudicated < minimum
-        {
-            violations.push(format!(
-                "{adjudicated} adjudicated findings is below minimum {minimum}"
-            ));
-        }
-        if let Some(maximum) = thresholds.max_unadjudicated_findings
-            && self.unadjudicated_findings > maximum
-        {
-            violations.push(format!(
-                "{} unadjudicated findings exceeds maximum {maximum}",
-                self.unadjudicated_findings
-            ));
+        if !(ci_mode && adjudicated == 0) {
+            if let Some(minimum) = thresholds.min_adjudicated_findings
+                && adjudicated < minimum
+            {
+                violations.push(format!(
+                    "{adjudicated} adjudicated findings is below minimum {minimum}"
+                ));
+            }
+            if let Some(maximum) = thresholds.max_unadjudicated_findings
+                && self.unadjudicated_findings > maximum
+            {
+                violations.push(format!(
+                    "{} unadjudicated findings exceeds maximum {maximum}",
+                    self.unadjudicated_findings
+                ));
+            }
         }
         for (name, value) in [
             ("minimum precision", thresholds.min_precision_basis_points),
@@ -160,7 +170,7 @@ impl ArchitectureEvaluation {
                         f64::from(min_precision) / 100.0
                     ));
                 }
-                None => {
+                None if !ci_mode || adjudicated > 0 => {
                     violations.push(
                         "precision was unmeasured (no accepted or rejected findings)".to_owned(),
                     );

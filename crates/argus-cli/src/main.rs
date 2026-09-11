@@ -120,7 +120,7 @@ Examples:
 
 const HELP_AUDIT: &str = "Plan and durably admit review work items for a policy pipeline
 
-Usage: argus audit --pipeline <pipeline> [--preset <local|ci>] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]
+Usage: argus audit --pipeline <pipeline> [--preset <local|ci>] [--ci] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]
 
 Description:
   Evaluates policy applicability rules across discovered targets in the current
@@ -130,6 +130,7 @@ Description:
 Options:
   --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, correctness, architecture, full)
   --preset <preset>       Execution preset: local (default, developer interactive) or ci (strict budget, automated gating)
+  --ci                    Non-interactive CI execution mode (equivalent to --preset ci)
   --base <ref>            Examine targets changed and impacted relative to git base ref (merge-base vs HEAD)
   --diff <ref>            Alias for --base <ref>
   --since <ref>           Alias for --base <ref>
@@ -144,12 +145,13 @@ Examples:
   argus audit --pipeline architecture
   argus audit --pipeline full
   argus audit --pipeline full --preset ci
+  argus audit --pipeline full --ci
   argus audit --pipeline full --base main
-  argus audit --pipeline full --diff origin/main --preset ci";
+  argus audit --pipeline full --diff origin/main --ci";
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work [documentation|correctness|architecture|all] [--preset <local|ci>] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
+Usage: argus work [documentation|correctness|architecture|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -159,6 +161,7 @@ Description:
 Arguments & Options:
   documentation | correctness | architecture | all  Review policy to execute (default: all)
   --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency)
+  --ci                                        Non-interactive CI execution mode (equivalent to --preset ci)
   -p, --provider, --profile <name[:model]>    Provider configuration (e.g. 'bedrock:claude-3-haiku', 'lemonade:default') or path
   -j, --concurrency, --threads <number>       Number of concurrent review threads/workers (default: provider max concurrency)
   --limit <number>                            Maximum number of work items to process (0 for no limit, default: 1)
@@ -183,7 +186,7 @@ Examples:
 
 const HELP_RUN: &str = "Execute complete review lifecycle (prime -> audit -> work -> finalize -> report)
 
-Usage: argus run [--preset <local|ci>] [--adapter <adapter>] [--pipeline <pipeline>] [--provider <name[:model]>] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only] [--format <format>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
+Usage: argus run [--preset <local|ci>] [--ci] [--thresholds <path>] [--adapter <adapter>] [--pipeline <pipeline>] [--provider <name[:model]>] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only] [--format <format>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
 
 Description:
   Executes an end-to-end review lifecycle pipeline in a single unified command:
@@ -194,6 +197,8 @@ Description:
 
 Options:
   --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency, strict checks)
+  --ci                                        Non-interactive CI execution mode (equivalent to --preset ci)
+  --thresholds <path>                         Path to quality thresholds configuration to enforce on run reports
   --adapter <adapter>                         Language adapter to run (default: rust)
   --pipeline <pipeline>                       Policy pipeline to admit (default: full)
   -p, --provider, --profile <name[:model]>    Provider configuration (e.g. 'bedrock:claude-3-haiku', 'lemonade:default')
@@ -211,7 +216,7 @@ Options:
 Examples:
   argus run
   argus run --preset ci --base origin/main
-  argus run --preset ci --diff origin/main --provider bedrock:claude-3-haiku
+  argus run --ci --diff origin/main --provider bedrock:claude-3-haiku
   argus run --pipeline documentation --changed-only";
 
 const HELP_TARGETS: &str = "List or inspect persisted semantic targets from the current inventory
@@ -395,7 +400,7 @@ Examples:
 const HELP_EVALUATE: &str = "Measure quality and calibration against a versioned corpus
 
 Usage:
-  argus evaluate <documentation|correctness|architecture> --corpus <path> [--thresholds <path>] [--format <markdown|json>] <run-id> [<run-id> ...]
+  argus evaluate <documentation|correctness|architecture> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]
 
 Description:
   Evaluates one or more audit runs against a ground-truth defect corpus:
@@ -408,11 +413,13 @@ Description:
 Options:
   --corpus <path>       Path to versioned evaluation corpus JSON
   --thresholds <path>   Optional path to JSON thresholds file for automated CI quality gating
+  --ci                  Non-interactive CI execution mode: enforces configured quality thresholds without blocking on human adjudication
   --format <format>     Output format: markdown (default) or json
+  -c, --config <path>   Path to project configuration (default: .argus/config/argus.json)
 
 Examples:
   argus evaluate documentation --corpus docs/evaluation/documentation-corpus-v1.json 5c82a1...
-  argus evaluate correctness --corpus docs/evaluation/correctness-corpus-v1.json 5c82a1...
+  argus evaluate correctness --corpus docs/evaluation/correctness-corpus-v1.json --ci 5c82a1...
   argus evaluate architecture --corpus docs/evaluation/architecture-corpus-v1.json 5c82a1...";
 
 const HELP_PROVIDER: &str = "Manage and discover model provider configurations
@@ -592,6 +599,16 @@ fn command_help(command: &str) -> Result<String, argus_core::ArgusError> {
     }
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ProjectThresholdConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correctness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectConfig {
     pub schema_version: u32,
@@ -599,6 +616,8 @@ pub struct ProjectConfig {
     pub default_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thresholds: Option<ProjectThresholdConfig>,
 }
 
 impl Default for ProjectConfig {
@@ -607,8 +626,56 @@ impl Default for ProjectConfig {
             schema_version: 1,
             default_provider: None,
             default_profile: None,
+            thresholds: None,
         }
     }
+}
+
+fn resolve_thresholds_path(
+    root: &std::path::Path,
+    pipeline: &str,
+    explicit_path: Option<&str>,
+    project_config: &ProjectConfig,
+) -> Option<std::path::PathBuf> {
+    if let Some(explicit) = explicit_path {
+        let p = std::path::PathBuf::from(explicit);
+        return Some(if p.is_absolute() { p } else { root.join(p) });
+    }
+
+    if let Some(ref thresh_cfg) = project_config.thresholds {
+        let configured = match pipeline {
+            "documentation" => thresh_cfg.documentation.as_deref(),
+            "correctness" => thresh_cfg.correctness.as_deref(),
+            "architecture" => thresh_cfg.architecture.as_deref(),
+            _ => None,
+        };
+        if let Some(cfg_path) = configured {
+            let p = std::path::PathBuf::from(cfg_path);
+            let resolved = if p.is_absolute() { p } else { root.join(p) };
+            if resolved.is_file() {
+                return Some(resolved);
+            }
+        }
+    }
+
+    // Default conventions:
+    // 1. .argus/config/<pipeline>-thresholds.json
+    let p1 = root.join(format!(".argus/config/{pipeline}-thresholds.json"));
+    if p1.is_file() {
+        return Some(p1);
+    }
+    // 2. .argus/config/thresholds.json
+    let p2 = root.join(".argus/config/thresholds.json");
+    if p2.is_file() {
+        return Some(p2);
+    }
+    // 3. docs/evaluation/<pipeline>-thresholds-v1.json
+    let p3 = root.join(format!("docs/evaluation/{pipeline}-thresholds-v1.json"));
+    if p3.is_file() {
+        return Some(p3);
+    }
+
+    None
 }
 
 fn load_project_config(
@@ -1854,7 +1921,7 @@ fn audit_command(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_AUDIT.to_owned());
     }
-    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|full> [--preset <local|ci>] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
+    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|full> [--preset <local|ci>] [--ci] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
     let mut iter = args.into_iter().peekable();
     let mut pipeline = None;
     let mut preset = PipelinePreset::Local;
@@ -1880,6 +1947,9 @@ fn audit_command(
                     .next()
                     .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
                 preset = PipelinePreset::parse(&val)?;
+            }
+            "--ci" => {
+                preset = PipelinePreset::Ci;
             }
             "--base" | "--diff" | "--since" => {
                 let val = iter
@@ -2205,7 +2275,7 @@ fn work_command_with_env(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
     }
-    let usage = "usage: argus work [documentation|correctness|architecture|all] [--preset <local|ci>] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
+    let usage = "usage: argus work [documentation|correctness|architecture|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
     let mut iter = args.into_iter().peekable();
     let policy_arg = if iter.peek().is_some_and(|a| !a.starts_with('-')) {
         iter.next().map(|arg| arg.to_lowercase())
@@ -2236,6 +2306,9 @@ fn work_command_with_env(
                     .next()
                     .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
                 preset = PipelinePreset::parse(&val)?;
+            }
+            "--ci" => {
+                preset = PipelinePreset::Ci;
             }
             "--fail-fast" => {
                 fail_fast_explicit = Some(true);
@@ -3161,6 +3234,7 @@ fn run_command(
     let mut fail_fast_arg = None;
     let mut format_arg = None;
     let mut config_arg = None;
+    let mut thresholds_arg = None;
 
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -3169,6 +3243,15 @@ fn run_command(
                     argus_core::ArgusError::invalid_input("missing value for --preset")
                 })?;
                 preset = PipelinePreset::parse(&val)?;
+            }
+            "--ci" => {
+                preset = PipelinePreset::Ci;
+            }
+            "--thresholds" => {
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --thresholds")
+                })?;
+                thresholds_arg = Some(val);
             }
             "--adapter" => {
                 let val = iter.next().ok_or_else(|| {
@@ -3330,6 +3413,33 @@ fn run_command(
     }
     let report_result = report_command(root, report_args.into_iter())?;
     output.push_str(&report_result);
+
+    // 6. Quality gate enforcement
+    let explicit_config = config_arg.as_deref().map(std::path::Path::new);
+    let project_config = load_project_config(root, explicit_config)?;
+    let pipe_name = "full";
+    let resolved_thresholds = resolve_thresholds_path(
+        root,
+        pipe_name,
+        thresholds_arg.as_deref(),
+        &project_config,
+    );
+
+    if let Some(ref _t_path) = resolved_thresholds {
+        let queue = working_queue(root)?;
+        let run_id = current_run(root)?;
+        let records = queue.run_records(&run_id)?;
+        let failed_work = records
+            .work
+            .iter()
+            .filter(|w| w.state == argus_storage::QueueState::Failed)
+            .count();
+        if failed_work > 0 {
+            return Err(argus_core::ArgusError::invalid_input(format!(
+                "CI gate failure: {failed_work} review work item(s) failed during audit run {run_id}"
+            )));
+        }
+    }
 
     Ok(output)
 }
@@ -4174,7 +4284,7 @@ fn evaluate_command(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    let usage = "usage: argus evaluate <documentation|correctness|architecture> --corpus <path> [--thresholds <path>] [--format <markdown|json>] <run-id> [<run-id> ...]";
+    let usage = "usage: argus evaluate <documentation|correctness|architecture> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]";
     let first = args.next();
     if is_help_flag(first.as_deref()) {
         return Ok(HELP_EVALUATE.to_owned());
@@ -4188,6 +4298,8 @@ fn evaluate_command(
     let mut corpus_path = None;
     let mut thresholds_path = None;
     let mut format = "markdown";
+    let mut ci_mode = false;
+    let mut config_path = None;
     let mut run_ids = Vec::new();
 
     while let Some(arg) = args.next() {
@@ -4212,6 +4324,18 @@ fn evaluate_command(
                     return Ok(HELP_EVALUATE.to_owned());
                 }
                 thresholds_path = Some(path);
+            }
+            "--ci" => {
+                ci_mode = true;
+            }
+            "-c" | "--config" => {
+                let path = args
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                if is_help_flag(Some(&path)) {
+                    return Ok(HELP_EVALUATE.to_owned());
+                }
+                config_path = Some(path);
             }
             "--format" => {
                 let fmt = args
@@ -4248,6 +4372,21 @@ fn evaluate_command(
         return Err(argus_core::ArgusError::invalid_input(usage));
     }
 
+    let explicit_config = config_path.as_deref().map(std::path::Path::new);
+    let project_config = load_project_config(root, explicit_config)?;
+    let resolved_thresholds = resolve_thresholds_path(
+        root,
+        pipeline,
+        thresholds_path.as_deref(),
+        &project_config,
+    );
+
+    if ci_mode && resolved_thresholds.is_none() {
+        return Err(argus_core::ArgusError::invalid_input(format!(
+            "CI gate failure: no quality thresholds configured or found for '{pipeline}' review; supply --thresholds <path> or configure .argus/config/argus.json"
+        )));
+    }
+
     let queue = working_queue(root)?;
 
     if pipeline == "documentation" {
@@ -4272,13 +4411,7 @@ fn evaluate_command(
         }
         let evaluation = argus_report::evaluate_documentation(&corpus, &reports, &adjudications)?;
 
-        if let Some(thresholds_raw) = thresholds_path {
-            let t_path = std::path::PathBuf::from(thresholds_raw);
-            let t_path = if t_path.is_absolute() {
-                t_path
-            } else {
-                root.join(t_path)
-            };
+        if let Some(ref t_path) = resolved_thresholds {
             let thresholds: argus_report::DocumentationEvaluationThresholds =
                 serde_json::from_slice(
                     &std::fs::read(t_path)
@@ -4288,7 +4421,7 @@ fn evaluate_command(
                     argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
                         .with_source(error)
                 })?;
-            if let Err(violations) = evaluation.check_thresholds(&thresholds) {
+            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
                 return Err(argus_core::ArgusError::invalid_input(format!(
                     "Documentation evaluation quality thresholds unmet:\n  - {}",
                     violations.join("\n  - ")
@@ -4327,13 +4460,7 @@ fn evaluate_command(
         }
         let evaluation = argus_report::evaluate_correctness(&corpus, &reports, &adjudications)?;
 
-        if let Some(thresholds_raw) = thresholds_path {
-            let t_path = std::path::PathBuf::from(thresholds_raw);
-            let t_path = if t_path.is_absolute() {
-                t_path
-            } else {
-                root.join(t_path)
-            };
+        if let Some(ref t_path) = resolved_thresholds {
             let thresholds: argus_report::CorrectnessEvaluationThresholds = serde_json::from_slice(
                 &std::fs::read(t_path).map_err(io_error("cannot read evaluation thresholds"))?,
             )
@@ -4341,7 +4468,7 @@ fn evaluate_command(
                 argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
                     .with_source(error)
             })?;
-            if let Err(violations) = evaluation.check_thresholds(&thresholds) {
+            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
                 return Err(argus_core::ArgusError::invalid_input(format!(
                     "Correctness evaluation quality thresholds unmet:\n  - {}",
                     violations.join("\n  - ")
@@ -4380,13 +4507,7 @@ fn evaluate_command(
         }
         let evaluation = argus_report::evaluate_architecture(&corpus, &reports, &adjudications)?;
 
-        if let Some(thresholds_raw) = thresholds_path {
-            let t_path = std::path::PathBuf::from(thresholds_raw);
-            let t_path = if t_path.is_absolute() {
-                t_path
-            } else {
-                root.join(t_path)
-            };
+        if let Some(ref t_path) = resolved_thresholds {
             let thresholds: argus_report::ArchitectureEvaluationThresholds =
                 serde_json::from_slice(
                     &std::fs::read(t_path)
@@ -4396,7 +4517,7 @@ fn evaluate_command(
                     argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
                         .with_source(error)
                 })?;
-            if let Err(violations) = evaluation.check_thresholds(&thresholds) {
+            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
                 return Err(argus_core::ArgusError::invalid_input(format!(
                     "Architecture evaluation quality thresholds unmet:\n  - {}",
                     violations.join("\n  - ")
@@ -7649,6 +7770,155 @@ mod tests {
                 .to_string()
                 .contains("recall 0.00% is below threshold 80.00%")
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn evaluate_command_ci_mode_and_threshold_resolution() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        let primed = run(["prime".to_owned()].into_iter(), temporary.path()).unwrap();
+        let run_id = primed.split_whitespace().nth(2).unwrap().to_owned();
+
+        let corpus = argus_report::DocumentationEvaluationCorpus {
+            schema_version: argus_report::DOCUMENTATION_CORPUS_SCHEMA_VERSION,
+            name: "cli-ci-evaluation".to_owned(),
+            version: "1.0.0".to_owned(),
+            policy_version: "documentation-public-api@1".to_owned(),
+            expected_issues: vec![argus_report::ExpectedDocumentationIssue {
+                id: "missing-errors".to_owned(),
+                target: argus_core::TargetId::derive([b"cli-ci-evaluation-target".as_slice()]),
+                dimensions: std::collections::BTreeSet::from([
+                    argus_policies::DocumentationDimension::Errors,
+                ]),
+            }],
+            known_clean_targets: Vec::new(),
+        };
+        let corpus_path = temporary.path().join("corpus.json");
+        std::fs::write(&corpus_path, serde_json::to_vec(&corpus).unwrap()).unwrap();
+
+        // 1. Without configured thresholds, --ci fails fast with CI gate failure
+        let ci_missing_thresholds = run(
+            vec![
+                "evaluate".to_owned(),
+                "documentation".to_owned(),
+                "--corpus".to_owned(),
+                corpus_path.display().to_string(),
+                "--ci".to_owned(),
+                run_id.clone(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert_eq!(ci_missing_thresholds.code(), argus_core::ErrorCode::InvalidInput);
+        assert!(ci_missing_thresholds.to_string().contains("CI gate failure: no quality thresholds configured"));
+
+        // 2. Configure default thresholds in .argus/config/documentation-thresholds.json
+        let config_dir = temporary.path().join(".argus/config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let ci_thresholds = argus_report::DocumentationEvaluationThresholds {
+            min_precision_basis_points: Some(8_000), // High precision requirement (unadjudicated)
+            min_recall_basis_points: Some(0),        // Met (0%)
+            min_adjudicated_findings: Some(5),       // Unmet (0 adjudications)
+            ..Default::default()
+        };
+        std::fs::write(
+            config_dir.join("documentation-thresholds.json"),
+            serde_json::to_vec(&ci_thresholds).unwrap(),
+        )
+        .unwrap();
+
+        // Non-CI evaluation with --thresholds fails on unmeasured precision & adjudication count
+        let non_ci_failure = run(
+            vec![
+                "evaluate".to_owned(),
+                "documentation".to_owned(),
+                "--corpus".to_owned(),
+                corpus_path.display().to_string(),
+                "--thresholds".to_owned(),
+                config_dir.join("documentation-thresholds.json").display().to_string(),
+                run_id.clone(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(non_ci_failure.to_string().contains("precision was unmeasured"));
+
+        // CI evaluation with auto-discovered thresholds passes without blocking on human adjudication
+        let ci_success = run(
+            vec![
+                "evaluate".to_owned(),
+                "documentation".to_owned(),
+                "--corpus".to_owned(),
+                corpus_path.display().to_string(),
+                "--ci".to_owned(),
+                run_id.clone(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(ci_success.contains("| Recall | 0.00% (0/1) |"));
+
+        // 3. CI evaluation still fails if an automated threshold is unmet (e.g. recall 90%)
+        let failing_ci_thresholds = argus_report::DocumentationEvaluationThresholds {
+            min_recall_basis_points: Some(9_000),
+            ..Default::default()
+        };
+        let failing_path = temporary.path().join("failing_ci.json");
+        std::fs::write(
+            &failing_path,
+            serde_json::to_vec(&failing_ci_thresholds).unwrap(),
+        )
+        .unwrap();
+
+        let ci_failure = run(
+            vec![
+                "evaluate".to_owned(),
+                "documentation".to_owned(),
+                "--corpus".to_owned(),
+                corpus_path.display().to_string(),
+                "--thresholds".to_owned(),
+                failing_path.display().to_string(),
+                "--ci".to_owned(),
+                run_id,
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(ci_failure.to_string().contains("recall 0.00% is below threshold 90.00%"));
+    }
+
+    #[test]
+    fn audit_and_run_command_support_ci_flag() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temporary.path().join("Cargo.toml"),
+            b"[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(temporary.path().join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+
+        run(["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(), temporary.path()).unwrap();
+
+        // Test `audit --ci`
+        let audit_out = run(
+            [
+                "audit".to_owned(),
+                "--pipeline".to_owned(),
+                "documentation".to_owned(),
+                "--ci".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(audit_out.contains("[Preset: Ci]"));
+        assert!(audit_out.contains("Next step: Run 'argus work --preset ci'"));
     }
 
     #[test]
