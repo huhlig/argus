@@ -3560,14 +3560,34 @@ fn prime_command(
         )));
     }
 
+    let snapshot = argus_snapshot::capture_snapshot(
+        root,
+        &root.join(".argus/state/sources"),
+        &argus_snapshot::CaptureOptions::default(),
+    )?;
+
+    let has_ext = |ext: &str| {
+        snapshot.files.keys().any(|p| {
+            std::path::Path::new(p.as_str())
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+        })
+    };
+
     let should_run_rust = match adapter.as_deref() {
         Some("rust") => true,
-        Some("all") => root.join("Cargo.toml").is_file(),
+        Some("all") => root.join("Cargo.toml").is_file() || has_ext("rs"),
         _ => false,
     };
     let should_run_ts = match adapter.as_deref() {
         Some("typescript" | "javascript") => true,
-        Some("all") => root.join("package.json").is_file(),
+        Some("all") => {
+            root.join("package.json").is_file()
+                || has_ext("ts")
+                || has_ext("tsx")
+                || has_ext("js")
+                || has_ext("jsx")
+        }
         _ => false,
     };
     let should_run_python = match adapter.as_deref() {
@@ -3577,6 +3597,7 @@ fn prime_command(
                 || root.join("setup.cfg").is_file()
                 || root.join("setup.py").is_file()
                 || root.join("requirements.txt").is_file()
+                || has_ext("py")
         }
         _ => false,
     };
@@ -3588,6 +3609,7 @@ fn prime_command(
                 || root.join("build.gradle.kts").is_file()
                 || root.join("settings.gradle").is_file()
                 || root.join("settings.gradle.kts").is_file()
+                || has_ext("java")
         }
         _ => false,
     };
@@ -3605,23 +3627,29 @@ fn prime_command(
                 || root.join("build.zig").is_file()
                 || root.join("Package.swift").is_file()
                 || root.join("stack.yaml").is_file()
+                || has_ext("go")
+                || has_ext("c")
+                || has_ext("cpp")
+                || has_ext("cc")
+                || has_ext("cxx")
+                || has_ext("h")
+                || has_ext("hpp")
+                || has_ext("cs")
+                || has_ext("zig")
+                || has_ext("swift")
+                || has_ext("hs")
+                || has_ext("kt")
         }
         _ => false,
     };
     #[cfg(not(feature = "treesitter"))]
     let should_run_treesitter = false;
 
-    let metadata = if should_run_rust {
-        Some(cargo_metadata(root)?)
+    let metadata = if should_run_rust && root.join("Cargo.toml").is_file() {
+        cargo_metadata(root).ok()
     } else {
         None
     };
-
-    let snapshot = argus_snapshot::capture_snapshot(
-        root,
-        &root.join(".argus/state/sources"),
-        &argus_snapshot::CaptureOptions::default(),
-    )?;
 
     let inventory_count = if should_run_rust || should_run_ts || should_run_python || should_run_java || should_run_treesitter {
         let repository =
@@ -3629,14 +3657,33 @@ fn prime_command(
         let source = SnapshotSource(repository.reader(snapshot.clone()));
         let mut sink = JsonLinesInventorySink::new(root, &source)?;
 
+        let adapter_identity = if adapter.as_deref() == Some("all") {
+            argus_language::AdapterIdentity {
+                name: "all".to_owned(),
+                version: "1.0.0".to_owned(),
+            }
+        } else if let Some(ref ad) = adapter {
+            argus_language::AdapterIdentity {
+                name: ad.clone(),
+                version: "1.0.0".to_owned(),
+            }
+        } else {
+            argus_language::AdapterIdentity {
+                name: "discovered".to_owned(),
+                version: "1.0.0".to_owned(),
+            }
+        };
+
+        sink.begin(adapter_identity, snapshot.id.clone())?;
+
         if let Some(metadata) = metadata {
             let rust = argus_rust::RustWorkspaceAdapter::new(
                 metadata,
                 snapshot.configuration.id.clone(),
                 argus_rust::RustEdition::Edition2024,
             );
+            let mut inventory = rust.inventory(&source)?;
             if let Some(ref path) = relationships {
-                let mut inventory = rust.inventory(&source)?;
                 let bytes = std::fs::read(path)
                     .map_err(io_error("cannot read captured Rust semantic relationships"))?;
                 let semantic =
@@ -3660,10 +3707,8 @@ fn prime_command(
                 inventory
                     .relations
                     .dedup_by(|left, right| left.id == right.id);
-                persist_inventory(&mut sink, inventory)?;
-            } else {
-                rust.inventory_into(&source, &mut sink)?;
             }
+            append_inventory_items(&mut sink, inventory)?;
         }
 
         if should_run_ts {
@@ -3672,7 +3717,8 @@ fn prime_command(
                 snapshot.configuration.id.clone(),
                 candidate_files,
             );
-            ts.inventory_into(&source, &mut sink)?;
+            let inventory = ts.inventory(&source)?;
+            append_inventory_items(&mut sink, inventory)?;
         }
 
         if should_run_python {
@@ -3681,7 +3727,8 @@ fn prime_command(
                 snapshot.configuration.id.clone(),
                 candidate_files,
             );
-            py.inventory_into(&source, &mut sink)?;
+            let inventory = py.inventory(&source)?;
+            append_inventory_items(&mut sink, inventory)?;
         }
 
         if should_run_java {
@@ -3690,12 +3737,37 @@ fn prime_command(
                 snapshot.configuration.id.clone(),
                 candidate_files,
             );
-            java.inventory_into(&source, &mut sink)?;
+            let inventory = java.inventory(&source)?;
+            append_inventory_items(&mut sink, inventory)?;
         }
 
         #[cfg(feature = "treesitter")]
         if should_run_treesitter {
-            let candidate_files = snapshot.files.keys().cloned().collect::<Vec<_>>();
+            let candidate_files = if adapter.as_deref() == Some("all") {
+                snapshot
+                    .files
+                    .keys()
+                    .filter(|p| {
+                        let ext = std::path::Path::new(p.as_str())
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("");
+                        let is_rust = should_run_rust && ext.eq_ignore_ascii_case("rs");
+                        let is_ts = should_run_ts
+                            && (ext.eq_ignore_ascii_case("ts")
+                                || ext.eq_ignore_ascii_case("tsx")
+                                || ext.eq_ignore_ascii_case("js")
+                                || ext.eq_ignore_ascii_case("jsx"));
+                        let is_py = should_run_python && ext.eq_ignore_ascii_case("py");
+                        let is_java = should_run_java && ext.eq_ignore_ascii_case("java");
+                        !is_rust && !is_ts && !is_py && !is_java
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                snapshot.files.keys().cloned().collect::<Vec<_>>()
+            };
+
             let ts_lang = match adapter.as_deref() {
                 Some("treesitter" | "all") => None,
                 Some(s) if s.starts_with("treesitter:") => {
@@ -3709,9 +3781,11 @@ fn prime_command(
                 candidate_files,
                 ts_lang,
             );
-            ts_adapter.inventory_into(&source, &mut sink)?;
+            let inventory = ts_adapter.inventory(&source)?;
+            append_inventory_items(&mut sink, inventory)?;
         }
 
+        sink.finish()?;
         sink.target_count()
     } else {
         0
@@ -3748,6 +3822,7 @@ fn prime_command(
             "zig" => "Zig",
             "swift" => "Swift",
             "kotlin" => "Kotlin",
+            "all" => "multi-language",
             s if s.starts_with("treesitter:") => "Tree-Sitter",
             _ => "discovered",
         };
@@ -3759,11 +3834,10 @@ fn prime_command(
     ))
 }
 
-fn persist_inventory(
+fn append_inventory_items(
     sink: &mut dyn InventorySink,
     inventory: argus_language::AdapterInventory,
 ) -> Result<(), argus_core::ArgusError> {
-    sink.begin(inventory.adapter, inventory.snapshot)?;
     for partition in inventory.partitions {
         sink.partition(partition)?;
     }
@@ -3779,7 +3853,7 @@ fn persist_inventory(
     for conflict in inventory.conflicts {
         sink.conflict(conflict)?;
     }
-    sink.finish()
+    Ok(())
 }
 
 fn coverage_command(
@@ -10135,6 +10209,89 @@ public class App {
         .unwrap_err();
 
         assert!(err.to_string().contains("requires tree-sitter support"));
+    }
+
+    #[test]
+    fn multi_language_prime_adapter_all() {
+        let temporary = tempfile::tempdir().unwrap();
+
+        // 1. TypeScript
+        std::fs::write(
+            temporary.path().join("package.json"),
+            br#"{"name":"multi-test","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(
+            temporary.path().join("src/index.ts"),
+            b"export function greet(): string { return 'hello'; }\n",
+        )
+        .unwrap();
+
+        // 2. Python
+        std::fs::write(
+            temporary.path().join("pyproject.toml"),
+            b"[project]\nname=\"py-lib\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temporary.path().join("src/service.py"),
+            b"def process():\n    pass\n",
+        )
+        .unwrap();
+
+        // 3. Go (Tree-Sitter if enabled)
+        #[cfg(feature = "treesitter")]
+        {
+            std::fs::write(
+                temporary.path().join("go.mod"),
+                b"module example.com/pkg\n\ngo 1.22\n",
+            )
+            .unwrap();
+            std::fs::write(
+                temporary.path().join("main.go"),
+                b"package main\n\nfunc main() {}\n",
+            )
+            .unwrap();
+        }
+
+        let output = run(
+            ["prime".to_owned(), "--adapter".to_owned(), "all".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(output.contains("multi-language targets"));
+        assert!(temporary.path().join(".argus/state/sources").exists());
+        assert!(temporary.path().join(".argus/state/current-run").exists());
+
+        let snapshot_dir = std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
+        let mut found_ts = false;
+        let mut found_py = false;
+        #[cfg(feature = "treesitter")]
+        let mut found_go = false;
+
+        for entry in snapshot_dir {
+            let entry = entry.unwrap();
+            let stream_file = entry.path().join("rust.jsonl");
+            if stream_file.exists() {
+                let content = std::fs::read_to_string(stream_file).unwrap();
+                if content.contains("greet") {
+                    found_ts = true;
+                }
+                if content.contains("process") {
+                    found_py = true;
+                }
+                #[cfg(feature = "treesitter")]
+                if content.contains("main.go") {
+                    found_go = true;
+                }
+            }
+        }
+        assert!(found_ts, "TypeScript targets must be in stream");
+        assert!(found_py, "Python targets must be in stream");
+        #[cfg(feature = "treesitter")]
+        assert!(found_go, "Go targets must be in stream");
     }
 }
 
