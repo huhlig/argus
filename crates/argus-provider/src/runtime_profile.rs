@@ -300,6 +300,9 @@ pub enum ProviderTransportProfile {
         /// Named AWS configuration profile.
         #[serde(default)]
         profile_name: Option<String>,
+        /// Optional Bedrock inference profile ID or ARN (e.g. `us.anthropic.claude-3-7-sonnet-20250219-v1:0`).
+        #[serde(default, alias = "inference_profile_id", alias = "inference_profile_env")]
+        inference_profile: Option<String>,
     },
 }
 
@@ -434,12 +437,20 @@ impl ProviderRuntimeProfile {
                 bearer_token,
                 endpoint_url,
                 profile_name,
+                inference_profile,
             } => {
                 let region = substitute_value(region, &mut read_secret)?;
                 let endpoint_url =
                     substitute_optional_value(endpoint_url.as_deref(), &mut read_secret)?;
                 let profile_name =
                     substitute_optional_value(profile_name.as_deref(), &mut read_secret)?;
+                let inference_profile = substitute_optional_value(
+                    inference_profile.as_deref(),
+                    &mut read_secret,
+                )?
+                .or_else(|| read_secret("AWS_BEDROCK_INFERENCE_PROFILE_ID"))
+                .or_else(|| read_secret("AWS_BEDROCK_INFERENCE_PROFILE"))
+                .or_else(|| read_secret("BEDROCK_INFERENCE_PROFILE"));
 
                 let bearer_token =
                     substitute_optional_value(bearer_token.as_deref(), &mut read_secret)?
@@ -476,6 +487,8 @@ impl ProviderRuntimeProfile {
                         region,
                         endpoint_url,
                         profile_name,
+                        inference_profile,
+                        models: vec![self.capabilities.identity.model.clone()],
                     },
                     credentials,
                 )
@@ -731,6 +744,7 @@ mod tests {
                 bearer_token: None,
                 endpoint_url: None,
                 profile_name: None,
+                inference_profile: None,
             }),
         ];
         for value in profiles {
@@ -823,6 +837,7 @@ mod tests {
                 bearer_token: None,
                 endpoint_url: None,
                 profile_name: None,
+                inference_profile: None,
             },
             default_policy: None,
             default_repair: None,

@@ -627,6 +627,7 @@ pub fn generate_runtime_profile(
                     Some(endpoint.to_owned())
                 },
                 profile_name: None,
+                inference_profile: None,
             }
         }
         DiscoveredProviderKind::Watsonx => {
@@ -788,6 +789,7 @@ pub fn generate_provider_config(
                     Some(endpoint.to_owned())
                 },
                 profile_name: None,
+                inference_profile: None,
             }
         }
         DiscoveredProviderKind::Watsonx => {

@@ -192,10 +192,15 @@ impl LangchartModelProvider {
 
     pub fn bedrock(
         capabilities: ProviderCapabilities,
-        config: crate::BedrockConfig,
+        mut config: crate::BedrockConfig,
         credentials: crate::BedrockCredentials,
     ) -> Result<Self, ProviderError> {
         require_deployment(&capabilities, DeploymentMode::Online, "bedrock")?;
+        if !capabilities.identity.model.is_empty()
+            && !config.models.iter().any(|m| m == &capabilities.identity.model)
+        {
+            config.models.push(capabilities.identity.model.clone());
+        }
         let adapter = crate::BedrockAdapter::new(config, credentials)
             .map_err(|error| ProviderError::InvalidProfile(error.to_string()))?;
         Self::new(capabilities, Arc::new(adapter))

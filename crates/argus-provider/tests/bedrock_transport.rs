@@ -102,6 +102,7 @@ fn bedrock_runtime_profile_roundtrip_and_build() {
             bearer_token: None,
             endpoint_url: None,
             profile_name: None,
+            inference_profile: None,
         },
     };
 
@@ -138,6 +139,7 @@ fn bedrock_runtime_profile_roundtrip_and_build() {
             bearer_token: Some("${AWS_BEARER_TOKEN_BEDROCK}".to_owned()),
             endpoint_url: None,
             profile_name: None,
+            inference_profile: None,
         },
     };
 
@@ -150,6 +152,89 @@ fn bedrock_runtime_profile_roundtrip_and_build() {
 
     assert_eq!(
         bearer_built.provider.capabilities().identity.model,
+        "anthropic.claude-3-7-sonnet-20250219-v1:0"
+    );
+}
+
+#[test]
+fn bedrock_runtime_profile_with_inference_profile() {
+    let json = serde_json::json!({
+        "schema_version": 1,
+        "capabilities": bedrock_capabilities(),
+        "policy": bedrock_policy(),
+        "repair": { "max_repair_attempts": 1 },
+        "transport": {
+            "kind": "bedrock",
+            "region": "us-east-1",
+            "inference_profile": "${CUSTOM_INFERENCE_PROFILE}",
+            "bearer_token": "fixture-bearer-token"
+        }
+    });
+
+    let profile: ProviderRuntimeProfile = serde_json::from_value(json).unwrap();
+    let built = profile
+        .build_with_secrets(|name| match name {
+            "CUSTOM_INFERENCE_PROFILE" => {
+                Some("us.anthropic.claude-3-7-sonnet-20250219-v1:0".to_owned())
+            }
+            _ => None,
+        })
+        .unwrap();
+
+    assert_eq!(
+        built.provider.capabilities().identity.model,
+        "anthropic.claude-3-7-sonnet-20250219-v1:0"
+    );
+
+    // Test alias deserialization "inference_profile_id"
+    let json_alias = serde_json::json!({
+        "schema_version": 1,
+        "capabilities": bedrock_capabilities(),
+        "policy": bedrock_policy(),
+        "repair": { "max_repair_attempts": 1 },
+        "transport": {
+            "kind": "bedrock",
+            "region": "us-east-1",
+            "inference_profile_id": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "bearer_token": "fixture-bearer-token"
+        }
+    });
+    let profile_alias: ProviderRuntimeProfile = serde_json::from_value(json_alias).unwrap();
+    let built_alias = profile_alias.build_with_secrets(|_| None).unwrap();
+    assert_eq!(
+        built_alias.provider.capabilities().identity.model,
+        "anthropic.claude-3-7-sonnet-20250219-v1:0"
+    );
+
+    // Test fallback to AWS_BEDROCK_INFERENCE_PROFILE_ID environment variable
+    let fallback_profile = ProviderRuntimeProfile {
+        schema_version: PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION,
+        capabilities: bedrock_capabilities(),
+        policy: bedrock_policy(),
+        repair: RepairPolicy {
+            max_repair_attempts: 1,
+        },
+        transport: ProviderTransportProfile::Bedrock {
+            region: "us-east-1".to_owned(),
+            access_key_id: None,
+            secret_access_key: None,
+            session_token: None,
+            bearer_token: Some("fixture-token".to_owned()),
+            endpoint_url: None,
+            profile_name: None,
+            inference_profile: None,
+        },
+    };
+    let built_fallback = fallback_profile
+        .build_with_secrets(|name| match name {
+            "AWS_BEDROCK_INFERENCE_PROFILE_ID" => {
+                Some("us.anthropic.claude-3-7-sonnet-20250219-v1:0".to_owned())
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        built_fallback.provider.capabilities().identity.model,
         "anthropic.claude-3-7-sonnet-20250219-v1:0"
     );
 }
@@ -223,5 +308,116 @@ fn bedrock_provider_config_resolves_and_builds_runtime_profile() {
     assert_eq!(
         resolved_default.capabilities.identity.model,
         "anthropic.claude-3-7-sonnet-20250219-v1:0"
+    );
+}
+
+#[tokio::test]
+async fn bedrock_user_inference_profile_config() {
+    let json = r#"{
+  "schema_version": 1,
+  "provider": "bedrock",
+  "transport": {
+    "kind": "bedrock",
+    "region": "${AWS_REGION:-us-east-1}",
+    "access_key_id": null,
+    "secret_access_key": null,
+    "session_token": null,
+    "bearer_token": "bedrock-api-key-test",
+    "endpoint_url": "https://bedrock-runtime.us-east-1.amazonaws.com/v1",
+    "profile_name": null
+  },
+  "default_policy": null,
+  "default_repair": null,
+  "models": {    
+    "global.anthropic.claude-fable-5-1": {
+      "context_window_tokens": 200000,
+      "max_output_tokens": 8192,
+      "structured_output": "best_effort",
+      "concurrency_capacity": 4,
+      "aliases": [
+        "claude-fable"
+      ]
+    },
+    "global.anthropic.claude-opus-5": {
+      "context_window_tokens": 200000,
+      "max_output_tokens": 8192,
+      "structured_output": "best_effort",
+      "concurrency_capacity": 4,
+      "aliases": [        
+        "claude-opus"
+      ]
+    },
+    "global.anthropic.claude-sonnet-5": {
+      "context_window_tokens": 200000,
+      "max_output_tokens": 4096,
+      "structured_output": "best_effort",
+      "concurrency_capacity": 4,
+      "aliases": [
+        "claude-sonnet",
+        "default"
+      ]
+    },
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "context_window_tokens": 128000,
+      "max_output_tokens": 8192,
+      "structured_output": "best_effort",
+      "concurrency_capacity": 4,
+      "aliases": [
+        "claude-haiku"
+      ]
+    }
+  }
+}"#;
+
+    let config: argus_provider::ProviderConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.provider, "bedrock");
+    assert_eq!(config.models.len(), 4);
+
+    // Resolves default model ("claude-sonnet")
+    let default_profile = config.resolve_runtime_profile(None).unwrap();
+    assert_eq!(
+        default_profile.capabilities.identity.model,
+        "global.anthropic.claude-sonnet-5"
+    );
+    assert_eq!(default_profile.capabilities.max_output_tokens, 4096);
+    assert_eq!(default_profile.capabilities.concurrency_capacity, 4);
+
+    // Resolves by alias
+    let fable_profile = config.resolve_runtime_profile(Some("claude-fable")).unwrap();
+    assert_eq!(
+        fable_profile.capabilities.identity.model,
+        "global.anthropic.claude-fable-5-1"
+    );
+
+    let opus_profile = config.resolve_runtime_profile(Some("claude-opus")).unwrap();
+    assert_eq!(
+        opus_profile.capabilities.identity.model,
+        "global.anthropic.claude-opus-5"
+    );
+
+    let haiku_profile = config.resolve_runtime_profile(Some("claude-haiku")).unwrap();
+    assert_eq!(
+        haiku_profile.capabilities.identity.model,
+        "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    );
+
+    // Resolves by exact ID
+    let exact = config
+        .resolve_runtime_profile(Some("global.anthropic.claude-sonnet-5"))
+        .unwrap();
+    assert_eq!(
+        exact.capabilities.identity.model,
+        "global.anthropic.claude-sonnet-5"
+    );
+
+    // Can build the runtime profile and health check succeeds
+    let built = default_profile.build_with_secrets(|_| None).unwrap();
+    assert_eq!(
+        built.provider.capabilities().identity.model,
+        "global.anthropic.claude-sonnet-5"
+    );
+    assert_eq!(
+        built.provider.health().await.unwrap(),
+        argus_provider::ProviderHealth::Ready
     );
 }

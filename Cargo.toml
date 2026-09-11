@@ -42,7 +42,7 @@ serde_json = "1.0"
 proptest = "1.7"
 tempfile = "3.27"
 redb = "4.2"
-ra_ap_syntax = "0.0.350"
+ra_ap_syntax = "0.0.351"
 async-trait = "0.1"
 futures = "0.3"
 langchart-model = { git = "https://github.com/huhlig/langchart.git" }
