@@ -27,6 +27,7 @@ members = [
     "crates/argus-test-support",
     "crates/argus-typescript",
     "crates/argus-python",
+    "crates/argus-java",
     "crates/argus-workflow",
 ]
 resolver = "2"
@@ -52,6 +53,8 @@ oxc_span = "0.75"
 ruff_python_parser = "0.0.13"
 ruff_python_ast = "0.0.13"
 ruff_text_size = "0.0.13"
+java-lang = "0.3.2"
+quick-xml = { version = "0.37", features = ["serialize"] }
 toml = "0.8"
 async-trait = "0.1"
 futures = "0.3"

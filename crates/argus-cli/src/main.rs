@@ -3495,7 +3495,7 @@ fn prime_command(
     while let Some(flag) = iter.next() {
         let value = iter.next().ok_or_else(|| {
             argus_core::ArgusError::invalid_input(
-                "usage: argus prime [--adapter rust|typescript|python] [--relationships <jsonl>]",
+                "usage: argus prime [--adapter rust|typescript|python|java] [--relationships <jsonl>]",
             )
         })?;
         match flag.as_str() {
@@ -3504,10 +3504,11 @@ fn prime_command(
                 "typescript" | "ts" => adapter = Some("typescript".to_owned()),
                 "javascript" | "js" => adapter = Some("javascript".to_owned()),
                 "python" | "py" => adapter = Some("python".to_owned()),
+                "java" => adapter = Some("java".to_owned()),
                 "all" => adapter = Some("all".to_owned()),
                 _ => {
                     return Err(argus_core::ArgusError::invalid_input(format!(
-                        "unknown adapter `{value}`; supported adapters: rust, typescript (ts), javascript (js), python (py), all"
+                        "unknown adapter `{value}`; supported adapters: rust, typescript (ts), javascript (js), python (py), java, all"
                     )));
                 }
             },
@@ -3516,7 +3517,7 @@ fn prime_command(
             }
             _ => {
                 return Err(argus_core::ArgusError::invalid_input(
-                    "usage: argus prime [--adapter rust|typescript|python] [--relationships <jsonl>]",
+                    "usage: argus prime [--adapter rust|typescript|python|java] [--relationships <jsonl>]",
                 ));
             }
         }
@@ -3554,6 +3555,17 @@ fn prime_command(
         }
         _ => false,
     };
+    let should_run_java = match adapter.as_deref() {
+        Some("java") => true,
+        Some("all") => {
+            root.join("pom.xml").is_file()
+                || root.join("build.gradle").is_file()
+                || root.join("build.gradle.kts").is_file()
+                || root.join("settings.gradle").is_file()
+                || root.join("settings.gradle.kts").is_file()
+        }
+        _ => false,
+    };
 
     let metadata = if should_run_rust {
         Some(cargo_metadata(root)?)
@@ -3567,7 +3579,7 @@ fn prime_command(
         &argus_snapshot::CaptureOptions::default(),
     )?;
 
-    let inventory_count = if should_run_rust || should_run_ts || should_run_python {
+    let inventory_count = if should_run_rust || should_run_ts || should_run_python || should_run_java {
         let repository =
             argus_snapshot::SnapshotRepository::open(root.join(".argus/state/sources"))?;
         let source = SnapshotSource(repository.reader(snapshot.clone()));
@@ -3628,6 +3640,15 @@ fn prime_command(
             py.inventory_into(&source, &mut sink)?;
         }
 
+        if should_run_java {
+            let candidate_files = snapshot.files.keys().cloned().collect::<Vec<_>>();
+            let java = argus_java::JavaWorkspaceAdapter::new(
+                snapshot.configuration.id.clone(),
+                candidate_files,
+            );
+            java.inventory_into(&source, &mut sink)?;
+        }
+
         sink.target_count()
     } else {
         0
@@ -3654,6 +3675,7 @@ fn prime_command(
             "typescript" | "ts" => "TypeScript",
             "javascript" | "js" => "JavaScript",
             "python" | "py" => "Python",
+            "java" => "Java",
             _ => "discovered",
         };
         format!(" with {inventory_count} {label} targets")
@@ -9924,6 +9946,62 @@ mod tests {
             }
         }
         assert!(found_inventory, "Python inventory targets found in stream");
+    }
+
+    #[test]
+    fn java_prime_extracts_inventory() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temporary.path().join("src/main/java/com/example")).unwrap();
+        std::fs::write(
+            temporary.path().join("pom.xml"),
+            br#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>test-service</artifactId>
+    <version>1.0.0</version>
+</project>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            temporary.path().join("src/main/java/com/example/App.java"),
+            br#"package com.example;
+
+public class App {
+    public void start() {
+        System.out.println("Started");
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        let output = run(
+            ["prime".to_owned(), "--adapter".to_owned(), "java".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(output.contains("Java targets"));
+        assert!(temporary.path().join(".argus/state/sources").exists());
+        assert!(temporary.path().join(".argus/state/current-run").exists());
+
+        let run_id = std::fs::read_to_string(temporary.path().join(".argus/state/current-run")).unwrap();
+        assert!(!run_id.trim().is_empty());
+
+        let snapshot_dir = std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
+        let mut found_inventory = false;
+        for entry in snapshot_dir {
+            let entry = entry.unwrap();
+            let stream_file = entry.path().join("rust.jsonl");
+            if stream_file.exists() {
+                let content = std::fs::read_to_string(stream_file).unwrap();
+                if content.contains("test-service") && content.contains("App") {
+                    found_inventory = true;
+                    break;
+                }
+            }
+        }
+        assert!(found_inventory, "Java inventory targets found in stream");
     }
 }
 

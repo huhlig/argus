@@ -36,6 +36,7 @@ argus-snapshot = { path = "../argus-snapshot" }
 argus-storage = { path = "../argus-storage" }
 argus-typescript = { path = "../argus-typescript" }
 argus-python = { path = "../argus-python" }
+argus-java = { path = "../argus-java" }
 argus-workflow = { path = "../argus-workflow" }
 serde_json.workspace = true
 serde.workspace = true
