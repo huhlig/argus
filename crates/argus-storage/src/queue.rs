@@ -754,6 +754,28 @@ impl DurableQueue {
             .transpose()
     }
 
+    /// Returns all runs recorded in the database.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if scanning the runs table fails.
+    pub fn all_runs(&self) -> Result<Vec<RunRecord>, argus_core::ArgusError> {
+        let read = self
+            .database
+            .begin_read()
+            .map_err(database_error("cannot read runs"))?;
+        let table = read
+            .open_table(RUNS)
+            .map_err(database_error("cannot open run table"))?;
+        table
+            .iter()
+            .map_err(database_error("cannot scan runs"))?
+            .map(|entry| {
+                let (_, value) = entry.map_err(database_error("cannot read run record"))?;
+                decode(value.value())
+            })
+            .collect()
+    }
+
     /// Resumes an active audit run, recovering any expired leases back to [`QueueState::Pending`].
     ///
     /// Returns the number of work items recovered and rescheduled for retry.
@@ -2407,6 +2429,250 @@ impl DurableQueue {
                 decode(value.value())
             })
             .collect()
+    }
+
+    /// Inspects and calculates the number of unreferenced artifacts and total payload bytes without deleting.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if reading from the database fails.
+    pub fn unreferenced_artifacts(&self) -> Result<(usize, u64), argus_core::ArgusError> {
+        let read = self
+            .database
+            .begin_read()
+            .map_err(database_error("cannot begin artifact read transaction"))?;
+        let outcomes_table = read
+            .open_table(OUTCOMES)
+            .map_err(database_error("cannot open outcomes table"))?;
+        let mut referenced = BTreeSet::new();
+        for entry in outcomes_table
+            .iter()
+            .map_err(database_error("cannot scan outcomes"))?
+        {
+            let (_, value) = entry.map_err(database_error("cannot read outcome"))?;
+            let outcome: OutcomeRecord = decode(value.value())?;
+            for reference in outcome.artifact_references {
+                referenced.insert(reference);
+            }
+        }
+
+        let artifacts_table = read
+            .open_table(ARTIFACTS)
+            .map_err(database_error("cannot open artifacts table"))?;
+        let mut count = 0;
+        let mut bytes = 0;
+        for entry in artifacts_table
+            .iter()
+            .map_err(database_error("cannot scan artifacts"))?
+        {
+            let (key, value) = entry.map_err(database_error("cannot read artifact"))?;
+            let key_str = key.value();
+            if !referenced.contains(key_str) {
+                let artifact: StoredArtifact = decode(value.value())?;
+                count += 1;
+                bytes += artifact.payload.len() as u64;
+            }
+        }
+        Ok((count, bytes))
+    }
+
+    /// Prunes artifacts from the database that are not referenced by any outcome.
+    ///
+    /// Returns the number of artifacts removed and the total payload bytes reclaimed.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if scanning or mutating the database fails.
+    pub fn prune_unreferenced_artifacts(&self) -> Result<(usize, u64), argus_core::ArgusError> {
+        let write = self
+            .database
+            .begin_write()
+            .map_err(database_error("cannot begin artifact pruning transaction"))?;
+        let (removed_count, reclaimed_bytes) = {
+            let outcomes_table = write
+                .open_table(OUTCOMES)
+                .map_err(database_error("cannot open outcomes table"))?;
+            let mut referenced = BTreeSet::new();
+            for entry in outcomes_table
+                .iter()
+                .map_err(database_error("cannot scan outcomes"))?
+            {
+                let (_, value) = entry.map_err(database_error("cannot read outcome"))?;
+                let outcome: OutcomeRecord = decode(value.value())?;
+                for reference in outcome.artifact_references {
+                    referenced.insert(reference);
+                }
+            }
+
+            let mut artifacts_table = write
+                .open_table(ARTIFACTS)
+                .map_err(database_error("cannot open artifacts table"))?;
+            let mut keys_to_remove = Vec::new();
+            for entry in artifacts_table
+                .iter()
+                .map_err(database_error("cannot scan artifacts"))?
+            {
+                let (key, value) = entry.map_err(database_error("cannot read artifact"))?;
+                let key_str = key.value();
+                if !referenced.contains(key_str) {
+                    let artifact: StoredArtifact = decode(value.value())?;
+                    keys_to_remove.push((key_str.to_owned(), artifact.payload.len() as u64));
+                }
+            }
+
+            let mut count = 0;
+            let mut bytes = 0;
+            for (key, size) in keys_to_remove {
+                artifacts_table
+                    .remove(key.as_str())
+                    .map_err(database_error("cannot remove artifact"))?;
+                count += 1;
+                bytes += size;
+            }
+            (count, bytes)
+        };
+        write
+            .commit()
+            .map_err(database_error("cannot commit artifact pruning"))?;
+        Ok((removed_count, reclaimed_bytes))
+    }
+
+    /// Prunes terminal runs (finalized, cancelled, or failed) older than the given cutoff timestamp.
+    ///
+    /// Cleans up associated work items, outcomes, and queue events.
+    /// Preserves all records in the adjudications table unconditionally.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if scanning or mutating the database fails.
+    pub fn prune_terminal_runs(
+        &self,
+        older_than_millis: u64,
+    ) -> Result<usize, argus_core::ArgusError> {
+        let write = self
+            .database
+            .begin_write()
+            .map_err(database_error("cannot begin run pruning transaction"))?;
+        let pruned_runs_count = {
+            let runs_table = write
+                .open_table(RUNS)
+                .map_err(database_error("cannot open runs table"))?;
+            let mut target_runs = Vec::new();
+            for entry in runs_table
+                .iter()
+                .map_err(database_error("cannot scan runs"))?
+            {
+                let (_, value) = entry.map_err(database_error("cannot read run"))?;
+                let run: RunRecord = decode(value.value())?;
+                let is_terminal =
+                    run.finalized_at_millis.is_some() || run.state == RunState::Cancelled;
+                if is_terminal && run.updated_at_millis <= older_than_millis {
+                    target_runs.push(run.id);
+                }
+            }
+            drop(runs_table);
+
+            if target_runs.is_empty() {
+                0
+            } else {
+                let target_set: BTreeSet<RunId> = target_runs.iter().cloned().collect();
+
+                // 1. Find all work items belonging to target runs
+                let mut work_table = write
+                    .open_table(WORK)
+                    .map_err(database_error("cannot open work table"))?;
+                let mut work_ids_to_remove = Vec::new();
+                for entry in work_table
+                    .iter()
+                    .map_err(database_error("cannot scan work"))?
+                {
+                    let (_, value) = entry.map_err(database_error("cannot read work"))?;
+                    let work: QueueWork = decode(value.value())?;
+                    if target_set.contains(&work.run) {
+                        work_ids_to_remove.push((work.id, work.run));
+                    }
+                }
+
+                let work_ids_set: BTreeSet<WorkItemId> =
+                    work_ids_to_remove.iter().map(|(id, _)| id.clone()).collect();
+
+                // 2. Remove outcomes belonging to those work items
+                let mut outcomes_table = write
+                    .open_table(OUTCOMES)
+                    .map_err(database_error("cannot open outcomes table"))?;
+                for (work_id, _) in &work_ids_to_remove {
+                    outcomes_table
+                        .remove(work_id.as_str())
+                        .map_err(database_error("cannot remove outcome"))?;
+                }
+
+                // 3. Remove events belonging to those work items
+                let mut events_table = write
+                    .open_table(EVENTS)
+                    .map_err(database_error("cannot open events table"))?;
+                let mut event_keys_to_remove = Vec::new();
+                for entry in events_table
+                    .iter()
+                    .map_err(database_error("cannot scan events"))?
+                {
+                    let (seq, value) = entry.map_err(database_error("cannot read event"))?;
+                    let event: QueueEvent = decode(value.value())?;
+                    if work_ids_set.contains(&event.work_id) {
+                        event_keys_to_remove.push(seq.value());
+                    }
+                }
+                for seq in event_keys_to_remove {
+                    events_table
+                        .remove(seq)
+                        .map_err(database_error("cannot remove event"))?;
+                }
+
+                // 4. Remove work items
+                for (work_id, _) in work_ids_to_remove {
+                    work_table
+                        .remove(work_id.as_str())
+                        .map_err(database_error("cannot remove work"))?;
+                }
+
+                // 5. For runs without adjudications, remove from RUNS table too
+                let adjudications_table = write
+                    .open_table(ADJUDICATIONS)
+                    .map_err(database_error("cannot open adjudications table"))?;
+                let mut runs_with_adjudications = BTreeSet::new();
+                for entry in adjudications_table
+                    .iter()
+                    .map_err(database_error("cannot scan adjudications"))?
+                {
+                    let (_, value) = entry.map_err(database_error("cannot read adjudication"))?;
+                    let adj: HumanAdjudication = decode(value.value())?;
+                    runs_with_adjudications.insert(adj.run);
+                }
+
+                let mut runs_table = write
+                    .open_table(RUNS)
+                    .map_err(database_error("cannot open runs table"))?;
+                for run_id in &target_runs {
+                    if !runs_with_adjudications.contains(run_id) {
+                        runs_table
+                            .remove(run_id.as_str())
+                            .map_err(database_error("cannot remove run"))?;
+                    }
+                }
+
+                target_runs.len()
+            }
+        };
+        write
+            .commit()
+            .map_err(database_error("cannot commit run pruning"))?;
+        Ok(pruned_runs_count)
+    }
+
+    /// Performs physical database compaction, reclaiming disk space and defragmenting storage.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if compaction fails.
+    pub fn compact(&mut self) -> Result<bool, argus_core::ArgusError> {
+        self.database
+            .compact()
+            .map_err(database_error("cannot compact redb database"))
     }
 }
 

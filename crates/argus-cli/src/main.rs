@@ -29,6 +29,7 @@ Setup & Snapshots:
   init         Initialize Argus directory structure (.argus/config, state, reviews)
   snapshot     Create, inspect, or verify immutable content-addressed snapshots
   prime        Capture repository snapshot and build initial language inventory
+  clean        Safely prune intermediate state, caches, redundant transcripts, or compact storage
 
 Audit & Review Execution:
   run          Execute complete review lifecycle (prime -> audit -> work -> finalize -> report)
@@ -321,6 +322,34 @@ Examples:
   argus finalize
   argus finalize 5c82a1...";
 
+const HELP_CLEAN: &str = "Safely prune intermediate state, caches, redundant transcripts, and compact storage
+
+Usage: argus clean [OPTIONS]
+
+Description:
+  Safely prunes intermediate evidence blobs, cached architecture graph data,
+  and redundant model transcripts while strictly preserving finalized audit
+  bundles and historical human adjudications.
+
+Options:
+  --state                 Prune all ephemeral working state (evidence, cache, workflow, inventory)
+  --evidence              Prune intermediate evidence blobs (.argus/state/evidence/)
+  --cache                 Prune cached architecture graph data (.argus/state/architecture-cache/)
+  --transcripts           Prune redundant model transcripts and unreferenced artifacts from working.redb
+  --compact               Defragment and compact the embedded database (.argus/state/working.redb)
+  --all                   Prune all working state, redundant transcripts, and compact database
+  --retention <duration>  Prune terminal runs and state older than duration (e.g., 30d, 7d, 24h)
+  --reviews               Also prune finalized review bundles older than retention (requires --retention)
+  --dry-run               Preview what files and bytes would be cleaned without modifying storage
+  --format <format>       Output format: text (default) or json
+
+Examples:
+  argus clean --state
+  argus clean --all
+  argus clean --cache --compact
+  argus clean --retention 14d --dry-run
+  argus clean --retention 30d --reviews";
+
 const HELP_REPORT: &str = "Render the audit report for a run (documentation or correctness)
 
 Usage: argus report [run-id] [--format <markdown|json|jsonl|backlog|beads>] [--dimension <dimension>] [--severity <severity>] [--gaps-only]
@@ -588,6 +617,7 @@ fn command_help(command: &str) -> Result<String, argus_core::ArgusError> {
         "resume" => Ok(HELP_RESUME.to_owned()),
         "cancel" => Ok(HELP_CANCEL.to_owned()),
         "finalize" => Ok(HELP_FINALIZE.to_owned()),
+        "clean" => Ok(HELP_CLEAN.to_owned()),
         "report" => Ok(HELP_REPORT.to_owned()),
         "backlog" => Ok(HELP_BACKLOG.to_owned()),
         "adjudicate" => Ok(HELP_ADJUDICATE.to_owned()),
@@ -1241,6 +1271,10 @@ pub enum CliCommand {
     Finalize {
         run_id: Option<String>,
     },
+    Clean {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     Report {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -1333,6 +1367,7 @@ fn run(
         CliCommand::Resume { args } => resume_command(root, args.into_iter()),
         CliCommand::Cancel { run_id } => cancel_command(root, run_id),
         CliCommand::Finalize { run_id } => finalize_command(root, run_id),
+        CliCommand::Clean { args } => clean_command(root, append_config(args).into_iter()),
         CliCommand::Report { args } => report_command(root, append_config(args).into_iter()),
         CliCommand::Backlog { args } => {
             let mut backlog_args = append_config(args);
@@ -3753,6 +3788,382 @@ fn finalize_command(
     Ok(format!(
         "{msg}\nNext step: Run 'argus report {id}' to view or export review findings."
     ))
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+struct CleanReport {
+    dry_run: bool,
+    evidence_files_removed: usize,
+    evidence_bytes_reclaimed: u64,
+    cache_files_removed: usize,
+    cache_bytes_reclaimed: u64,
+    workflow_files_removed: usize,
+    workflow_bytes_reclaimed: u64,
+    inventory_files_removed: usize,
+    inventory_bytes_reclaimed: u64,
+    transcripts_pruned: usize,
+    transcripts_bytes_reclaimed: u64,
+    runs_pruned: usize,
+    reviews_removed: usize,
+    reviews_bytes_reclaimed: u64,
+    compacted: bool,
+    total_files_removed: usize,
+    total_bytes_reclaimed: u64,
+}
+
+fn parse_duration_millis(value: &str) -> Result<u64, argus_core::ArgusError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(argus_core::ArgusError::invalid_input(
+            "retention duration cannot be empty",
+        ));
+    }
+    let (number_part, unit) = if let Some(stripped) = value.strip_suffix('d') {
+        (stripped, 86_400_000u64)
+    } else if let Some(stripped) = value.strip_suffix('h') {
+        (stripped, 3_600_000u64)
+    } else if let Some(stripped) = value.strip_suffix('m') {
+        (stripped, 60_000u64)
+    } else if let Some(stripped) = value.strip_suffix('s') {
+        (stripped, 1_000u64)
+    } else {
+        (value, 86_400_000u64)
+    };
+    let count: u64 = number_part.parse().map_err(|_| {
+        argus_core::ArgusError::invalid_input(format!("invalid retention duration `{value}`"))
+    })?;
+    Ok(count * unit)
+}
+
+fn clean_directory_contents(dir: &std::path::Path, dry_run: bool) -> (usize, u64) {
+    if !dir.exists() {
+        return (0, 0);
+    }
+    let mut files = 0;
+    let mut bytes = 0;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    bytes += meta.len();
+                }
+                files += 1;
+                if !dry_run {
+                    let _ = std::fs::remove_file(&path);
+                }
+            } else if path.is_dir() {
+                let (sub_files, sub_bytes) = clean_directory_contents(&path, dry_run);
+                files += sub_files;
+                bytes += sub_bytes;
+                if !dry_run {
+                    let _ = std::fs::remove_dir_all(&path);
+                }
+            }
+        }
+    }
+    (files, bytes)
+}
+
+#[allow(clippy::too_many_lines)]
+fn clean_command(
+    root: &std::path::Path,
+    args: impl Iterator<Item = String>,
+) -> Result<String, argus_core::ArgusError> {
+    let mut do_state = false;
+    let mut do_evidence = false;
+    let mut do_cache = false;
+    let mut do_transcripts = false;
+    let mut do_compact = false;
+    let mut do_all = false;
+    let mut retention: Option<String> = None;
+    let mut do_reviews = false;
+    let mut dry_run = false;
+    let mut format = "text";
+
+    let mut iter = args.peekable();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "-h" | "--help" | "help" => return Ok(HELP_CLEAN.to_owned()),
+            "--state" => do_state = true,
+            "--evidence" => do_evidence = true,
+            "--cache" => do_cache = true,
+            "--transcripts" => do_transcripts = true,
+            "--compact" => do_compact = true,
+            "--all" => do_all = true,
+            "--dry-run" => dry_run = true,
+            "--reviews" => do_reviews = true,
+            "--retention" => {
+                retention = Some(iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing duration after `--retention`")
+                })?);
+            }
+            "--format" => {
+                format = match iter.next().as_deref() {
+                    Some("json") => "json",
+                    Some("text") => "text",
+                    Some(other) => {
+                        return Err(argus_core::ArgusError::invalid_input(format!(
+                            "unsupported format `{other}`; expected `text` or `json`"
+                        )));
+                    }
+                    None => {
+                        return Err(argus_core::ArgusError::invalid_input(
+                            "missing format value after `--format`",
+                        ));
+                    }
+                };
+            }
+            "-c" | "--config" => {
+                let _ = iter.next();
+            }
+            other if other.starts_with("--retention=") => {
+                retention = Some(other.trim_start_matches("--retention=").to_owned());
+            }
+            other if other.starts_with("--format=") => {
+                let val = other.trim_start_matches("--format=");
+                if val == "json" {
+                    format = "json";
+                } else if val == "text" {
+                    format = "text";
+                } else {
+                    return Err(argus_core::ArgusError::invalid_input(format!(
+                        "unsupported format `{val}`; expected `text` or `json`"
+                    )));
+                }
+            }
+            unknown => {
+                return Err(argus_core::ArgusError::invalid_input(format!(
+                    "unknown flag `{unknown}`; see `argus help clean`"
+                )));
+            }
+        }
+    }
+
+    if do_reviews && retention.is_none() {
+        return Err(argus_core::ArgusError::invalid_input(
+            "--reviews requires an explicit --retention <duration> window to prevent accidental deletion of finalized reviews",
+        ));
+    }
+
+    if !do_state
+        && !do_evidence
+        && !do_cache
+        && !do_transcripts
+        && !do_compact
+        && !do_all
+        && retention.is_none()
+    {
+        return Err(argus_core::ArgusError::invalid_input(
+            "no cleanup targets specified. Specify one or more of --state, --evidence, --cache, --transcripts, --compact, --all, or --retention <duration>. See 'argus help clean' for details.",
+        ));
+    }
+
+    if do_all {
+        do_state = true;
+        do_transcripts = true;
+        do_compact = true;
+    }
+
+    let mut report = CleanReport {
+        dry_run,
+        ..Default::default()
+    };
+
+    // 1. Evidence cleaning
+    if do_state || do_evidence {
+        let evidence_dir = root.join(".argus/state/evidence");
+        if evidence_dir.exists() {
+            let evidence_store = argus_evidence::EvidenceStore::open(&evidence_dir)?;
+            if dry_run {
+                let objects = evidence_store.list_objects()?;
+                report.evidence_files_removed = objects.len();
+                report.evidence_bytes_reclaimed =
+                    objects.iter().map(|(_, size, _)| *size as u64).sum();
+            } else {
+                let (count, bytes) = evidence_store.clear_objects()?;
+                report.evidence_files_removed = count;
+                report.evidence_bytes_reclaimed = bytes;
+            }
+        }
+    }
+
+    // 2. Cache cleaning
+    if do_state || do_cache {
+        let cache_dir = root.join(".argus/state/architecture-cache");
+        let (files, bytes) = clean_directory_contents(&cache_dir, dry_run);
+        report.cache_files_removed = files;
+        report.cache_bytes_reclaimed = bytes;
+    }
+
+    // 3. Ephemeral workflow & inventory cleaning
+    if do_state {
+        let wf_dir = root.join(".argus/state/workflow");
+        let (files, bytes) = clean_directory_contents(&wf_dir, dry_run);
+        report.workflow_files_removed = files;
+        report.workflow_bytes_reclaimed = bytes;
+
+        let inv_dir = root.join(".argus/state/inventory");
+        let (files, bytes) = clean_directory_contents(&inv_dir, dry_run);
+        report.inventory_files_removed = files;
+        report.inventory_bytes_reclaimed = bytes;
+    }
+
+    // 4. Transcripts, retention, and database compaction in working.redb
+    let db_path = root.join(".argus/state/working.redb");
+    if db_path.exists() && (do_transcripts || retention.is_some() || do_compact) {
+        let mut queue = working_queue(root)?;
+        if do_transcripts {
+            if dry_run {
+                let (count, bytes) = queue.unreferenced_artifacts()?;
+                report.transcripts_pruned = count;
+                report.transcripts_bytes_reclaimed = bytes;
+            } else {
+                let (count, bytes) = queue.prune_unreferenced_artifacts()?;
+                report.transcripts_pruned = count;
+                report.transcripts_bytes_reclaimed = bytes;
+            }
+        }
+
+        if let Some(ref ret_str) = retention {
+            let duration_ms = parse_duration_millis(ret_str)?;
+            let now = now_millis()?;
+            let cutoff = now.saturating_sub(duration_ms);
+
+            if dry_run {
+                let runs = queue.all_runs()?;
+                let pruned = runs
+                    .iter()
+                    .filter(|r| {
+                        let is_terminal = r.finalized_at_millis.is_some()
+                            || r.state == argus_storage::RunState::Cancelled;
+                        is_terminal && r.updated_at_millis <= cutoff
+                    })
+                    .count();
+                report.runs_pruned = pruned;
+            } else {
+                let pruned = queue.prune_terminal_runs(cutoff)?;
+                report.runs_pruned = pruned;
+            }
+        }
+
+        if do_compact {
+            if !dry_run {
+                queue.compact()?;
+            }
+            report.compacted = true;
+        }
+    }
+
+    // 5. Finalized review bundles pruning (if explicitly opted in with --reviews)
+    if do_reviews {
+        if let Some(ref ret_str) = retention {
+            let duration_ms = parse_duration_millis(ret_str)?;
+            let reviews_dir = root.join(".argus/reviews");
+            if reviews_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&reviews_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            let mut is_old = false;
+                            if let Ok(meta) = std::fs::metadata(&path) {
+                                if let Ok(modified) = meta.modified() {
+                                    if let Ok(dur) = modified.elapsed() {
+                                        if dur.as_millis() as u64 >= duration_ms {
+                                            is_old = true;
+                                        }
+                                    }
+                                }
+                            }
+                            if is_old {
+                                let (_sub_files, sub_bytes) =
+                                    clean_directory_contents(&path, dry_run);
+                                report.reviews_removed += 1;
+                                report.reviews_bytes_reclaimed += sub_bytes;
+                                if !dry_run {
+                                    let _ = std::fs::remove_dir_all(&path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    report.total_files_removed = report.evidence_files_removed
+        + report.cache_files_removed
+        + report.workflow_files_removed
+        + report.inventory_files_removed
+        + report.transcripts_pruned;
+    report.total_bytes_reclaimed = report.evidence_bytes_reclaimed
+        + report.cache_bytes_reclaimed
+        + report.workflow_bytes_reclaimed
+        + report.inventory_bytes_reclaimed
+        + report.transcripts_bytes_reclaimed
+        + report.reviews_bytes_reclaimed;
+
+    if format == "json" {
+        serde_json::to_string_pretty(&report)
+            .map_err(|e| argus_core::ArgusError::invariant(e.to_string()))
+    } else {
+        let mut lines = Vec::new();
+        let prefix = if dry_run { "[dry-run] " } else { "" };
+        lines.push(format!("{prefix}Cleanup summary:"));
+        if do_state || do_evidence {
+            lines.push(format!(
+                "  Evidence objects:    {} files ({} bytes)",
+                report.evidence_files_removed, report.evidence_bytes_reclaimed
+            ));
+        }
+        if do_state || do_cache {
+            lines.push(format!(
+                "  Architecture cache:  {} files ({} bytes)",
+                report.cache_files_removed, report.cache_bytes_reclaimed
+            ));
+        }
+        if do_state {
+            lines.push(format!(
+                "  Workflow state:      {} files ({} bytes)",
+                report.workflow_files_removed, report.workflow_bytes_reclaimed
+            ));
+            lines.push(format!(
+                "  Inventory cache:     {} files ({} bytes)",
+                report.inventory_files_removed, report.inventory_bytes_reclaimed
+            ));
+        }
+        if do_transcripts {
+            lines.push(format!(
+                "  Unreferenced models: {} artifacts ({} bytes)",
+                report.transcripts_pruned, report.transcripts_bytes_reclaimed
+            ));
+        }
+        if retention.is_some() {
+            lines.push(format!(
+                "  Terminal runs:       {} pruned",
+                report.runs_pruned
+            ));
+            if do_reviews {
+                lines.push(format!(
+                    "  Finalized reviews:   {} removed ({} bytes)",
+                    report.reviews_removed, report.reviews_bytes_reclaimed
+                ));
+            }
+        }
+        if do_compact {
+            let compact_status = if dry_run {
+                "compaction pending"
+            } else {
+                "compacted successfully"
+            };
+            lines.push(format!("  Database (.redb):    {compact_status}"));
+        }
+        lines.push(format!(
+            "  Total reclaimed:     {} items, {} bytes",
+            report.total_files_removed, report.total_bytes_reclaimed
+        ));
+        Ok(lines.join("\n"))
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -9206,4 +9617,155 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn clean_command_dry_run_and_help() {
+        let temporary = tempfile::tempdir().unwrap();
+        let help = run(["clean".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(help.contains("Safely prune intermediate state"));
+
+        let help_topic = run(["help".to_owned(), "clean".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert_eq!(help, help_topic);
+
+        let err = run(["clean".to_owned()].into_iter(), temporary.path()).unwrap_err();
+        assert!(err.to_string().contains("no cleanup targets specified"));
+
+        let err_reviews = run(
+            ["clean".to_owned(), "--reviews".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap_err();
+        assert!(err_reviews.to_string().contains("--reviews requires an explicit --retention"));
+    }
+
+    #[test]
+    fn clean_command_prunes_cache_and_evidence() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state_dir = temporary.path().join(".argus/state");
+        let cache_dir = state_dir.join("architecture-cache");
+        let evidence_dir = state_dir.join("evidence");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::create_dir_all(&evidence_dir).unwrap();
+
+        std::fs::write(cache_dir.join("graph.cache"), b"graph-data").unwrap();
+
+        let store = argus_evidence::EvidenceStore::open(&evidence_dir).unwrap();
+        let envelope = argus_evidence::EvidenceEnvelope::current(
+            argus_core::SnapshotId::derive([b"snap".as_slice()]),
+            argus_evidence::DataClassification::Internal,
+            argus_core::EvidenceRecord {
+                id: argus_core::EvidenceId::derive([b"ev-1".as_slice()]),
+                kind: argus_core::EvidenceKind::StaticAnalysis,
+                origin: argus_core::EvidenceOrigin::Direct,
+                target: None,
+                location: None,
+                summary: "evidence summary".to_owned(),
+                detail: None,
+                provenance: argus_core::EvidenceProvenance {
+                    provider: "test".to_owned(),
+                    provider_version: "1".to_owned(),
+                    configuration: argus_core::ConfigurationId::derive([b"cfg".as_slice()]),
+                    ingest_only: false,
+                    resolution: argus_core::ResolutionQuality::Unmapped,
+                },
+            },
+        );
+        store.put(&envelope).unwrap();
+        assert_eq!(store.list_objects().unwrap().len(), 1);
+
+        // Dry-run preview
+        let dry_output = run(
+            ["clean".to_owned(), "--state".to_owned(), "--dry-run".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(dry_output.contains("[dry-run]"));
+        assert!(dry_output.contains("Evidence objects:    1 files"));
+        assert!(dry_output.contains("Architecture cache:  1 files"));
+
+        // Files still exist
+        assert!(cache_dir.join("graph.cache").exists());
+        assert_eq!(store.list_objects().unwrap().len(), 1);
+
+        // Actual clean
+        let clean_output = run(
+            ["clean".to_owned(), "--state".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(clean_output.contains("Evidence objects:    1 files"));
+        assert!(clean_output.contains("Architecture cache:  1 files"));
+
+        // Files removed
+        assert!(!cache_dir.join("graph.cache").exists());
+        assert!(store.list_objects().unwrap().is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn clean_command_preserves_finalized_reviews_and_adjudications() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state_dir = temporary.path().join(".argus/state");
+        let reviews_dir = temporary.path().join(".argus/reviews/run-preserved");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::create_dir_all(&reviews_dir).unwrap();
+
+        std::fs::write(reviews_dir.join("manifest.json"), b"{\"schema_version\":1}").unwrap();
+        std::fs::write(reviews_dir.join("report.md"), b"# Report").unwrap();
+
+        // Initialize queue and create run
+        let queue = argus_storage::DurableQueue::open(&state_dir.join("working.redb")).unwrap();
+        let run_id = argus_core::RunId::derive([b"run-preserved".as_slice()]);
+        let run_record = argus_storage::RunRecord {
+            id: run_id.clone(),
+            snapshot: argus_core::SnapshotId::derive([b"snap".as_slice()]),
+            configuration: argus_core::ConfigurationId::derive([b"cfg".as_slice()]),
+            state: argus_storage::RunState::Active,
+            created_at_millis: 100,
+            updated_at_millis: 100,
+            finalized_at_millis: None,
+        };
+        queue.create_run(&run_record).unwrap();
+
+        // Add adjudication
+        let adj = argus_core::HumanAdjudication {
+            run: run_id.clone(),
+            finding: argus_core::FindingId::derive([b"finding-1".as_slice()]),
+            state: argus_core::AdjudicationState::Accepted,
+            expected_issue: None,
+            rationale: "valid defect".to_owned(),
+            reviewer: "test-reviewer".to_owned(),
+            recorded_at_millis: 150,
+            revision: 1,
+        };
+        queue.record_adjudication(&adj, None).unwrap();
+
+        // Also add an unreferenced transcript artifact
+        let artifact = queue.store_artifact("model-transcript.v1", b"prompt transcript").unwrap();
+        assert!(queue.artifact(&artifact.reference).unwrap().is_some());
+        drop(queue);
+
+        // Run standard `argus clean --all` (must preserve reviews and adjudications)
+        let output = run(
+            ["clean".to_owned(), "--all".to_owned(), "--format".to_owned(), "json".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(output.contains("\"compacted\": true"));
+        assert!(output.contains("\"transcripts_pruned\": 1"));
+
+        // Finalized review bundle directory must still exist and be intact!
+        assert!(reviews_dir.join("manifest.json").exists());
+        assert!(reviews_dir.join("report.md").exists());
+
+        // Adjudication in working.redb must STILL exist!
+        let reopened_queue = argus_storage::DurableQueue::open(&state_dir.join("working.redb")).unwrap();
+        let adjs = reopened_queue.adjudications(&run_id).unwrap();
+        assert_eq!(adjs.len(), 1);
+        assert_eq!(adjs[0].reviewer, "test-reviewer");
+
+        // The unreferenced artifact was pruned
+        assert!(reopened_queue.artifact(&artifact.reference).unwrap().is_none());
+    }
 }
+

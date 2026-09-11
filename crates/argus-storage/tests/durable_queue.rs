@@ -978,3 +978,83 @@ fn telemetry_reports_completion_range_and_stalled_items() {
     assert_eq!(stalled.attempt_count, 1);
     assert_eq!(stalled.lease_until_millis, Some(300));
 }
+
+#[test]
+fn prune_unreferenced_artifacts_removes_only_unreferenced() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("state.redb");
+    let mut queue = DurableQueue::open(&path).unwrap();
+
+    let art1 = queue.store_artifact("model-transcript.v1", b"prompt 1").unwrap();
+    let art2 = queue.store_artifact("model-transcript.v1", b"prompt 2 (unreferenced)").unwrap();
+
+    let item = work("item-1");
+    queue.admit(&item).unwrap();
+    let leased = queue.lease_next(100, 1_000).unwrap().unwrap();
+    queue
+        .record_or_get_with_artifacts(
+            &leased.id,
+            "logical-1",
+            b"payload-1",
+            &[art1.reference.clone()],
+        )
+        .unwrap();
+
+    // Verify both artifacts exist before pruning
+    assert!(queue.artifact(&art1.reference).unwrap().is_some());
+    assert!(queue.artifact(&art2.reference).unwrap().is_some());
+
+    // Prune unreferenced
+    let (count, bytes) = queue.prune_unreferenced_artifacts().unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(bytes, b"prompt 2 (unreferenced)".len() as u64);
+
+    // art1 referenced by outcome must still exist; art2 must be pruned
+    assert!(queue.artifact(&art1.reference).unwrap().is_some());
+    assert!(queue.artifact(&art2.reference).unwrap().is_none());
+
+    // Compaction succeeds
+    assert!(queue.compact().is_ok());
+}
+
+#[test]
+fn prune_terminal_runs_removes_old_work_and_preserves_adjudications() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("state.redb");
+    let queue = DurableQueue::open(&path).unwrap();
+
+    let run_old = run("run-old", 100);
+    let run_active = run("run-active", 200);
+    queue.create_run(&run_old).unwrap();
+    queue.create_run(&run_active).unwrap();
+
+    let mut work_old = work("old-work");
+    work_old.run = run_old.id.clone();
+    let mut work_active = work("active-work");
+    work_active.run = run_active.id.clone();
+    queue.admit(&work_old).unwrap();
+    queue.admit(&work_active).unwrap();
+
+    // Cancel old work item so it reaches terminal state, then finalize run at t=150
+    queue.cancel(&work_old.id, 140).unwrap();
+    queue.mark_run_finalized(&run_old.id, 150).unwrap();
+
+    // Add an adjudication to old run
+    let adj = adjudication(run_old.id.clone(), 1, AdjudicationState::Accepted);
+    queue.record_adjudication(&adj, None).unwrap();
+
+    // Prune terminal runs older than cutoff 180 (should match run_old)
+    let pruned_count = queue.prune_terminal_runs(180).unwrap();
+    assert_eq!(pruned_count, 1);
+
+    // Old work item was deleted
+    assert!(queue.get(&work_old.id).unwrap().is_none());
+    // Active work item remains
+    assert!(queue.get(&work_active.id).unwrap().is_some());
+
+    // Historical adjudication is PRESERVED!
+    let adjs = queue.adjudications(&run_old.id).unwrap();
+    assert_eq!(adjs.len(), 1);
+    assert_eq!(adjs[0].finding, adj.finding);
+}
+

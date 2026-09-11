@@ -173,6 +173,101 @@ impl EvidenceStore {
         })
     }
 
+    /// Lists all evidence objects currently stored along with their size in bytes and filesystem path.
+    ///
+    /// # Errors
+    /// Returns [`argus_core::ArgusError`] if directory scanning fails.
+    pub fn list_objects(&self) -> Result<Vec<(ContentHash, usize, PathBuf)>, argus_core::ArgusError> {
+        let objects_dir = self.root.join("objects");
+        if !objects_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut objects = Vec::new();
+        let shards =
+            fs::read_dir(&objects_dir).map_err(io_error("cannot read evidence objects dir"))?;
+        for shard_entry in shards {
+            let shard = shard_entry.map_err(io_error("cannot read shard entry"))?;
+            if shard
+                .file_type()
+                .map_err(io_error("cannot read shard file type"))?
+                .is_dir()
+            {
+                let entries =
+                    fs::read_dir(shard.path()).map_err(io_error("cannot read shard dir"))?;
+                for entry in entries {
+                    let file = entry.map_err(io_error("cannot read evidence file entry"))?;
+                    let path = file.path();
+                    if path.extension().is_none() {
+                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                            if let Ok(hash) = ContentHash::parse(file_name) {
+                                let size = file
+                                    .metadata()
+                                    .map_err(io_error("cannot read object metadata"))?
+                                    .len() as usize;
+                                objects.push((hash, size, path));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(objects)
+    }
+
+    /// Prunes the specified evidence objects from disk and removes empty shard directories.
+    ///
+    /// Returns the number of files removed and the total bytes reclaimed.
+    ///
+    /// # Errors
+    /// Returns [`argus_core::ArgusError`] if file deletion fails.
+    pub fn prune_objects(
+        &self,
+        hashes: &[ContentHash],
+    ) -> Result<(usize, u64), argus_core::ArgusError> {
+        let mut count = 0;
+        let mut bytes = 0;
+        let mut shards_to_check = std::collections::BTreeSet::new();
+
+        for hash in hashes {
+            let path = self.object_path(hash);
+            if path.exists() {
+                if let Ok(meta) = fs::metadata(&path) {
+                    bytes += meta.len();
+                }
+                if let Some(parent) = path.parent() {
+                    shards_to_check.insert(parent.to_path_buf());
+                }
+                fs::remove_file(&path).map_err(io_error("cannot remove evidence object"))?;
+                count += 1;
+            }
+        }
+
+        // Clean up empty shard directories
+        for shard in shards_to_check {
+            if shard.exists() {
+                if let Ok(mut entries) = fs::read_dir(&shard) {
+                    if entries.next().is_none() {
+                        let _ = fs::remove_dir(&shard);
+                    }
+                }
+            }
+        }
+
+        Ok((count, bytes))
+    }
+
+    /// Clears all evidence objects and shard directories from disk.
+    ///
+    /// Returns the number of files removed and total bytes reclaimed.
+    ///
+    /// # Errors
+    /// Returns [`argus_core::ArgusError`] if deletion fails.
+    pub fn clear_objects(&self) -> Result<(usize, u64), argus_core::ArgusError> {
+        let objects = self.list_objects()?;
+        let hashes: Vec<ContentHash> = objects.into_iter().map(|(h, _, _)| h).collect();
+        self.prune_objects(&hashes)
+    }
+
     fn object_path(&self, hash: &ContentHash) -> PathBuf {
         let value = hash.as_str();
         self.root.join("objects").join(&value[..2]).join(value)

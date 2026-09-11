@@ -91,3 +91,32 @@ fn content_hash_parsing_rejects_unsafe_object_names() {
     let digest = ContentHash::digest(b"safe");
     assert_eq!(ContentHash::parse(digest.as_str()).unwrap(), digest);
 }
+
+#[test]
+fn list_and_prune_objects_removes_files_and_cleans_shards() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = EvidenceStore::open(directory.path()).unwrap();
+    let first = store.put(&envelope()).unwrap();
+
+    let mut env2 = envelope();
+    env2.classification = DataClassification::Restricted;
+    let second = store.put(&env2).unwrap();
+    assert_ne!(first, second);
+
+    let objects = store.list_objects().unwrap();
+    assert_eq!(objects.len(), 2);
+
+    // Prune first object
+    let (pruned_count, reclaimed_bytes) = store.prune_objects(&[first.clone()]).unwrap();
+    assert_eq!(pruned_count, 1);
+    assert!(reclaimed_bytes > 0);
+
+    let remaining = store.list_objects().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].0, second);
+
+    // Clear all remaining objects
+    let (cleared_count, _) = store.clear_objects().unwrap();
+    assert_eq!(cleared_count, 1);
+    assert!(store.list_objects().unwrap().is_empty());
+}
