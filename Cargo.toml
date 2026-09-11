@@ -25,6 +25,7 @@ members = [
     "crates/argus-snapshot",
     "crates/argus-storage",
     "crates/argus-test-support",
+    "crates/argus-typescript",
     "crates/argus-workflow",
 ]
 resolver = "2"
@@ -43,6 +44,10 @@ proptest = "1.7"
 tempfile = "3.27"
 redb = "4.2"
 ra_ap_syntax = "0.0.351"
+oxc_allocator = "0.75"
+oxc_parser = "0.75"
+oxc_ast = "0.75"
+oxc_span = "0.75"
 async-trait = "0.1"
 futures = "0.3"
 langchart-model = { git = "https://github.com/huhlig/langchart.git" }

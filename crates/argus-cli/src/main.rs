@@ -108,7 +108,7 @@ Description:
   durable queue.
 
 Options:
-  --adapter <adapter>   Language adapter to run (supported: rust). Default: none
+  --adapter <adapter>   Language adapter to run (supported: rust, typescript, javascript, all). Default: none
   --relationships <jsonl>  Captured Rust semantic relations to validate and merge
 
   With the Rust adapter, `.argus/input/rust-relations.jsonl` is discovered
@@ -116,6 +116,8 @@ Options:
 
 Examples:
   argus prime --adapter rust
+  argus prime --adapter typescript
+  argus prime --adapter all
   argus prime --adapter rust --relationships .argus/input/rust-relations.jsonl
   argus prime";
 
@@ -200,7 +202,7 @@ Options:
   --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency, strict checks)
   --ci                                        Non-interactive CI execution mode (equivalent to --preset ci)
   --thresholds <path>                         Path to quality thresholds configuration to enforce on run reports
-  --adapter <adapter>                         Language adapter to run (default: rust)
+  --adapter <adapter>                         Language adapter to run (supported: rust, typescript, all; default: rust)
   --pipeline <pipeline>                       Policy pipeline to admit (default: full)
   -p, --provider, --profile <name[:model]>    Provider configuration (e.g. 'bedrock:claude-3-haiku', 'lemonade:default')
   --base <ref>                                Examine targets changed/impacted relative to git base ref (merge-base vs HEAD)
@@ -3493,22 +3495,32 @@ fn prime_command(
     while let Some(flag) = iter.next() {
         let value = iter.next().ok_or_else(|| {
             argus_core::ArgusError::invalid_input(
-                "usage: argus prime [--adapter rust] [--relationships <jsonl>]",
+                "usage: argus prime [--adapter rust|typescript] [--relationships <jsonl>]",
             )
         })?;
         match flag.as_str() {
-            "--adapter" if value == "rust" && adapter.is_none() => adapter = Some(value),
+            "--adapter" if adapter.is_none() => match value.as_str() {
+                "rust" => adapter = Some("rust".to_owned()),
+                "typescript" | "ts" => adapter = Some("typescript".to_owned()),
+                "javascript" | "js" => adapter = Some("javascript".to_owned()),
+                "all" => adapter = Some("all".to_owned()),
+                _ => {
+                    return Err(argus_core::ArgusError::invalid_input(format!(
+                        "unknown adapter `{value}`; supported adapters: rust, typescript (ts), javascript (js), all"
+                    )));
+                }
+            },
             "--relationships" if relationships.is_none() => {
                 relationships = Some(std::path::PathBuf::from(value));
             }
             _ => {
                 return Err(argus_core::ArgusError::invalid_input(
-                    "usage: argus prime [--adapter rust] [--relationships <jsonl>]",
+                    "usage: argus prime [--adapter rust|typescript] [--relationships <jsonl>]",
                 ));
             }
         }
     }
-    if relationships.is_some() && adapter.is_none() {
+    if relationships.is_some() && adapter.as_deref() != Some("rust") {
         return Err(argus_core::ArgusError::invalid_input(
             "--relationships requires --adapter rust",
         ));
@@ -3520,51 +3532,82 @@ fn prime_command(
             relationships = Some(discovered);
         }
     }
-    let metadata = adapter.as_ref().map(|_| cargo_metadata(root)).transpose()?;
+
+    let should_run_rust = match adapter.as_deref() {
+        Some("rust") => true,
+        Some("all") => root.join("Cargo.toml").is_file(),
+        _ => false,
+    };
+    let should_run_ts = match adapter.as_deref() {
+        Some("typescript" | "javascript") => true,
+        Some("all") => root.join("package.json").is_file(),
+        _ => false,
+    };
+
+    let metadata = if should_run_rust {
+        Some(cargo_metadata(root)?)
+    } else {
+        None
+    };
+
     let snapshot = argus_snapshot::capture_snapshot(
         root,
         &root.join(".argus/state/sources"),
         &argus_snapshot::CaptureOptions::default(),
     )?;
-    let inventory_count = if let Some(metadata) = metadata {
+
+    let inventory_count = if should_run_rust || should_run_ts {
         let repository =
             argus_snapshot::SnapshotRepository::open(root.join(".argus/state/sources"))?;
         let source = SnapshotSource(repository.reader(snapshot.clone()));
-        let rust = argus_rust::RustWorkspaceAdapter::new(
-            metadata,
-            snapshot.configuration.id.clone(),
-            argus_rust::RustEdition::Edition2024,
-        );
         let mut sink = JsonLinesInventorySink::new(root, &source)?;
-        if let Some(path) = relationships {
-            let mut inventory = rust.inventory(&source)?;
-            let bytes = std::fs::read(&path)
-                .map_err(io_error("cannot read captured Rust semantic relationships"))?;
-            let semantic =
-                argus_rust::RustRelationshipProvider::new(snapshot.configuration.id.clone())
-                    .ingest(&bytes, &inventory.targets);
-            if !semantic.rejected.is_empty() {
-                let diagnostics = semantic
-                    .rejected
-                    .iter()
-                    .map(|rejected| format!("line {}: {}", rejected.line, rejected.reason))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                return Err(argus_core::ArgusError::invalid_input(format!(
-                    "captured Rust semantic relationships were rejected: {diagnostics}"
-                )));
+
+        if let Some(metadata) = metadata {
+            let rust = argus_rust::RustWorkspaceAdapter::new(
+                metadata,
+                snapshot.configuration.id.clone(),
+                argus_rust::RustEdition::Edition2024,
+            );
+            if let Some(ref path) = relationships {
+                let mut inventory = rust.inventory(&source)?;
+                let bytes = std::fs::read(path)
+                    .map_err(io_error("cannot read captured Rust semantic relationships"))?;
+                let semantic =
+                    argus_rust::RustRelationshipProvider::new(snapshot.configuration.id.clone())
+                        .ingest(&bytes, &inventory.targets);
+                if !semantic.rejected.is_empty() {
+                    let diagnostics = semantic
+                        .rejected
+                        .iter()
+                        .map(|rejected| format!("line {}: {}", rejected.line, rejected.reason))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    return Err(argus_core::ArgusError::invalid_input(format!(
+                        "captured Rust semantic relationships were rejected: {diagnostics}"
+                    )));
+                }
+                inventory.relations.extend(semantic.relations);
+                inventory
+                    .relations
+                    .sort_by(|left, right| left.id.cmp(&right.id));
+                inventory
+                    .relations
+                    .dedup_by(|left, right| left.id == right.id);
+                persist_inventory(&mut sink, inventory)?;
+            } else {
+                rust.inventory_into(&source, &mut sink)?;
             }
-            inventory.relations.extend(semantic.relations);
-            inventory
-                .relations
-                .sort_by(|left, right| left.id.cmp(&right.id));
-            inventory
-                .relations
-                .dedup_by(|left, right| left.id == right.id);
-            persist_inventory(&mut sink, inventory)?;
-        } else {
-            rust.inventory_into(&source, &mut sink)?;
         }
+
+        if should_run_ts {
+            let candidate_files = snapshot.files.keys().cloned().collect::<Vec<_>>();
+            let ts = argus_typescript::TypeScriptWorkspaceAdapter::new(
+                snapshot.configuration.id.clone(),
+                candidate_files,
+            );
+            ts.inventory_into(&source, &mut sink)?;
+        }
+
         sink.target_count()
     } else {
         0
@@ -3585,8 +3628,14 @@ fn prime_command(
     working_queue(root)?.create_run(&run)?;
     std::fs::write(root.join(".argus/state/current-run"), run.id.as_str())
         .map_err(io_error("cannot update current run pointer"))?;
-    let suffix = adapter.map_or_else(String::new, |_| {
-        format!(" with {inventory_count} Rust targets")
+    let suffix = adapter.map_or_else(String::new, |ad| {
+        let label = match ad.as_str() {
+            "rust" => "Rust",
+            "typescript" | "ts" => "TypeScript",
+            "javascript" | "js" => "JavaScript",
+            _ => "discovered",
+        };
+        format!(" with {inventory_count} {label} targets")
     });
     Ok(format!(
         "Primed run {} for snapshot {}{suffix}\nNext step: Run 'argus audit --pipeline full' to plan and admit review work into the queue.",
@@ -9766,6 +9815,50 @@ mod tests {
 
         // The unreferenced artifact was pruned
         assert!(reopened_queue.artifact(&artifact.reference).unwrap().is_none());
+    }
+
+    #[test]
+    fn typescript_prime_extracts_inventory() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(
+            temporary.path().join("package.json"),
+            b"{\"name\": \"ts-test-app\", \"version\": \"1.0.0\", \"main\": \"src/index.ts\"}",
+        )
+        .unwrap();
+        std::fs::write(
+            temporary.path().join("src/index.ts"),
+            b"export function hello(name: string): string { return `Hello, ${name}`; }\n",
+        )
+        .unwrap();
+
+        let output = run(
+            ["prime".to_owned(), "--adapter".to_owned(), "typescript".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(output.contains("TypeScript targets"));
+        assert!(temporary.path().join(".argus/state/sources").exists());
+        assert!(temporary.path().join(".argus/state/current-run").exists());
+
+        let run_id = std::fs::read_to_string(temporary.path().join(".argus/state/current-run")).unwrap();
+        assert!(!run_id.trim().is_empty());
+
+        let snapshot_dir = std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
+        let mut found_inventory = false;
+        for entry in snapshot_dir {
+            let entry = entry.unwrap();
+            let stream_file = entry.path().join("rust.jsonl");
+            if stream_file.exists() {
+                let content = std::fs::read_to_string(stream_file).unwrap();
+                if content.contains("ts-test-app") && content.contains("hello") {
+                    found_inventory = true;
+                    break;
+                }
+            }
+        }
+        assert!(found_inventory, "TypeScript inventory targets found in stream");
     }
 }
 

@@ -13,40 +13,22 @@
 # limitations under the License.
 
 [package]
-name = "argus-cli"
-description = "Command-line interface for Argus source intelligence"
+name = "argus-typescript"
+description = "TypeScript, JavaScript, and Node.js workspace and semantic adapter for Argus"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[[bin]]
-name = "argus"
-path = "src/main.rs"
-
 [dependencies]
 argus-core = { path = "../argus-core" }
-argus-evidence = { path = "../argus-evidence" }
 argus-language = { path = "../argus-language" }
-argus-policies = { path = "../argus-policies" }
-argus-provider = { path = "../argus-provider" }
-argus-report = { path = "../argus-report" }
-argus-rust = { path = "../argus-rust" }
-argus-snapshot = { path = "../argus-snapshot" }
-argus-storage = { path = "../argus-storage" }
-argus-typescript = { path = "../argus-typescript" }
-argus-workflow = { path = "../argus-workflow" }
-serde_json.workspace = true
 serde.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-metrics.workspace = true
-clap.workspace = true
-
-[dev-dependencies]
-argus-test-support = { path = "../argus-test-support" }
-tempfile.workspace = true
+serde_json.workspace = true
+oxc_allocator.workspace = true
+oxc_parser.workspace = true
+oxc_ast.workspace = true
+oxc_span.workspace = true
 
 [lints]
 workspace = true
