@@ -84,6 +84,7 @@ define_id!(AssessmentId, "assessment");
 define_id!(FindingId, "finding");
 define_id!(EvidenceId, "evidence");
 define_id!(DesignArtifactId, "design-artifact");
+define_id!(DesignLinkId, "design-link");
 define_id!(WorkflowId, "workflow");
 define_id!(RunId, "run");
 

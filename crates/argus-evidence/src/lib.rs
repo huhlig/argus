@@ -16,6 +16,7 @@
 
 mod context;
 mod design;
+mod design_link;
 mod package;
 mod request;
 mod store;
@@ -24,6 +25,9 @@ pub use design::{
     DesignArtifact, DesignArtifactIndex, DesignArtifactKind, DesignArtifactParser,
     DesignRequirement, DesignSection, DesignStatus, DocumentHealthIssue, DocumentHealthIssueKind,
     DocumentHealthSeverity, RequirementLevel,
+};
+pub use design_link::{
+    DesignLink, DesignLinkKind, DesignLinkOrigin, DesignLinkageEngine, DesignLinkageIndex,
 };
 pub use package::{
     CandidateAvailability, EvidenceBudget, EvidenceCandidate, EvidenceDisposition, EvidencePackage,
