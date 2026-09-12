@@ -15,10 +15,22 @@
 //! Policy-specific applicability, rubric, and assessment contracts.
 
 mod architecture;
+mod conformance;
 mod correctness;
 mod documentation;
 mod maintainability;
 mod optimization;
+
+pub use conformance::{
+    ALL_CONFORMANCE_DIMENSIONS, CONFORMANCE_ASSESSMENT_SCHEMA_VERSION,
+    ConformanceApplicabilityDecision, ConformanceApplicabilityPolicy,
+    ConformanceApplicabilityRule, ConformanceAssessment, ConformanceAssessmentDraft,
+    ConformanceCandidate, ConformanceCandidateDraft, ConformanceDimension,
+    ConformanceDimensionDraft, ConformanceDimensionResult, ConformanceDimensionStatus,
+    ConformanceDisposition, ConformanceEvidenceCitation, ConformanceResult,
+    ConformanceResultDraft, ConformanceTargetClass, ConformanceTargetProfile,
+    ConformanceVisibility,
+};
 
 pub use architecture::{
     ALL_ARCHITECTURE_DIMENSIONS, ARCHITECTURE_ASSESSMENT_SCHEMA_VERSION,
