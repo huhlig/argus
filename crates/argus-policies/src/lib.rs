@@ -18,8 +18,14 @@ mod architecture;
 mod conformance;
 mod correctness;
 mod documentation;
+mod drift;
 mod maintainability;
 mod optimization;
+
+pub use drift::{
+    AcceptedDriftRecord, AcceptedDriftRegistry, ArchitecturalDriftAnalyzer,
+    EvolutionClassification, EvolutionClassifier, EvolutionKind, TargetRevisionDelta,
+};
 
 pub use conformance::{
     ALL_CONFORMANCE_DIMENSIONS, CONFORMANCE_ASSESSMENT_SCHEMA_VERSION,
