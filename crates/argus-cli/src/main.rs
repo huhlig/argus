@@ -50,6 +50,9 @@ Review, Adjudication & Evaluation:
   evaluate     Measure precision, recall, and stability against a versioned corpus
   finalize     Publish an immutable terminal run bundle to .argus/reviews/
 
+Design & Architecture Conformance:
+  design       Inspect design documents (ADRs, PRDs), validate health, and evaluate drift
+
 Provider Configurations & Discovery:
   provider     Discover models, test connectivity, and manage provider configurations (alias: profile)
 
@@ -131,7 +134,7 @@ Description:
   durable redb working queue for the active run.
 
 Options:
-  --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, correctness, architecture, optimization, maintainability, full)
+  --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, correctness, architecture, optimization, maintainability, conformance, full)
   --preset <preset>       Execution preset: local (default, developer interactive) or ci (strict budget, automated gating)
   --ci                    Non-interactive CI execution mode (equivalent to --preset ci)
   --base <ref>            Examine targets changed and impacted relative to git base ref (merge-base vs HEAD)
@@ -148,6 +151,7 @@ Examples:
   argus audit --pipeline architecture
   argus audit --pipeline optimization
   argus audit --pipeline maintainability
+  argus audit --pipeline conformance
   argus audit --pipeline full
   argus audit --pipeline full --preset ci
   argus audit --pipeline full --ci
@@ -156,7 +160,7 @@ Examples:
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work [documentation|correctness|architecture|optimization|maintainability|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
+Usage: argus work [documentation|correctness|architecture|optimization|maintainability|conformance|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -164,7 +168,7 @@ Description:
   and records durable outcomes (pass, candidate finding, unable-to-verify, failure).
 
 Arguments & Options:
-  documentation | correctness | architecture | optimization | maintainability | all  Review policy to execute (default: all)
+  documentation | correctness | architecture | optimization | maintainability | conformance | all  Review policy to execute (default: all)
   --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency)
   --ci                                        Non-interactive CI execution mode (equivalent to --preset ci)
   -p, --provider, --profile <name[:model]>    Provider configuration (e.g. 'bedrock:claude-3-haiku', 'lemonade:default') or path
@@ -189,7 +193,8 @@ Examples:
   argus work documentation --provider ollama:llama3.2 --no-limit
   argus work correctness --provider bedrock:claude-3-haiku --limit 5
   argus work optimization --provider bedrock:claude-3-haiku --limit 5
-  argus work maintainability --provider bedrock:claude-3-haiku --limit 5";
+  argus work maintainability --provider bedrock:claude-3-haiku --limit 5
+  argus work conformance --provider bedrock:claude-3-haiku --limit 5";
 
 const HELP_RUN: &str = "Execute complete review lifecycle (prime -> audit -> work -> finalize -> report)
 
@@ -435,7 +440,7 @@ Examples:
 const HELP_EVALUATE: &str = "Measure quality and calibration against a versioned corpus
 
 Usage:
-  argus evaluate <documentation|correctness|architecture|optimization|maintainability> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]
+  argus evaluate <documentation|correctness|architecture|optimization|maintainability|conformance> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]
 
 Description:
   Evaluates one or more audit runs against a ground-truth defect corpus:
@@ -457,7 +462,8 @@ Examples:
   argus evaluate correctness --corpus docs/evaluation/correctness-corpus-v1.json --ci 5c82a1...
   argus evaluate architecture --corpus docs/evaluation/architecture-corpus-v1.json 5c82a1...
   argus evaluate optimization --corpus docs/evaluation/optimization-corpus-v1.json 5c82a1...
-  argus evaluate maintainability --corpus docs/evaluation/maintainability-corpus-v1.json 5c82a1...";
+  argus evaluate maintainability --corpus docs/evaluation/maintainability-corpus-v1.json 5c82a1...
+  argus evaluate conformance --corpus docs/evaluation/conformance-corpus-v1.json 5c82a1...";
 
 const HELP_PROVIDER: &str = "Manage and discover model provider configurations
 
@@ -607,6 +613,28 @@ Examples:
   argus provider test --provider ~/.config/argus/providers/openai.json
   argus provider test --all";
 
+const HELP_DESIGN: &str = "Inspect design documents, validate health, and evaluate architectural drift
+
+Usage:
+  argus design index [--format <markdown|json>]
+  argus design health [--format <markdown|json>]
+  argus design drift [--registry <path>] [--format <markdown|json>]
+
+Commands:
+  index    Discover, parse, and list supplementary design documents and their governing scopes
+  health   Validate document health, detecting orphaned artifacts, broken supersessions, cycles, and metadata gaps
+  drift    Analyze architectural drift between implementation targets and governing design decisions
+
+Options:
+  --registry <path>   Path to accepted drift registry JSON (default: .argus/config/accepted-drift.json)
+  --format <format>   Output format: markdown (default) or json
+
+Examples:
+  argus design index
+  argus design index --format json
+  argus design health
+  argus design drift";
+
 fn is_help_flag(value: Option<&str>) -> bool {
     matches!(value, Some("-h" | "--help" | "help"))
 }
@@ -630,6 +658,7 @@ fn command_help(command: &str) -> Result<String, argus_core::ArgusError> {
         "backlog" => Ok(HELP_BACKLOG.to_owned()),
         "adjudicate" => Ok(HELP_ADJUDICATE.to_owned()),
         "evaluate" => Ok(HELP_EVALUATE.to_owned()),
+        "design" => Ok(HELP_DESIGN.to_owned()),
         "provider" | "profile" => Ok(HELP_PROVIDER.to_owned()),
         _ => Err(argus_core::ArgusError::invalid_input(format!(
             "unknown help topic `{command}`; run `argus --help` for available commands"
@@ -649,6 +678,8 @@ pub struct ProjectThresholdConfig {
     pub optimization: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maintainability: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conformance: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -691,6 +722,7 @@ fn resolve_thresholds_path(
             "architecture" => thresh_cfg.architecture.as_deref(),
             "optimization" | "performance" => thresh_cfg.optimization.as_deref(),
             "maintainability" => thresh_cfg.maintainability.as_deref(),
+            "conformance" => thresh_cfg.conformance.as_deref(),
             _ => None,
         };
         if let Some(cfg_path) = configured {
@@ -1313,6 +1345,10 @@ pub enum CliCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    Design {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 fn run(
@@ -1395,6 +1431,7 @@ fn run(
             adjudicate_command(root, append_config(args).into_iter())
         }
         CliCommand::Evaluate { args } => evaluate_command(root, append_config(args).into_iter()),
+        CliCommand::Design { args } => design_command(root, append_config(args).into_iter()),
         CliCommand::Profile { args } | CliCommand::Provider { args } => {
             provider_command(root, append_config(args).into_iter())
         }
@@ -1961,6 +1998,49 @@ pub fn filter_changed_and_impacted_targets(
         .collect()
 }
 
+fn scan_markdown_files(
+    dir: &std::path::Path,
+    root: &std::path::Path,
+    out: &mut Vec<(argus_core::SourcePath, String)>,
+) -> Result<(), argus_core::ArgusError> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(dir).map_err(io_error("cannot read directory"))?;
+    for entry in entries {
+        let entry = entry.map_err(io_error("cannot read directory entry"))?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if name.starts_with('.') || name == "target" || name == "node_modules" || name == "vendor" {
+            continue;
+        }
+        if path.is_dir() {
+            scan_markdown_files(&path, root, out)?;
+        } else if path.is_file() && (name.ends_with(".md") || name.ends_with(".markdown")) {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(rel_path) = path.strip_prefix(root) {
+                    let rel_norm = rel_path.to_string_lossy().replace('\\', "/");
+                    if let Ok(source_path) = argus_core::SourcePath::new(rel_norm) {
+                        out.push((source_path, content));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn load_design_artifacts(
+    root: &std::path::Path,
+) -> Result<argus_evidence::DesignArtifactIndex, argus_core::ArgusError> {
+    let mut files = Vec::new();
+    scan_markdown_files(root, root, &mut files)?;
+    let mut index = argus_evidence::DesignArtifactIndex::new();
+    index.ingest(files)?;
+    Ok(index)
+}
+
 #[allow(clippy::too_many_lines)]
 fn audit_command(
     root: &std::path::Path,
@@ -1970,7 +2050,7 @@ fn audit_command(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_AUDIT.to_owned());
     }
-    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|optimization|maintainability|full> [--preset <local|ci>] [--ci] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
+    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|optimization|maintainability|conformance|full> [--preset <local|ci>] [--ci] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
     let mut iter = args.into_iter().peekable();
     let mut pipeline = None;
     let mut preset = PipelinePreset::Local;
@@ -1985,7 +2065,7 @@ fn audit_command(
                     .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
                 if !matches!(
                     val.as_str(),
-                    "documentation" | "correctness" | "architecture" | "optimization" | "performance" | "maintainability" | "full"
+                    "documentation" | "correctness" | "architecture" | "optimization" | "performance" | "maintainability" | "conformance" | "full"
                 ) {
                     return Err(argus_core::ArgusError::invalid_input(usage));
                 }
@@ -2072,7 +2152,7 @@ fn audit_command(
         .collect();
 
     // Budget configurations per preset
-    let (doc_budget, corr_budget, arch_budget, opt_budget, maint_budget) = match preset {
+    let (doc_budget, corr_budget, arch_budget, opt_budget, maint_budget, conf_budget) = match preset {
         PipelinePreset::Local => (
             argus_evidence::EvidenceBudget {
                 max_bytes: 400_000,
@@ -2091,6 +2171,12 @@ fn audit_command(
                 max_tokens: 80_000,
                 max_items: 64,
                 max_relation_depth: 2,
+            },
+            argus_evidence::EvidenceBudget {
+                max_bytes: 400_000,
+                max_tokens: 80_000,
+                max_items: 32,
+                max_relation_depth: 0,
             },
             argus_evidence::EvidenceBudget {
                 max_bytes: 400_000,
@@ -2123,6 +2209,12 @@ fn audit_command(
                 max_tokens: 60_000,
                 max_items: 32,
                 max_relation_depth: 1,
+            },
+            argus_evidence::EvidenceBudget {
+                max_bytes: 250_000,
+                max_tokens: 50_000,
+                max_items: 16,
+                max_relation_depth: 0,
             },
             argus_evidence::EvidenceBudget {
                 max_bytes: 250_000,
@@ -2413,6 +2505,64 @@ fn audit_command(
         ))
     };
 
+    let plan_conformance = || -> Result<String, argus_core::ArgusError> {
+        let design_artifacts = load_design_artifacts(root)?;
+        let design_linkage = argus_evidence::DesignLinkageEngine::new().link(&design_artifacts, &targets_to_plan)?;
+        let policy = argus_policies::ConformanceApplicabilityPolicy::all_targets()?;
+        let planner = argus_workflow::ConformanceReviewPlanner::new(
+            &policy,
+            argus_core::PolicyId::derive([b"conformance-design-aligned-v1".as_slice()]),
+            "conformance-design-aligned@1",
+            &design_linkage,
+            &design_artifacts,
+        )?;
+        let plan = planner.plan(
+            &run.snapshot,
+            &run.configuration,
+            &targets_to_plan,
+            &evidence_to_plan,
+        )?;
+        let applicable = plan
+            .units
+            .iter()
+            .filter(|unit| unit.applicability.state == argus_core::ApplicabilityState::Applicable)
+            .count();
+        let not_applicable = plan
+            .units
+            .iter()
+            .filter(|unit| {
+                unit.applicability.state == argus_core::ApplicabilityState::NotApplicable
+            })
+            .count();
+        let pending = plan.units.len() - applicable - not_applicable;
+        let catalog = argus_workflow::ConformanceEvidenceCatalog::ingest(
+            &evidence_store,
+            &run.snapshot,
+            argus_evidence::DataClassification::Internal,
+            &evidence_to_plan,
+        )?;
+        let batch = plan.materialize(
+            &evidence_store,
+            &catalog,
+            &run.snapshot,
+            &run.configuration,
+            &conf_budget,
+            argus_evidence::DataClassification::Internal,
+        )?;
+        let admitted = batch.admit_to_queue(
+            &queue,
+            &run.snapshot,
+            &run.configuration,
+            &run.id,
+            "rust",
+            now_millis()?,
+        )?;
+        Ok(format!(
+            "Conformance plan for run {}: {} applicable, {} not applicable, {} pending; {} newly admitted",
+            run.id, applicable, not_applicable, pending, admitted
+        ))
+    };
+
     let next_step = match preset {
         PipelinePreset::Local => {
             "\nNext step: Run 'argus work' to process admitted review items with an LLM profile."
@@ -2429,14 +2579,16 @@ fn audit_command(
         "architecture" => plan_architecture().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "optimization" | "performance" => plan_optimization().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "maintainability" => plan_maintainability().map(|msg| format!("{preset_note}{msg}{next_step}")),
+        "conformance" => plan_conformance().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "full" => {
             let doc_msg = plan_documentation()?;
             let corr_msg = plan_correctness()?;
             let arch_msg = plan_architecture()?;
             let opt_msg = plan_optimization()?;
             let maint_msg = plan_maintainability()?;
+            let conf_msg = plan_conformance()?;
             Ok(format!(
-                "{preset_note}{doc_msg}\n{corr_msg}\n{arch_msg}\n{opt_msg}\n{maint_msg}{next_step}"
+                "{preset_note}{doc_msg}\n{corr_msg}\n{arch_msg}\n{opt_msg}\n{maint_msg}\n{conf_msg}{next_step}"
             ))
         }
         _ => unreachable!(),
@@ -2460,7 +2612,7 @@ fn work_command_with_env(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
     }
-    let usage = "usage: argus work [documentation|correctness|architecture|optimization|maintainability|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
+    let usage = "usage: argus work [documentation|correctness|architecture|optimization|maintainability|conformance|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
     let mut iter = args.into_iter().peekable();
     let policy_arg = if iter.peek().is_some_and(|a| !a.starts_with('-')) {
         iter.next().map(|arg| arg.to_lowercase())
@@ -2474,6 +2626,7 @@ fn work_command_with_env(
         Some("architecture") => "architecture",
         Some("optimization") | Some("performance") => "optimization",
         Some("maintainability") => "maintainability",
+        Some("conformance") => "conformance",
         Some("all") | None => "all",
         _ => return Err(argus_core::ArgusError::invalid_input(usage)),
     };
@@ -2620,6 +2773,13 @@ fn work_command_with_env(
             fail_fast,
         )),
         "maintainability" => runtime.block_on(execute_maintainability_work(
+            root,
+            profile,
+            limit,
+            concurrency,
+            fail_fast,
+        )),
+        "conformance" => runtime.block_on(execute_conformance_work(
             root,
             profile,
             limit,
@@ -3084,8 +3244,10 @@ async fn execute_all_work(
     let opt_res =
         execute_optimization_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
     let maint_res =
-        execute_maintainability_work(root, profile, limit, concurrency, fail_fast).await?;
-    Ok(format!("{doc_res}\n{corr_res}\n{arch_res}\n{opt_res}\n{maint_res}"))
+        execute_maintainability_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
+    let conf_res =
+        execute_conformance_work(root, profile, limit, concurrency, fail_fast).await?;
+    Ok(format!("{doc_res}\n{corr_res}\n{arch_res}\n{opt_res}\n{maint_res}\n{conf_res}"))
 }
 
 fn check_unadmitted_run_warning(
@@ -3098,7 +3260,7 @@ fn check_unadmitted_run_warning(
         tracing::warn!(
             run_id = %run_id,
             policy = policy_name,
-            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|correctness|architecture|optimization|maintainability|full>'?"
+            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|correctness|architecture|optimization|maintainability|conformance|full>'?"
         );
     }
     Ok(())
@@ -3615,6 +3777,110 @@ async fn execute_maintainability_work(
                     Ok(WorkerStepResult::RetryScheduled { work_id, error })
                 }
                 argus_workflow::MaintainabilityWorkerResult::Failed { work_id, error } => {
+                    Ok(WorkerStepResult::Failed { work_id, error })
+                }
+            }
+        },
+        fail_fast,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn execute_conformance_work(
+    root: &std::path::Path,
+    profile: argus_provider::ProviderRuntimeProfile,
+    limit: Option<usize>,
+    concurrency: usize,
+    fail_fast: bool,
+) -> Result<String, argus_core::ArgusError> {
+    let queue = std::sync::Arc::new(working_queue(root)?);
+    let run_id = current_run(root)?;
+    let run = queue
+        .get_run(&run_id)?
+        .ok_or_else(|| argus_core::ArgusError::invariant("current run is missing"))?;
+    if run.state != argus_storage::RunState::Active || run.finalized_at_millis.is_some() {
+        return Err(argus_core::ArgusError::invariant(
+            "conformance work requires an active current run",
+        ));
+    }
+    check_unadmitted_run_warning(&queue, &run_id, "conformance")?;
+    let built = profile.build_from_environment().map_err(|error| {
+        argus_core::ArgusError::invalid_input("cannot build provider runtime").with_source(error)
+    })?;
+    let session_id = format!("worker-{}-{}", std::process::id(), now_millis()?);
+    let telemetry = std::sync::Arc::new(argus_storage::DurableProviderTelemetryPublisher::new(
+        queue.clone(),
+        session_id,
+    )?);
+    let executor = std::sync::Arc::new(
+        argus_provider::ProviderExecutor::new(
+            built.provider,
+            profile.capabilities.identity.clone(),
+            profile.policy.clone(),
+            profile.repair,
+            std::sync::Arc::new(argus_workflow::ConformanceReviewTransportValidator),
+        )
+        .map_err(|error| {
+            argus_core::ArgusError::invalid_input("cannot configure provider executor")
+                .with_source(error)
+        })?
+        .with_telemetry_sink(telemetry),
+    );
+    let state_directory = root.join(".argus/state/workflow");
+    let workflow_data = std::sync::Arc::new(
+        argus_workflow::WorkflowDataStore::open(&state_directory).map_err(|error| {
+            argus_core::ArgusError::invariant("cannot open workflow data").with_source(error)
+        })?,
+    );
+    let provider_identity = profile.capabilities.identity.clone();
+    let max_output_tokens = profile.capabilities.max_output_tokens;
+    let worker = std::sync::Arc::new(argus_workflow::ConformanceWorker::new(
+        queue.clone(),
+        workflow_data,
+        argus_workflow::documentation_worker_runtime(executor, built.adapter),
+        argus_workflow::ConformanceWorkerConfig {
+            state_directory,
+            identity: argus_workflow::ConformanceRuntimeIdentity {
+                audit_snapshot: run.snapshot,
+                audit_run: run.id,
+                provenance: argus_workflow::OutcomeProvenance {
+                    prompt_version: "conformance-review@1".to_owned(),
+                    actor_id: "argus.review".to_owned(),
+                    actor_version: "1.0.0".to_owned(),
+                    workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),
+                    workflow_version: argus_workflow::TARGET_REVIEW_WORKFLOW_VERSION.to_owned(),
+                    provider: provider_identity.clone(),
+                },
+                max_output_tokens,
+            },
+            adapter: "rust".to_owned(),
+            policy: "conformance-design-aligned@1".to_owned(),
+            lease_duration_millis: 120_000,
+            maximum_attempts: 3,
+        },
+    )?);
+
+    execute_concurrent_worker_pool(
+        "conformance",
+        "Conformance",
+        concurrency,
+        limit,
+        &provider_identity.provider,
+        &provider_identity.model,
+        queue,
+        &run_id,
+        worker,
+        |w| async move {
+            match w.run_next(now_millis()?).await? {
+                argus_workflow::ConformanceWorkerResult::Idle => Ok(WorkerStepResult::Idle),
+                argus_workflow::ConformanceWorkerResult::Succeeded { work_id } => {
+                    Ok(WorkerStepResult::Succeeded { work_id })
+                }
+                argus_workflow::ConformanceWorkerResult::RetryScheduled { work_id, error } => {
+                    Ok(WorkerStepResult::RetryScheduled { work_id, error })
+                }
+                argus_workflow::ConformanceWorkerResult::Failed { work_id, error } => {
                     Ok(WorkerStepResult::Failed { work_id, error })
                 }
             }
@@ -4359,9 +4625,13 @@ fn finalize_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("maintainability"));
+    let is_conformance = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("conformance"));
 
     let mut report_summaries = Vec::new();
-    if is_documentation || (!is_architecture && !is_correctness && !is_optimization && !is_maintainability) {
+    if is_documentation || (!is_architecture && !is_correctness && !is_optimization && !is_maintainability && !is_conformance) {
         let report = argus_report::write_documentation_bundle_reports(
             &destination,
             id.clone(),
@@ -4421,6 +4691,19 @@ fn finalize_command(
         )?;
         report_summaries.push(format!(
             "{} maintainability assessments ({} candidates, {} unadjudicated)",
+            report.assessments.len(),
+            report.summary.candidate_findings,
+            report.summary.unadjudicated_findings,
+        ));
+    }
+    if is_conformance {
+        let report = argus_report::write_conformance_bundle_reports(
+            &destination,
+            id.clone(),
+            "conformance-design-aligned@1",
+        )?;
+        report_summaries.push(format!(
+            "{} conformance assessments ({} candidates, {} unadjudicated)",
             report.assessments.len(),
             report.summary.candidate_findings,
             report.summary.unadjudicated_findings,
@@ -4903,11 +5186,16 @@ fn report_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("maintainability"));
+    let is_conformance = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("conformance"));
     let policy_count = usize::from(is_architecture)
         + usize::from(is_correctness)
         + usize::from(is_documentation)
         + usize::from(is_optimization)
-        + usize::from(is_maintainability);
+        + usize::from(is_maintainability)
+        + usize::from(is_conformance);
 
     if format == "backlog" || format == "beads" || gaps_only {
         let documentation = is_documentation
@@ -4955,6 +5243,15 @@ fn report_command(
                 )
             })
             .transpose()?;
+        let conformance = is_conformance
+            .then(|| {
+                argus_report::conformance_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "conformance-design-aligned@1",
+                )
+            })
+            .transpose()?;
 
         let mut backlog = argus_report::extract_backlog_report(
             id,
@@ -4963,6 +5260,7 @@ fn report_command(
             architecture.as_ref(),
             optimization.as_ref(),
             maintainability.as_ref(),
+            conformance.as_ref(),
         );
 
         if let Some(sev) = severity_filter {
@@ -5050,6 +5348,15 @@ fn report_command(
                 )
             })
             .transpose()?;
+        let conformance = is_conformance
+            .then(|| {
+                argus_report::conformance_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "conformance-design-aligned@1",
+                )
+            })
+            .transpose()?;
         return match format {
             "json" => serde_json::to_string_pretty(&serde_json::json!({
                 "run_id": id,
@@ -5058,6 +5365,7 @@ fn report_command(
                 "architecture": architecture,
                 "optimization": optimization,
                 "maintainability": maintainability,
+                "conformance": conformance,
             }))
             .map_err(|error| {
                 argus_core::ArgusError::invariant("cannot serialize mixed policy report")
@@ -5090,6 +5398,11 @@ fn report_command(
                         |finding| serde_json::json!({"policy": "maintainability", "finding": finding}),
                     ));
                 }
+                if let Some(report) = &conformance {
+                    lines.extend(report.finding_clusters.iter().map(
+                        |finding| serde_json::json!({"policy": "conformance", "finding": finding}),
+                    ));
+                }
                 lines
                     .into_iter()
                     .map(|line| serde_json::to_string(&line))
@@ -5106,6 +5419,7 @@ fn report_command(
                 architecture.map(|report| report.to_markdown()),
                 optimization.map(|report| report.to_markdown()),
                 maintainability.map(|report| report.to_markdown()),
+                conformance.map(|report| report.to_markdown()),
             ]
             .into_iter()
             .flatten()
@@ -5292,6 +5606,55 @@ fn report_command(
             "json" => {
                 let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
                     argus_core::ArgusError::invariant("cannot serialize maintainability report")
+                        .with_source(error)
+                })?;
+                String::from_utf8(bytes).map_err(|error| {
+                    argus_core::ArgusError::invariant("invalid utf-8 in serialized report")
+                        .with_source(error)
+                })
+            }
+            "jsonl" => {
+                let mut out = String::new();
+                for cluster in &report.finding_clusters {
+                    let line = serde_json::to_string(cluster).map_err(|error| {
+                        argus_core::ArgusError::invariant("cannot serialize finding cluster")
+                            .with_source(error)
+                    })?;
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+                Ok(out.trim_end().to_owned())
+            }
+            _ => Ok(report.to_markdown()),
+        }
+    } else if is_conformance {
+        let mut report =
+            argus_report::conformance_report_from_queue(&queue, id, "conformance-design-aligned@1")?;
+
+        if let Some(dim_name) = dimension_str {
+            let dim: argus_policies::ConformanceDimension = serde_json::from_value(
+                serde_json::Value::String(dim_name.clone()),
+            )
+            .map_err(|error| {
+                argus_core::ArgusError::invalid_input(format!(
+                    "unknown conformance dimension `{dim_name}`"
+                ))
+                .with_source(error)
+            })?;
+            report
+                .finding_clusters
+                .retain(|cluster| cluster.representative.dimensions.contains(&dim));
+        }
+        if let Some(sev) = severity_filter {
+            report
+                .finding_clusters
+                .retain(|cluster| cluster.representative.severity == sev);
+        }
+
+        match format {
+            "json" => {
+                let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
+                    argus_core::ArgusError::invariant("cannot serialize conformance report")
                         .with_source(error)
                 })?;
                 String::from_utf8(bytes).map_err(|error| {
@@ -5534,7 +5897,7 @@ fn evaluate_command(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    let usage = "usage: argus evaluate <documentation|correctness|architecture|optimization|maintainability> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]";
+    let usage = "usage: argus evaluate <documentation|correctness|architecture|optimization|maintainability|conformance> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]";
     let first = args.next();
     if is_help_flag(first.as_deref()) {
         return Ok(HELP_EVALUATE.to_owned());
@@ -5545,6 +5908,7 @@ fn evaluate_command(
         Some("architecture") => "architecture",
         Some("optimization") | Some("performance") => "optimization",
         Some("maintainability") => "maintainability",
+        Some("conformance") => "conformance",
         _ => return Err(argus_core::ArgusError::invalid_input(usage)),
     };
     let mut corpus_path = None;
@@ -5832,6 +6196,53 @@ fn evaluate_command(
             }
             _ => Ok(evaluation.to_markdown()),
         }
+    } else if pipeline == "conformance" {
+        let corpus: argus_report::ConformanceEvaluationCorpus = serde_json::from_slice(
+            &std::fs::read(path).map_err(io_error("cannot read conformance evaluation corpus"))?,
+        )
+        .map_err(|error| {
+            argus_core::ArgusError::invalid_input("conformance evaluation corpus is invalid")
+                .with_source(error)
+        })?;
+
+        let mut reports = Vec::with_capacity(run_ids.len());
+        let mut adjudications = Vec::new();
+        for run_id in &run_ids {
+            reports.push(argus_report::conformance_report_from_queue(
+                &queue,
+                run_id.clone(),
+                &corpus.policy_version,
+            )?);
+            adjudications.extend(queue.adjudications(run_id)?);
+        }
+        let evaluation = argus_report::evaluate_conformance(&corpus, &reports, &adjudications)?;
+
+        if let Some(ref t_path) = resolved_thresholds {
+            let thresholds: argus_report::ConformanceEvaluationThresholds = serde_json::from_slice(
+                &std::fs::read(t_path).map_err(io_error("cannot read evaluation thresholds"))?,
+            )
+            .map_err(|error| {
+                argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
+                    .with_source(error)
+            })?;
+            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
+                return Err(argus_core::ArgusError::invalid_input(format!(
+                    "Conformance evaluation quality thresholds unmet:\n  - {}",
+                    violations.join("\n  - ")
+                )));
+            }
+        }
+
+        match format {
+            "json" => {
+                let bytes = evaluation.to_json()?;
+                String::from_utf8(bytes).map_err(|error| {
+                    argus_core::ArgusError::invariant("invalid utf-8 in evaluation json")
+                        .with_source(error)
+                })
+            }
+            _ => Ok(evaluation.to_markdown()),
+        }
     } else {
         let corpus: argus_report::ArchitectureEvaluationCorpus = serde_json::from_slice(
             &std::fs::read(path).map_err(io_error("cannot read architecture evaluation corpus"))?,
@@ -5881,6 +6292,189 @@ fn evaluate_command(
             }
             _ => Ok(evaluation.to_markdown()),
         }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn design_command(
+    root: &std::path::Path,
+    mut args: impl Iterator<Item = String>,
+) -> Result<String, argus_core::ArgusError> {
+    let usage = "usage: argus design <index|health|drift> [--format <markdown|json>] [--registry <path>]";
+    let first = args.next();
+    if is_help_flag(first.as_deref()) {
+        return Ok(HELP_DESIGN.to_owned());
+    }
+    let subcmd = match first.as_deref() {
+        Some("index") => "index",
+        Some("health") => "health",
+        Some("drift") => "drift",
+        _ => return Err(argus_core::ArgusError::invalid_input(usage)),
+    };
+    let mut format = "markdown";
+    let mut registry_path = None;
+
+    while let Some(flag) = args.next() {
+        if is_help_flag(Some(&flag)) {
+            return Ok(HELP_DESIGN.to_owned());
+        }
+        match flag.as_str() {
+            "--format" => {
+                let fmt = args
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                match fmt.as_str() {
+                    "markdown" => format = "markdown",
+                    "json" => format = "json",
+                    _ => {
+                        return Err(argus_core::ArgusError::invalid_input(
+                            "supported formats: markdown, json",
+                        ));
+                    }
+                }
+            }
+            "--registry" => {
+                let p = args
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                registry_path = Some(p);
+            }
+            _ => return Err(argus_core::ArgusError::invalid_input(usage)),
+        }
+    }
+
+    let index = load_design_artifacts(root)?;
+
+    match subcmd {
+        "index" => {
+            let mut artifacts: Vec<_> = index.artifacts().collect();
+            artifacts.sort_by(|a, b| a.id.cmp(&b.id));
+            if format == "json" {
+                let bytes = serde_json::to_vec_pretty(&artifacts).map_err(|error| {
+                    argus_core::ArgusError::invariant("cannot serialize design artifacts")
+                        .with_source(error)
+                })?;
+                String::from_utf8(bytes).map_err(|error| {
+                    argus_core::ArgusError::invariant("invalid utf-8 in serialized artifacts")
+                        .with_source(error)
+                })
+            } else {
+                let mut out = String::new();
+                out.push_str("# Design Artifacts Index\n\n");
+                out.push_str(&format!("Found {} design document(s):\n\n", artifacts.len()));
+                if artifacts.is_empty() {
+                    out.push_str("No design artifacts found in workspace.\n");
+                } else {
+                    out.push_str("| ID | Title | Kind | Status | Path |\n");
+                    out.push_str("|---|---|---|---|---|\n");
+                    for a in &artifacts {
+                        out.push_str(&format!(
+                            "| {} | {} | {:?} | {:?} | {} |\n",
+                            a.id, a.title, a.kind, a.status, a.path.as_str()
+                        ));
+                    }
+                }
+                Ok(out)
+            }
+        }
+        "health" => {
+            let issues = index.validate_health();
+            if format == "json" {
+                let bytes = serde_json::to_vec_pretty(&issues).map_err(|error| {
+                    argus_core::ArgusError::invariant("cannot serialize design health issues")
+                        .with_source(error)
+                })?;
+                String::from_utf8(bytes).map_err(|error| {
+                    argus_core::ArgusError::invariant("invalid utf-8 in serialized health issues")
+                        .with_source(error)
+                })
+            } else {
+                let mut out = String::new();
+                out.push_str("# Design Document Health\n\n");
+                let total = index.artifacts().count();
+                if issues.is_empty() {
+                    out.push_str(&format!(
+                        "All {total} design document(s) are healthy. No issues detected.\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "Indexed {total} document(s). Detected {} issue(s):\n\n",
+                        issues.len()
+                    ));
+                    out.push_str("| Severity | Kind | Artifact | Message |\n");
+                    out.push_str("|---|---|---|---|\n");
+                    for issue in &issues {
+                        let artifact = issue
+                            .artifact_id
+                            .as_ref()
+                            .map_or("-", |id| id.as_str());
+                        out.push_str(&format!(
+                            "| {:?} | {:?} | {} | {} |\n",
+                            issue.severity, issue.kind, artifact, issue.message
+                        ));
+                    }
+                }
+                Ok(out)
+            }
+        }
+        "drift" => {
+            let reg_file = registry_path.map_or_else(
+                || root.join(".argus/config/accepted-drift.json"),
+                |p| {
+                    let pb = std::path::PathBuf::from(p);
+                    if pb.is_absolute() {
+                        pb
+                    } else {
+                        root.join(pb)
+                    }
+                },
+            );
+            let registry: argus_policies::AcceptedDriftRegistry = if reg_file.is_file() {
+                let bytes = std::fs::read(&reg_file)
+                    .map_err(io_error("cannot read accepted drift registry"))?;
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    argus_core::ArgusError::invalid_input("invalid accepted drift registry JSON")
+                        .with_source(error)
+                })?
+            } else {
+                argus_policies::AcceptedDriftRegistry::new()
+            };
+
+            let mut records: Vec<_> = registry.records().collect();
+            records.sort_by(|a, b| a.id.cmp(&b.id));
+            if format == "json" {
+                let bytes = serde_json::to_vec_pretty(&records).map_err(|error| {
+                    argus_core::ArgusError::invariant("cannot serialize accepted drift records")
+                        .with_source(error)
+                })?;
+                String::from_utf8(bytes).map_err(|error| {
+                    argus_core::ArgusError::invariant("invalid utf-8 in serialized records")
+                        .with_source(error)
+                })
+            } else {
+                let mut out = String::new();
+                out.push_str("# Architectural Drift Status\n\n");
+                out.push_str(&format!(
+                    "Registered {} accepted intentional drift record(s):\n\n",
+                    records.len()
+                ));
+                if records.is_empty() {
+                    out.push_str("No intentional drift records registered.\n");
+                } else {
+                    out.push_str("| ID | Target | Governing Artifact | Owner | Acceptance Date | Review Date |\n");
+                    out.push_str("|---|---|---|---|---|---|\n");
+                    for r in &records {
+                        let review = r.review_date.as_deref().unwrap_or("-");
+                        out.push_str(&format!(
+                            "| {} | {} | {} | {} | {} | {} |\n",
+                            r.id, r.target_id, r.artifact_id, r.owner, r.accepted_at, review
+                        ));
+                    }
+                }
+                Ok(out)
+            }
+        }
+        _ => unreachable!(),
     }
 }
 
@@ -11162,6 +11756,208 @@ public class App {
         )
         .unwrap();
         assert!(backlog_out.contains("# Project Backlog & Gap Tracking"));
+    }
+
+    #[test]
+    fn conformance_pipeline_audit_work_and_reporting() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temporary.path().join("Cargo.toml"),
+            b"[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(temporary.path().join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        std::fs::create_dir_all(temporary.path().join("docs")).unwrap();
+        std::fs::write(
+            temporary.path().join("docs/adr-0001.md"),
+            b"# ADR-0001: Core Architecture\nStatus: Accepted\nDate: 2026-01-01\nScope: fixture\n\n## Context\nContext description.\n\n## Decision\nArchitecture decision.\n",
+        )
+        .unwrap();
+
+        let primed = run(
+            ["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let run_id = primed.split_whitespace().nth(2).unwrap().to_owned();
+
+        // 1. Audit --pipeline conformance
+        let audit_out = run(
+            [
+                "audit".to_owned(),
+                "--pipeline".to_owned(),
+                "conformance".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(audit_out.contains("Conformance plan for run"));
+
+        // 2. Cancel remaining pending items so run can be finalized
+        run(
+            ["cancel".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        let finalize_out = run(
+            ["finalize".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(finalize_out.contains("Finalized run"));
+
+        for name in [
+            "conformance-report.json",
+            "conformance-report.jsonl",
+            "conformance-report.md",
+        ] {
+            assert!(
+                temporary
+                    .path()
+                    .join(".argus/reviews")
+                    .join(&run_id)
+                    .join(name)
+                    .is_file()
+            );
+        }
+
+        let report_out = run(
+            ["report".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(report_out.contains("Design Document Conformance Report"));
+        assert!(report_out.contains("conformance-design-aligned@1"));
+
+        // 3. Backlog format
+        let backlog_out = run(
+            [
+                "report".to_owned(),
+                run_id,
+                "--format".to_owned(),
+                "backlog".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(backlog_out.contains("# Project Backlog & Gap Tracking"));
+    }
+
+    #[test]
+    fn design_command_index_health_and_drift() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temporary.path().join("docs")).unwrap();
+        std::fs::write(
+            temporary.path().join("docs/adr-0001.md"),
+            b"# ADR-0001: Core Storage Engine\nStatus: Accepted\nDate: 2026-01-01\nScope: storage\n\n## Context\nStorage needs.\n\n## Decision\nUse Redb.\n",
+        )
+        .unwrap();
+
+        // 1. argus design index
+        let index_out = run(
+            ["design".to_owned(), "index".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(index_out.contains("# Design Artifacts Index"));
+        assert!(index_out.contains("Found 1 design document(s)"));
+        assert!(index_out.contains("ADR-0001"));
+
+        // 2. argus design index --format json
+        let index_json = run(
+            [
+                "design".to_owned(),
+                "index".to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let parsed_index: serde_json::Value = serde_json::from_str(&index_json).unwrap();
+        assert!(parsed_index.as_array().unwrap().len() == 1);
+
+        // 3. argus design health
+        let health_out = run(
+            ["design".to_owned(), "health".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(health_out.contains("# Design Document Health"));
+
+        // 4. argus design health --format json
+        let health_json = run(
+            [
+                "design".to_owned(),
+                "health".to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let parsed_health: serde_json::Value = serde_json::from_str(&health_json).unwrap();
+        assert!(parsed_health.is_array());
+
+        // 5. argus design drift (empty)
+        let drift_empty = run(
+            ["design".to_owned(), "drift".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(drift_empty.contains("# Architectural Drift Status"));
+        assert!(drift_empty.contains("No intentional drift records registered"));
+
+        // 6. Populate accepted drift registry
+        let config_dir = temporary.path().join(".argus/config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let mut registry = argus_policies::AcceptedDriftRegistry::new();
+        let record = argus_policies::AcceptedDriftRecord {
+            id: "drift-001".to_owned(),
+            target_id: argus_core::TargetId::derive([b"rust".as_slice(), b"storage::buffer".as_slice()]),
+            artifact_id: argus_core::DesignArtifactId::derive([b"ADR-0001".as_slice()]),
+            owner: "architect@example.com".to_owned(),
+            rationale: "Temporary memory buffer bypass for batch sync".to_owned(),
+            accepted_at: "2026-03-01".to_owned(),
+            review_date: Some("2026-12-31".to_owned()),
+        };
+        registry.register(record).unwrap();
+        std::fs::write(
+            config_dir.join("accepted-drift.json"),
+            serde_json::to_string_pretty(&registry).unwrap(),
+        )
+        .unwrap();
+
+        // 7. argus design drift with records
+        let drift_out = run(
+            ["design".to_owned(), "drift".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(drift_out.contains("Registered 1 accepted intentional drift record(s)"));
+        assert!(drift_out.contains("drift-001"));
+        assert!(drift_out.contains("architect@example.com"));
+
+        // 8. argus design drift --format json
+        let drift_json = run(
+            [
+                "design".to_owned(),
+                "drift".to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let parsed_drift: serde_json::Value = serde_json::from_str(&drift_json).unwrap();
+        assert_eq!(parsed_drift.as_array().unwrap().len(), 1);
     }
 }
 

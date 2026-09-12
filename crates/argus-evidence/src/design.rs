@@ -56,7 +56,10 @@ pub enum DesignStatus {
     /// Work-in-progress draft.
     Draft,
     /// Status could not be determined or is unrecognized.
-    Unknown(String),
+    Unknown {
+        /// Raw unrecognized status string.
+        raw: String,
+    },
 }
 
 impl DesignStatus {
@@ -305,7 +308,8 @@ impl DesignArtifactParser {
                 .to_owned()
         });
 
-        let status_resolved = status.unwrap_or(DesignStatus::Unknown("unspecified".to_owned()));
+        let status_resolved =
+            status.unwrap_or_else(|| DesignStatus::Unknown { raw: "unspecified".to_owned() });
 
         Ok(DesignArtifact {
             id,
@@ -488,7 +492,7 @@ impl DesignArtifactIndex {
         for (id, artifact) in &self.artifacts {
             // Check missing required metadata for ADRs
             if artifact.kind == DesignArtifactKind::Adr {
-                if matches!(artifact.status, DesignStatus::Unknown(_)) {
+                if matches!(artifact.status, DesignStatus::Unknown { .. }) {
                     issues.push(DocumentHealthIssue {
                         artifact_id: Some(id.clone()),
                         path: artifact.path.clone(),
@@ -732,7 +736,7 @@ fn parse_status(val: &str) -> DesignStatus {
     } else if lower.starts_with("draft") {
         DesignStatus::Draft
     } else {
-        DesignStatus::Unknown(val.trim().to_owned())
+        DesignStatus::Unknown { raw: val.trim().to_owned() }
     }
 }
 

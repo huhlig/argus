@@ -17,6 +17,8 @@
 mod architecture;
 mod architecture_evaluation;
 pub mod backlog;
+mod conformance;
+mod conformance_evaluation;
 mod correctness;
 mod correctness_evaluation;
 mod evaluation;
@@ -37,7 +39,19 @@ pub use architecture_evaluation::{
     ExpectedArchitectureIssue, evaluate_architecture,
 };
 pub use backlog::{
-    BacklogCategory, BacklogItem, BacklogReport, classify_backlog_finding, extract_backlog_report,
+    BacklogCategory, BacklogItem, BacklogReport, classify_backlog_finding,
+    extract_backlog_report, extract_conformance_backlog_items,
+};
+pub use conformance::{
+    CONFORMANCE_ASSESSMENT_ARTIFACT_KIND, CONFORMANCE_REPORT_SCHEMA_VERSION,
+    ConformanceFindingCluster, ConformanceFindingOccurrence, ConformanceReport,
+    ConformanceReportAssessment, ConformanceReportSummary, conformance_report_from_queue,
+    write_conformance_bundle_reports,
+};
+pub use conformance_evaluation::{
+    CONFORMANCE_CORPUS_SCHEMA_VERSION, CONFORMANCE_EVALUATION_SCHEMA_VERSION,
+    ConformanceEvaluation, ConformanceEvaluationCorpus, ConformanceEvaluationThresholds,
+    ExpectedConformanceIssue, evaluate_conformance,
 };
 pub use correctness::{
     CORRECTNESS_ASSESSMENT_ARTIFACT_KIND, CORRECTNESS_REPORT_SCHEMA_VERSION,
