@@ -27,8 +27,8 @@ pub use evidence::{
     EvidenceKind, EvidenceOrigin, EvidenceProvenance, EvidenceRecord, ResolutionQuality,
 };
 pub use id::{
-    AssessmentId, AttemptId, ConfigurationId, EvidenceId, FindingId, PolicyId, RelationId, RunId,
-    SnapshotId, SourceTreeId, TargetId, WorkItemId, WorkflowId,
+    AssessmentId, AttemptId, ConfigurationId, DesignArtifactId, EvidenceId, FindingId, PolicyId,
+    RelationId, RunId, SnapshotId, SourceTreeId, TargetId, WorkItemId, WorkflowId,
 };
 pub use lifecycle::{
     AdjudicationState, ApplicabilityState, AssessmentState, AuditState, ExecutionState,

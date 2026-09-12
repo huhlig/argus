@@ -15,10 +15,16 @@
 //! Immutable evidence storage and bounded review-context construction.
 
 mod context;
+mod design;
 mod package;
 mod request;
 mod store;
 
+pub use design::{
+    DesignArtifact, DesignArtifactIndex, DesignArtifactKind, DesignArtifactParser,
+    DesignRequirement, DesignSection, DesignStatus, DocumentHealthIssue, DocumentHealthIssueKind,
+    DocumentHealthSeverity, RequirementLevel,
+};
 pub use package::{
     CandidateAvailability, EvidenceBudget, EvidenceCandidate, EvidenceDisposition, EvidencePackage,
     EvidencePackageBuilder, EvidencePackageItem, PackageArtifact, PolicyEvidenceRequirements,
