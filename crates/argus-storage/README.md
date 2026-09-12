@@ -23,6 +23,7 @@ Stored inside `working.redb`:
 - **`OUTCOMES` Table**: `OutcomeKey` -> `OutcomeRecord` (pass, candidate finding, unable-to-verify, failure).
 - **`EVENTS` Stream Table**: Chronological audit event log.
 - **`TELEMETRY` Table**: Real-time queue counters and provider performance telemetry.
+- **`REVIEW_ASSESSMENT_CACHE` Table**: `(target, policy, fingerprint_hash)` -> `CachedAssessmentRecord` (reusable review assessments, outcome states, referenced artifacts, and expiration metadata).
 
 ---
 

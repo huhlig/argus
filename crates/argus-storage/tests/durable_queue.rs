@@ -927,6 +927,7 @@ fn schema_one_initialization_adds_all_current_tables() {
 
     let queue = DurableQueue::open(&path).unwrap();
     assert!(queue.provider_telemetry().unwrap().is_empty());
+    assert_eq!(queue.cached_assessment_count().unwrap(), 0);
     let artifact = queue.store_artifact("fixture.v1", b"payload").unwrap();
     assert_eq!(
         queue.artifact(&artifact.reference).unwrap().unwrap(),

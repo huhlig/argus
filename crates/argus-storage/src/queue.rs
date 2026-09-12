@@ -12,7 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use argus_core::{ConfigurationId, ContentHash, HumanAdjudication, RunId, SnapshotId, WorkItemId};
+use crate::cache::{
+    CachedAssessmentRecord, CachedAssessmentStats, REVIEW_ASSESSMENT_CACHE,
+};
+use argus_core::{
+    ConfigurationId, ContentHash, HumanAdjudication, PolicyId, ReviewFingerprint, RunId,
+    SnapshotId, TargetId, WorkItemId,
+};
 use argus_provider::{ProviderError, ProviderIdentity, ProviderTelemetry, ProviderTelemetrySink};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -680,6 +686,9 @@ impl DurableQueue {
             write
                 .open_table(ADJUDICATIONS)
                 .map_err(database_error("cannot create adjudication table"))?;
+            write
+                .open_table(REVIEW_ASSESSMENT_CACHE)
+                .map_err(database_error("cannot create review assessment cache table"))?;
         }
         write
             .commit()
@@ -2454,6 +2463,19 @@ impl DurableQueue {
                 referenced.insert(reference);
             }
         }
+        let cache_table = read
+            .open_table(REVIEW_ASSESSMENT_CACHE)
+            .map_err(database_error("cannot open review assessment cache table"))?;
+        for entry in cache_table
+            .iter()
+            .map_err(database_error("cannot scan review assessment cache"))?
+        {
+            let (_, value) = entry.map_err(database_error("cannot read cached assessment"))?;
+            let cached: CachedAssessmentRecord = decode(value.value())?;
+            for reference in cached.artifact_references {
+                referenced.insert(reference);
+            }
+        }
 
         let artifacts_table = read
             .open_table(ARTIFACTS)
@@ -2475,7 +2497,7 @@ impl DurableQueue {
         Ok((count, bytes))
     }
 
-    /// Prunes artifacts from the database that are not referenced by any outcome.
+    /// Prunes artifacts from the database that are not referenced by any outcome or cached assessment.
     ///
     /// Returns the number of artifacts removed and the total payload bytes reclaimed.
     ///
@@ -2498,6 +2520,19 @@ impl DurableQueue {
                 let (_, value) = entry.map_err(database_error("cannot read outcome"))?;
                 let outcome: OutcomeRecord = decode(value.value())?;
                 for reference in outcome.artifact_references {
+                    referenced.insert(reference);
+                }
+            }
+            let cache_table = write
+                .open_table(REVIEW_ASSESSMENT_CACHE)
+                .map_err(database_error("cannot open review assessment cache table"))?;
+            for entry in cache_table
+                .iter()
+                .map_err(database_error("cannot scan review assessment cache"))?
+            {
+                let (_, value) = entry.map_err(database_error("cannot read cached assessment"))?;
+                let cached: CachedAssessmentRecord = decode(value.value())?;
+                for reference in cached.artifact_references {
                     referenced.insert(reference);
                 }
             }
@@ -2542,6 +2577,7 @@ impl DurableQueue {
     ///
     /// # Errors
     /// Returns [`ArgusError`](argus_core::ArgusError) if scanning or mutating the database fails.
+    #[allow(clippy::too_many_lines)]
     pub fn prune_terminal_runs(
         &self,
         older_than_millis: u64,
@@ -2673,6 +2709,175 @@ impl DurableQueue {
         self.database
             .compact()
             .map_err(database_error("cannot compact redb database"))
+    }
+
+    /// Stores a cached review assessment record in the queue's durable cache.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if validation or database write fails.
+    pub fn insert_cached_assessment(
+        &self,
+        record: &CachedAssessmentRecord,
+    ) -> Result<(), argus_core::ArgusError> {
+        crate::cache::db_insert_cached_assessment(&self.database, record)
+    }
+
+    /// Retrieves an active cached assessment matching target, policy, and exact review fingerprint.
+    ///
+    /// Returns `None` if no matching record exists, if the fingerprint differs, or if the record is expired.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if reading or decoding fails.
+    pub fn get_cached_assessment(
+        &self,
+        target: &TargetId,
+        policy: &PolicyId,
+        fingerprint: &ReviewFingerprint,
+        now_millis: u64,
+    ) -> Result<Option<CachedAssessmentRecord>, argus_core::ArgusError> {
+        crate::cache::db_get_cached_assessment(
+            &self.database,
+            target,
+            policy,
+            fingerprint,
+            now_millis,
+        )
+    }
+
+    /// Retrieves an active cached assessment matching target, policy, and fingerprint composite hash.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if reading or decoding fails.
+    pub fn get_cached_assessment_by_hash(
+        &self,
+        target: &TargetId,
+        policy: &PolicyId,
+        fingerprint_hash: &ContentHash,
+        now_millis: u64,
+    ) -> Result<Option<CachedAssessmentRecord>, argus_core::ArgusError> {
+        crate::cache::db_get_cached_assessment_by_hash(
+            &self.database,
+            target,
+            policy,
+            fingerprint_hash,
+            now_millis,
+        )
+    }
+
+    /// Updates access timestamp and increments hit counter for a cached review assessment.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if database mutation fails.
+    pub fn touch_cached_assessment(
+        &self,
+        target: &TargetId,
+        policy: &PolicyId,
+        fingerprint_hash: &ContentHash,
+        now_millis: u64,
+    ) -> Result<bool, argus_core::ArgusError> {
+        crate::cache::db_touch_cached_assessment(
+            &self.database,
+            target,
+            policy,
+            fingerprint_hash,
+            now_millis,
+        )
+    }
+
+    /// Prunes expired review assessments whose expiration timestamp has passed.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if database scanning or mutation fails.
+    pub fn prune_expired_assessments(
+        &self,
+        now_millis: u64,
+    ) -> Result<usize, argus_core::ArgusError> {
+        crate::cache::db_prune_expired_assessments(&self.database, now_millis)
+    }
+
+    /// Prunes all cached assessments associated with an invalidated target.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if database mutation fails.
+    pub fn prune_invalidated_assessments_for_target(
+        &self,
+        target: &TargetId,
+    ) -> Result<usize, argus_core::ArgusError> {
+        crate::cache::db_prune_invalidated_targets(&self.database, std::slice::from_ref(target))
+    }
+
+    /// Prunes all cached assessments associated with a slice of invalidated targets.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if database mutation fails.
+    pub fn prune_invalidated_assessments_for_targets(
+        &self,
+        targets: &[TargetId],
+    ) -> Result<usize, argus_core::ArgusError> {
+        crate::cache::db_prune_invalidated_targets(&self.database, targets)
+    }
+
+    /// Prunes all cached assessments for a specific target and policy pair.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if database mutation fails.
+    pub fn prune_invalidated_assessments(
+        &self,
+        target: &TargetId,
+        policy: &PolicyId,
+    ) -> Result<usize, argus_core::ArgusError> {
+        crate::cache::db_prune_invalidated_target_policy(&self.database, target, policy)
+    }
+
+    /// Prunes cached assessments matching a predicate filter.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if database mutation fails.
+    pub fn prune_cached_assessments_by_filter<F>(
+        &self,
+        should_remove: F,
+    ) -> Result<usize, argus_core::ArgusError>
+    where
+        F: Fn(&CachedAssessmentRecord) -> bool,
+    {
+        crate::cache::db_prune_by_filter(&self.database, should_remove)
+    }
+
+    /// Returns the total count of cached review assessments stored in the queue.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if database scanning fails.
+    pub fn cached_assessment_count(&self) -> Result<usize, argus_core::ArgusError> {
+        crate::cache::db_cached_assessment_count(&self.database)
+    }
+
+    /// Retrieves all cached review assessments stored in the queue.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if reading or decoding fails.
+    pub fn all_cached_assessments(
+        &self,
+    ) -> Result<Vec<CachedAssessmentRecord>, argus_core::ArgusError> {
+        crate::cache::db_all_cached_assessments(&self.database)
+    }
+
+    /// Computes summary statistics for cached review assessments relative to `now_millis`.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if reading fails.
+    pub fn cached_assessment_stats(
+        &self,
+        now_millis: u64,
+    ) -> Result<CachedAssessmentStats, argus_core::ArgusError> {
+        crate::cache::db_cached_assessment_stats(&self.database, now_millis)
+    }
+
+    /// Clears all cached review assessments from the queue.
+    ///
+    /// # Errors
+    /// Returns [`ArgusError`](argus_core::ArgusError) if clearing fails.
+    pub fn clear_cached_assessments(&self) -> Result<usize, argus_core::ArgusError> {
+        crate::cache::db_clear_cached_assessments(&self.database)
     }
 }
 
