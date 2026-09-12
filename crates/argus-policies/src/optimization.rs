@@ -291,6 +291,19 @@ pub enum OptimizationResult {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ProfilingEvidenceStatus {
+    Available {
+        summary: String,
+        #[serde(default)]
+        metrics: BTreeMap<String, String>,
+    },
+    Unavailable {
+        suggested_benchmarks: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OptimizationAssessment {
     pub schema_version: u32,
     pub work_item: WorkItemId,
@@ -301,6 +314,8 @@ pub struct OptimizationAssessment {
     pub evidence_revision: u32,
     pub dimensions: Vec<OptimizationDimensionResult>,
     pub result: OptimizationResult,
+    #[serde(default)]
+    pub profiling_evidence: Option<ProfilingEvidenceStatus>,
 }
 
 impl OptimizationAssessment {
@@ -398,6 +413,18 @@ impl OptimizationAssessment {
                 validate_text("optimization unable to verify reason", reason)?;
             }
         }
+        if let Some(status) = &self.profiling_evidence {
+            match status {
+                ProfilingEvidenceStatus::Available { summary, .. } => {
+                    validate_text("profiling evidence summary", summary)?;
+                }
+                ProfilingEvidenceStatus::Unavailable { suggested_benchmarks } => {
+                    for benchmark in suggested_benchmarks {
+                        validate_text("suggested benchmark", benchmark)?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -408,6 +435,8 @@ impl OptimizationAssessment {
 pub struct OptimizationAssessmentDraft {
     pub dimensions: Vec<OptimizationDimensionDraft>,
     pub result: OptimizationResultDraft,
+    #[serde(default)]
+    pub profiling_evidence: Option<ProfilingEvidenceStatus>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -537,6 +566,7 @@ impl OptimizationAssessmentBinding {
             evidence_revision: self.evidence_revision,
             dimensions,
             result,
+            profiling_evidence: draft.profiling_evidence,
         };
         assessment.validate()?;
         Ok(assessment)
@@ -701,6 +731,7 @@ mod tests {
                 citations: vec![],
             }],
             result: OptimizationResult::Passed,
+            profiling_evidence: None,
         };
 
         assert!(assessment.validate().is_err());
@@ -760,8 +791,51 @@ mod tests {
                     }],
                 }],
             },
+            profiling_evidence: None,
         };
 
+        assert!(assessment.validate().is_err());
+    }
+
+    #[test]
+    fn assessment_with_profiling_evidence_validates_correctly() {
+        let target_id = TargetId::derive([b"test-target".as_slice()]);
+        let mut dimensions = Vec::new();
+        for dim in ALL_OPTIMIZATION_DIMENSIONS {
+            dimensions.push(OptimizationDimensionResult {
+                dimension: dim,
+                status: OptimizationDimensionStatus::Satisfied,
+                rationale: "Evaluated".to_owned(),
+                citations: vec![],
+            });
+        }
+
+        let mut assessment = OptimizationAssessment {
+            schema_version: OPTIMIZATION_ASSESSMENT_SCHEMA_VERSION,
+            work_item: WorkItemId::derive([b"work-1".as_slice()]),
+            target: OptimizationTargetProfile {
+                target: target_id,
+                class: OptimizationTargetClass::Callable,
+                visibility: TargetVisibility::Public,
+                inventory: InventoryState::Represented,
+            },
+            policy: PolicyId::derive([b"opt-policy".as_slice()]),
+            policy_version: "optimization-conservative@1".to_owned(),
+            applicability: ApplicabilityState::Applicable,
+            evidence_revision: 1,
+            dimensions,
+            result: OptimizationResult::Passed,
+            profiling_evidence: Some(ProfilingEvidenceStatus::Unavailable {
+                suggested_benchmarks: vec!["bench_hot_loop".to_owned()],
+            }),
+        };
+
+        assert!(assessment.validate().is_ok());
+
+        // Empty benchmark should be rejected
+        assessment.profiling_evidence = Some(ProfilingEvidenceStatus::Unavailable {
+            suggested_benchmarks: vec!["   ".to_owned()],
+        });
         assert!(assessment.validate().is_err());
     }
 }

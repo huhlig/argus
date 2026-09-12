@@ -177,6 +177,7 @@ impl OptimizationAssessmentContract {
                     result: OptimizationResultDraft::UnableToVerify {
                         reason: reason.to_owned(),
                     },
+                    profiling_evidence: None,
                 })
                 .map_err(|error| error.to_string());
         }

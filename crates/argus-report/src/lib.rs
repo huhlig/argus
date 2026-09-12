@@ -20,7 +20,10 @@ pub mod backlog;
 mod correctness;
 mod correctness_evaluation;
 mod evaluation;
+mod maintainability;
+mod maintainability_evaluation;
 mod optimization;
+mod optimization_evaluation;
 
 pub use architecture::{
     ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ARCHITECTURE_REPORT_SCHEMA_VERSION,
@@ -52,11 +55,29 @@ pub use evaluation::{
     DocumentationEvaluation, DocumentationEvaluationCorpus, DocumentationEvaluationThresholds,
     EvaluationRate, ExpectedDocumentationIssue, evaluate_documentation,
 };
+pub use maintainability::{
+    MAINTAINABILITY_ASSESSMENT_ARTIFACT_KIND, MAINTAINABILITY_REPORT_SCHEMA_VERSION,
+    MaintainabilityFindingCluster, MaintainabilityFindingOccurrence, MaintainabilityReport,
+    MaintainabilityReportAssessment, MaintainabilityReportSummary, maintainability_report_from_queue,
+    write_maintainability_bundle_reports,
+};
+pub use maintainability_evaluation::{
+    ExpectedMaintainabilityIssue, MAINTAINABILITY_CORPUS_SCHEMA_VERSION,
+    MAINTAINABILITY_EVALUATION_SCHEMA_VERSION, MaintainabilityEvaluation,
+    MaintainabilityEvaluationCorpus, MaintainabilityEvaluationThresholds,
+    evaluate_maintainability,
+};
 pub use optimization::{
     OPTIMIZATION_ASSESSMENT_ARTIFACT_KIND, OPTIMIZATION_REPORT_SCHEMA_VERSION,
     OptimizationFindingCluster, OptimizationFindingOccurrence, OptimizationReport,
     OptimizationReportAssessment, OptimizationReportSummary, optimization_report_from_queue,
     write_optimization_bundle_reports,
+};
+pub use optimization_evaluation::{
+    ExpectedOptimizationIssue, OPTIMIZATION_CORPUS_SCHEMA_VERSION,
+    OPTIMIZATION_EVALUATION_SCHEMA_VERSION, OptimizationEvaluation,
+    OptimizationEvaluationCorpus, OptimizationEvaluationThresholds,
+    evaluate_optimization,
 };
 
 use argus_core::{

@@ -131,7 +131,7 @@ Description:
   durable redb working queue for the active run.
 
 Options:
-  --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, correctness, architecture, optimization, full)
+  --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, correctness, architecture, optimization, maintainability, full)
   --preset <preset>       Execution preset: local (default, developer interactive) or ci (strict budget, automated gating)
   --ci                    Non-interactive CI execution mode (equivalent to --preset ci)
   --base <ref>            Examine targets changed and impacted relative to git base ref (merge-base vs HEAD)
@@ -147,6 +147,7 @@ Examples:
   argus audit --pipeline correctness
   argus audit --pipeline architecture
   argus audit --pipeline optimization
+  argus audit --pipeline maintainability
   argus audit --pipeline full
   argus audit --pipeline full --preset ci
   argus audit --pipeline full --ci
@@ -155,7 +156,7 @@ Examples:
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work [documentation|correctness|architecture|optimization|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
+Usage: argus work [documentation|correctness|architecture|optimization|maintainability|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -163,7 +164,7 @@ Description:
   and records durable outcomes (pass, candidate finding, unable-to-verify, failure).
 
 Arguments & Options:
-  documentation | correctness | architecture | optimization | all  Review policy to execute (default: all)
+  documentation | correctness | architecture | optimization | maintainability | all  Review policy to execute (default: all)
   --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency)
   --ci                                        Non-interactive CI execution mode (equivalent to --preset ci)
   -p, --provider, --profile <name[:model]>    Provider configuration (e.g. 'bedrock:claude-3-haiku', 'lemonade:default') or path
@@ -187,7 +188,8 @@ Examples:
   argus work --preset ci --provider bedrock:claude-3-haiku --no-limit
   argus work documentation --provider ollama:llama3.2 --no-limit
   argus work correctness --provider bedrock:claude-3-haiku --limit 5
-  argus work optimization --provider bedrock:claude-3-haiku --limit 5";
+  argus work optimization --provider bedrock:claude-3-haiku --limit 5
+  argus work maintainability --provider bedrock:claude-3-haiku --limit 5";
 
 const HELP_RUN: &str = "Execute complete review lifecycle (prime -> audit -> work -> finalize -> report)
 
@@ -433,7 +435,7 @@ Examples:
 const HELP_EVALUATE: &str = "Measure quality and calibration against a versioned corpus
 
 Usage:
-  argus evaluate <documentation|correctness|architecture> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]
+  argus evaluate <documentation|correctness|architecture|optimization|maintainability> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]
 
 Description:
   Evaluates one or more audit runs against a ground-truth defect corpus:
@@ -453,7 +455,9 @@ Options:
 Examples:
   argus evaluate documentation --corpus docs/evaluation/documentation-corpus-v1.json 5c82a1...
   argus evaluate correctness --corpus docs/evaluation/correctness-corpus-v1.json --ci 5c82a1...
-  argus evaluate architecture --corpus docs/evaluation/architecture-corpus-v1.json 5c82a1...";
+  argus evaluate architecture --corpus docs/evaluation/architecture-corpus-v1.json 5c82a1...
+  argus evaluate optimization --corpus docs/evaluation/optimization-corpus-v1.json 5c82a1...
+  argus evaluate maintainability --corpus docs/evaluation/maintainability-corpus-v1.json 5c82a1...";
 
 const HELP_PROVIDER: &str = "Manage and discover model provider configurations
 
@@ -641,6 +645,10 @@ pub struct ProjectThresholdConfig {
     pub correctness: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub architecture: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintainability: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -681,6 +689,8 @@ fn resolve_thresholds_path(
             "documentation" => thresh_cfg.documentation.as_deref(),
             "correctness" => thresh_cfg.correctness.as_deref(),
             "architecture" => thresh_cfg.architecture.as_deref(),
+            "optimization" | "performance" => thresh_cfg.optimization.as_deref(),
+            "maintainability" => thresh_cfg.maintainability.as_deref(),
             _ => None,
         };
         if let Some(cfg_path) = configured {
@@ -1960,7 +1970,7 @@ fn audit_command(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_AUDIT.to_owned());
     }
-    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|optimization|full> [--preset <local|ci>] [--ci] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
+    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|optimization|maintainability|full> [--preset <local|ci>] [--ci] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
     let mut iter = args.into_iter().peekable();
     let mut pipeline = None;
     let mut preset = PipelinePreset::Local;
@@ -1975,7 +1985,7 @@ fn audit_command(
                     .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
                 if !matches!(
                     val.as_str(),
-                    "documentation" | "correctness" | "architecture" | "optimization" | "performance" | "full"
+                    "documentation" | "correctness" | "architecture" | "optimization" | "performance" | "maintainability" | "full"
                 ) {
                     return Err(argus_core::ArgusError::invalid_input(usage));
                 }
@@ -2062,7 +2072,7 @@ fn audit_command(
         .collect();
 
     // Budget configurations per preset
-    let (doc_budget, corr_budget, arch_budget, opt_budget) = match preset {
+    let (doc_budget, corr_budget, arch_budget, opt_budget, maint_budget) = match preset {
         PipelinePreset::Local => (
             argus_evidence::EvidenceBudget {
                 max_bytes: 400_000,
@@ -2081,6 +2091,12 @@ fn audit_command(
                 max_tokens: 80_000,
                 max_items: 64,
                 max_relation_depth: 2,
+            },
+            argus_evidence::EvidenceBudget {
+                max_bytes: 400_000,
+                max_tokens: 80_000,
+                max_items: 32,
+                max_relation_depth: 0,
             },
             argus_evidence::EvidenceBudget {
                 max_bytes: 400_000,
@@ -2107,6 +2123,12 @@ fn audit_command(
                 max_tokens: 60_000,
                 max_items: 32,
                 max_relation_depth: 1,
+            },
+            argus_evidence::EvidenceBudget {
+                max_bytes: 250_000,
+                max_tokens: 50_000,
+                max_items: 16,
+                max_relation_depth: 0,
             },
             argus_evidence::EvidenceBudget {
                 max_bytes: 250_000,
@@ -2337,6 +2359,60 @@ fn audit_command(
         ))
     };
 
+    let plan_maintainability = || -> Result<String, argus_core::ArgusError> {
+        let policy = argus_policies::MaintainabilityApplicabilityPolicy::conservative()?;
+        let planner = argus_workflow::MaintainabilityReviewPlanner::new(
+            &policy,
+            argus_core::PolicyId::derive([b"maintainability-conservative-v1".as_slice()]),
+            "maintainability-conservative@1",
+        )?;
+        let plan = planner.plan(
+            &run.snapshot,
+            &run.configuration,
+            &targets_to_plan,
+            &evidence_to_plan,
+        )?;
+        let applicable = plan
+            .units
+            .iter()
+            .filter(|unit| unit.applicability.state == argus_core::ApplicabilityState::Applicable)
+            .count();
+        let not_applicable = plan
+            .units
+            .iter()
+            .filter(|unit| {
+                unit.applicability.state == argus_core::ApplicabilityState::NotApplicable
+            })
+            .count();
+        let pending = plan.units.len() - applicable - not_applicable;
+        let catalog = argus_workflow::MaintainabilityEvidenceCatalog::ingest(
+            &evidence_store,
+            &run.snapshot,
+            argus_evidence::DataClassification::Internal,
+            &evidence_to_plan,
+        )?;
+        let batch = plan.materialize_admissible(
+            &evidence_store,
+            &catalog,
+            &run.snapshot,
+            &run.configuration,
+            &maint_budget,
+            argus_evidence::DataClassification::Internal,
+        )?;
+        let admitted = batch.admit(
+            &queue,
+            &run.id,
+            &run.snapshot,
+            &run.configuration,
+            "rust",
+            now_millis()?,
+        )?;
+        Ok(format!(
+            "Maintainability plan for run {}: {} applicable, {} not applicable, {} pending; {} newly admitted",
+            run.id, applicable, not_applicable, pending, admitted
+        ))
+    };
+
     let next_step = match preset {
         PipelinePreset::Local => {
             "\nNext step: Run 'argus work' to process admitted review items with an LLM profile."
@@ -2352,13 +2428,15 @@ fn audit_command(
         "correctness" => plan_correctness().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "architecture" => plan_architecture().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "optimization" | "performance" => plan_optimization().map(|msg| format!("{preset_note}{msg}{next_step}")),
+        "maintainability" => plan_maintainability().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "full" => {
             let doc_msg = plan_documentation()?;
             let corr_msg = plan_correctness()?;
             let arch_msg = plan_architecture()?;
             let opt_msg = plan_optimization()?;
+            let maint_msg = plan_maintainability()?;
             Ok(format!(
-                "{preset_note}{doc_msg}\n{corr_msg}\n{arch_msg}\n{opt_msg}{next_step}"
+                "{preset_note}{doc_msg}\n{corr_msg}\n{arch_msg}\n{opt_msg}\n{maint_msg}{next_step}"
             ))
         }
         _ => unreachable!(),
@@ -2382,7 +2460,7 @@ fn work_command_with_env(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
     }
-    let usage = "usage: argus work [documentation|correctness|architecture|optimization|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
+    let usage = "usage: argus work [documentation|correctness|architecture|optimization|maintainability|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
     let mut iter = args.into_iter().peekable();
     let policy_arg = if iter.peek().is_some_and(|a| !a.starts_with('-')) {
         iter.next().map(|arg| arg.to_lowercase())
@@ -2395,6 +2473,7 @@ fn work_command_with_env(
         Some("correctness") => "correctness",
         Some("architecture") => "architecture",
         Some("optimization") | Some("performance") => "optimization",
+        Some("maintainability") => "maintainability",
         Some("all") | None => "all",
         _ => return Err(argus_core::ArgusError::invalid_input(usage)),
     };
@@ -2534,6 +2613,13 @@ fn work_command_with_env(
             fail_fast,
         )),
         "optimization" => runtime.block_on(execute_optimization_work(
+            root,
+            profile,
+            limit,
+            concurrency,
+            fail_fast,
+        )),
+        "maintainability" => runtime.block_on(execute_maintainability_work(
             root,
             profile,
             limit,
@@ -2996,8 +3082,10 @@ async fn execute_all_work(
     let arch_res =
         execute_architecture_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
     let opt_res =
-        execute_optimization_work(root, profile, limit, concurrency, fail_fast).await?;
-    Ok(format!("{doc_res}\n{corr_res}\n{arch_res}\n{opt_res}"))
+        execute_optimization_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
+    let maint_res =
+        execute_maintainability_work(root, profile, limit, concurrency, fail_fast).await?;
+    Ok(format!("{doc_res}\n{corr_res}\n{arch_res}\n{opt_res}\n{maint_res}"))
 }
 
 fn check_unadmitted_run_warning(
@@ -3010,7 +3098,7 @@ fn check_unadmitted_run_warning(
         tracing::warn!(
             run_id = %run_id,
             policy = policy_name,
-            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|correctness|architecture|optimization|full>'?"
+            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|correctness|architecture|optimization|maintainability|full>'?"
         );
     }
     Ok(())
@@ -3423,6 +3511,110 @@ async fn execute_optimization_work(
                     Ok(WorkerStepResult::RetryScheduled { work_id, error })
                 }
                 argus_workflow::OptimizationWorkerResult::Failed { work_id, error } => {
+                    Ok(WorkerStepResult::Failed { work_id, error })
+                }
+            }
+        },
+        fail_fast,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn execute_maintainability_work(
+    root: &std::path::Path,
+    profile: argus_provider::ProviderRuntimeProfile,
+    limit: Option<usize>,
+    concurrency: usize,
+    fail_fast: bool,
+) -> Result<String, argus_core::ArgusError> {
+    let queue = std::sync::Arc::new(working_queue(root)?);
+    let run_id = current_run(root)?;
+    let run = queue
+        .get_run(&run_id)?
+        .ok_or_else(|| argus_core::ArgusError::invariant("current run is missing"))?;
+    if run.state != argus_storage::RunState::Active || run.finalized_at_millis.is_some() {
+        return Err(argus_core::ArgusError::invariant(
+            "maintainability work requires an active current run",
+        ));
+    }
+    check_unadmitted_run_warning(&queue, &run_id, "maintainability")?;
+    let built = profile.build_from_environment().map_err(|error| {
+        argus_core::ArgusError::invalid_input("cannot build provider runtime").with_source(error)
+    })?;
+    let session_id = format!("worker-{}-{}", std::process::id(), now_millis()?);
+    let telemetry = std::sync::Arc::new(argus_storage::DurableProviderTelemetryPublisher::new(
+        queue.clone(),
+        session_id,
+    )?);
+    let executor = std::sync::Arc::new(
+        argus_provider::ProviderExecutor::new(
+            built.provider,
+            profile.capabilities.identity.clone(),
+            profile.policy.clone(),
+            profile.repair,
+            std::sync::Arc::new(argus_workflow::MaintainabilityReviewTransportValidator),
+        )
+        .map_err(|error| {
+            argus_core::ArgusError::invalid_input("cannot configure provider executor")
+                .with_source(error)
+        })?
+        .with_telemetry_sink(telemetry),
+    );
+    let state_directory = root.join(".argus/state/workflow");
+    let workflow_data = std::sync::Arc::new(
+        argus_workflow::WorkflowDataStore::open(&state_directory).map_err(|error| {
+            argus_core::ArgusError::invariant("cannot open workflow data").with_source(error)
+        })?,
+    );
+    let provider_identity = profile.capabilities.identity.clone();
+    let max_output_tokens = profile.capabilities.max_output_tokens;
+    let worker = std::sync::Arc::new(argus_workflow::MaintainabilityWorker::new(
+        queue.clone(),
+        workflow_data,
+        argus_workflow::documentation_worker_runtime(executor, built.adapter),
+        argus_workflow::MaintainabilityWorkerConfig {
+            state_directory,
+            identity: argus_workflow::MaintainabilityRuntimeIdentity {
+                audit_snapshot: run.snapshot,
+                audit_run: run.id,
+                provenance: argus_workflow::OutcomeProvenance {
+                    prompt_version: "maintainability-review@1".to_owned(),
+                    actor_id: "argus.review".to_owned(),
+                    actor_version: "1.0.0".to_owned(),
+                    workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),
+                    workflow_version: argus_workflow::TARGET_REVIEW_WORKFLOW_VERSION.to_owned(),
+                    provider: provider_identity.clone(),
+                },
+                max_output_tokens,
+            },
+            adapter: "rust".to_owned(),
+            policy: "maintainability-conservative@1".to_owned(),
+            lease_duration_millis: 120_000,
+            maximum_attempts: 3,
+        },
+    )?);
+
+    execute_concurrent_worker_pool(
+        "maintainability",
+        "Maintainability",
+        concurrency,
+        limit,
+        &provider_identity.provider,
+        &provider_identity.model,
+        queue,
+        &run_id,
+        worker,
+        |w| async move {
+            match w.run_next(now_millis()?).await? {
+                argus_workflow::MaintainabilityWorkerResult::Idle => Ok(WorkerStepResult::Idle),
+                argus_workflow::MaintainabilityWorkerResult::Succeeded { work_id } => {
+                    Ok(WorkerStepResult::Succeeded { work_id })
+                }
+                argus_workflow::MaintainabilityWorkerResult::RetryScheduled { work_id, error } => {
+                    Ok(WorkerStepResult::RetryScheduled { work_id, error })
+                }
+                argus_workflow::MaintainabilityWorkerResult::Failed { work_id, error } => {
                     Ok(WorkerStepResult::Failed { work_id, error })
                 }
             }
@@ -4163,9 +4355,13 @@ fn finalize_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("optimization"));
+    let is_maintainability = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("maintainability"));
 
     let mut report_summaries = Vec::new();
-    if is_documentation || (!is_architecture && !is_correctness && !is_optimization) {
+    if is_documentation || (!is_architecture && !is_correctness && !is_optimization && !is_maintainability) {
         let report = argus_report::write_documentation_bundle_reports(
             &destination,
             id.clone(),
@@ -4212,6 +4408,19 @@ fn finalize_command(
         )?;
         report_summaries.push(format!(
             "{} optimization assessments ({} candidates, {} unadjudicated)",
+            report.assessments.len(),
+            report.summary.candidate_findings,
+            report.summary.unadjudicated_findings,
+        ));
+    }
+    if is_maintainability {
+        let report = argus_report::write_maintainability_bundle_reports(
+            &destination,
+            id.clone(),
+            "maintainability-conservative@1",
+        )?;
+        report_summaries.push(format!(
+            "{} maintainability assessments ({} candidates, {} unadjudicated)",
             report.assessments.len(),
             report.summary.candidate_findings,
             report.summary.unadjudicated_findings,
@@ -4690,10 +4899,15 @@ fn report_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("optimization"));
+    let is_maintainability = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("maintainability"));
     let policy_count = usize::from(is_architecture)
         + usize::from(is_correctness)
         + usize::from(is_documentation)
-        + usize::from(is_optimization);
+        + usize::from(is_optimization)
+        + usize::from(is_maintainability);
 
     if format == "backlog" || format == "beads" || gaps_only {
         let documentation = is_documentation
@@ -4732,6 +4946,15 @@ fn report_command(
                 )
             })
             .transpose()?;
+        let maintainability = is_maintainability
+            .then(|| {
+                argus_report::maintainability_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "maintainability-conservative@1",
+                )
+            })
+            .transpose()?;
 
         let mut backlog = argus_report::extract_backlog_report(
             id,
@@ -4739,6 +4962,7 @@ fn report_command(
             correctness.as_ref(),
             architecture.as_ref(),
             optimization.as_ref(),
+            maintainability.as_ref(),
         );
 
         if let Some(sev) = severity_filter {
@@ -4817,6 +5041,15 @@ fn report_command(
                 )
             })
             .transpose()?;
+        let maintainability = is_maintainability
+            .then(|| {
+                argus_report::maintainability_report_from_queue(
+                    &queue,
+                    id.clone(),
+                    "maintainability-conservative@1",
+                )
+            })
+            .transpose()?;
         return match format {
             "json" => serde_json::to_string_pretty(&serde_json::json!({
                 "run_id": id,
@@ -4824,6 +5057,7 @@ fn report_command(
                 "correctness": correctness,
                 "architecture": architecture,
                 "optimization": optimization,
+                "maintainability": maintainability,
             }))
             .map_err(|error| {
                 argus_core::ArgusError::invariant("cannot serialize mixed policy report")
@@ -4851,6 +5085,11 @@ fn report_command(
                         |finding| serde_json::json!({"policy": "optimization", "finding": finding}),
                     ));
                 }
+                if let Some(report) = &maintainability {
+                    lines.extend(report.finding_clusters.iter().map(
+                        |finding| serde_json::json!({"policy": "maintainability", "finding": finding}),
+                    ));
+                }
                 lines
                     .into_iter()
                     .map(|line| serde_json::to_string(&line))
@@ -4866,6 +5105,7 @@ fn report_command(
                 correctness.map(|report| report.to_markdown()),
                 architecture.map(|report| report.to_markdown()),
                 optimization.map(|report| report.to_markdown()),
+                maintainability.map(|report| report.to_markdown()),
             ]
             .into_iter()
             .flatten()
@@ -5024,6 +5264,55 @@ fn report_command(
             }
             _ => Ok(report.to_markdown()),
         }
+    } else if is_maintainability {
+        let mut report =
+            argus_report::maintainability_report_from_queue(&queue, id, "maintainability-conservative@1")?;
+
+        if let Some(dim_name) = dimension_str {
+            let dim: argus_policies::MaintainabilityDimension = serde_json::from_value(
+                serde_json::Value::String(dim_name.clone()),
+            )
+            .map_err(|error| {
+                argus_core::ArgusError::invalid_input(format!(
+                    "unknown maintainability dimension `{dim_name}`"
+                ))
+                .with_source(error)
+            })?;
+            report
+                .finding_clusters
+                .retain(|cluster| cluster.representative.dimensions.contains(&dim));
+        }
+        if let Some(sev) = severity_filter {
+            report
+                .finding_clusters
+                .retain(|cluster| cluster.representative.severity == sev);
+        }
+
+        match format {
+            "json" => {
+                let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
+                    argus_core::ArgusError::invariant("cannot serialize maintainability report")
+                        .with_source(error)
+                })?;
+                String::from_utf8(bytes).map_err(|error| {
+                    argus_core::ArgusError::invariant("invalid utf-8 in serialized report")
+                        .with_source(error)
+                })
+            }
+            "jsonl" => {
+                let mut out = String::new();
+                for cluster in &report.finding_clusters {
+                    let line = serde_json::to_string(cluster).map_err(|error| {
+                        argus_core::ArgusError::invariant("cannot serialize finding cluster")
+                            .with_source(error)
+                    })?;
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+                Ok(out.trim_end().to_owned())
+            }
+            _ => Ok(report.to_markdown()),
+        }
     } else {
         let mut report = argus_report::documentation_report_from_queue(
             &queue,
@@ -5156,6 +5445,10 @@ fn adjudicate_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("optimization"));
+    let is_maintainability = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("maintainability"));
 
     let finding_exists = if is_architecture {
         let report = argus_report::architecture_report_from_queue(
@@ -5182,6 +5475,16 @@ fn adjudicate_command(
             &queue,
             run_id.clone(),
             "optimization-conservative@1",
+        )?;
+        report
+            .finding_clusters
+            .iter()
+            .any(|cluster| cluster.id == finding)
+    } else if is_maintainability {
+        let report = argus_report::maintainability_report_from_queue(
+            &queue,
+            run_id.clone(),
+            "maintainability-conservative@1",
         )?;
         report
             .finding_clusters
@@ -5231,7 +5534,7 @@ fn evaluate_command(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    let usage = "usage: argus evaluate <documentation|correctness|architecture> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]";
+    let usage = "usage: argus evaluate <documentation|correctness|architecture|optimization|maintainability> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]";
     let first = args.next();
     if is_help_flag(first.as_deref()) {
         return Ok(HELP_EVALUATE.to_owned());
@@ -5240,6 +5543,8 @@ fn evaluate_command(
         Some("documentation") => "documentation",
         Some("correctness") => "correctness",
         Some("architecture") => "architecture",
+        Some("optimization") | Some("performance") => "optimization",
+        Some("maintainability") => "maintainability",
         _ => return Err(argus_core::ArgusError::invalid_input(usage)),
     };
     let mut corpus_path = None;
@@ -5418,6 +5723,100 @@ fn evaluate_command(
             if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
                 return Err(argus_core::ArgusError::invalid_input(format!(
                     "Correctness evaluation quality thresholds unmet:\n  - {}",
+                    violations.join("\n  - ")
+                )));
+            }
+        }
+
+        match format {
+            "json" => {
+                let bytes = evaluation.to_json()?;
+                String::from_utf8(bytes).map_err(|error| {
+                    argus_core::ArgusError::invariant("invalid utf-8 in evaluation json")
+                        .with_source(error)
+                })
+            }
+            _ => Ok(evaluation.to_markdown()),
+        }
+    } else if pipeline == "optimization" {
+        let corpus: argus_report::OptimizationEvaluationCorpus = serde_json::from_slice(
+            &std::fs::read(path).map_err(io_error("cannot read optimization evaluation corpus"))?,
+        )
+        .map_err(|error| {
+            argus_core::ArgusError::invalid_input("optimization evaluation corpus is invalid")
+                .with_source(error)
+        })?;
+
+        let mut reports = Vec::with_capacity(run_ids.len());
+        let mut adjudications = Vec::new();
+        for run_id in &run_ids {
+            reports.push(argus_report::optimization_report_from_queue(
+                &queue,
+                run_id.clone(),
+                &corpus.policy_version,
+            )?);
+            adjudications.extend(queue.adjudications(run_id)?);
+        }
+        let evaluation = argus_report::evaluate_optimization(&corpus, &reports, &adjudications)?;
+
+        if let Some(ref t_path) = resolved_thresholds {
+            let thresholds: argus_report::OptimizationEvaluationThresholds = serde_json::from_slice(
+                &std::fs::read(t_path).map_err(io_error("cannot read evaluation thresholds"))?,
+            )
+            .map_err(|error| {
+                argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
+                    .with_source(error)
+            })?;
+            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
+                return Err(argus_core::ArgusError::invalid_input(format!(
+                    "Optimization evaluation quality thresholds unmet:\n  - {}",
+                    violations.join("\n  - ")
+                )));
+            }
+        }
+
+        match format {
+            "json" => {
+                let bytes = evaluation.to_json()?;
+                String::from_utf8(bytes).map_err(|error| {
+                    argus_core::ArgusError::invariant("invalid utf-8 in evaluation json")
+                        .with_source(error)
+                })
+            }
+            _ => Ok(evaluation.to_markdown()),
+        }
+    } else if pipeline == "maintainability" {
+        let corpus: argus_report::MaintainabilityEvaluationCorpus = serde_json::from_slice(
+            &std::fs::read(path).map_err(io_error("cannot read maintainability evaluation corpus"))?,
+        )
+        .map_err(|error| {
+            argus_core::ArgusError::invalid_input("maintainability evaluation corpus is invalid")
+                .with_source(error)
+        })?;
+
+        let mut reports = Vec::with_capacity(run_ids.len());
+        let mut adjudications = Vec::new();
+        for run_id in &run_ids {
+            reports.push(argus_report::maintainability_report_from_queue(
+                &queue,
+                run_id.clone(),
+                &corpus.policy_version,
+            )?);
+            adjudications.extend(queue.adjudications(run_id)?);
+        }
+        let evaluation = argus_report::evaluate_maintainability(&corpus, &reports, &adjudications)?;
+
+        if let Some(ref t_path) = resolved_thresholds {
+            let thresholds: argus_report::MaintainabilityEvaluationThresholds = serde_json::from_slice(
+                &std::fs::read(t_path).map_err(io_error("cannot read evaluation thresholds"))?,
+            )
+            .map_err(|error| {
+                argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
+                    .with_source(error)
+            })?;
+            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
+                return Err(argus_core::ArgusError::invalid_input(format!(
+                    "Maintainability evaluation quality thresholds unmet:\n  - {}",
                     violations.join("\n  - ")
                 )));
             }
@@ -9713,9 +10112,9 @@ mod tests {
         let unavailable_model = serde_json::json!({
             "schema_version": 1,
             "provider": "bedrock",
-            "default_model": "non-existent-claude-99",
+            "default_model": "claude-haiku",
             "models": {
-                "non-existent-claude-99": {
+                "claude-haiku": {
                     "aliases": [],
                     "context_window_tokens": 100000,
                     "max_output_tokens": 4096,
@@ -9745,6 +10144,8 @@ mod tests {
                 "test".to_owned(),
                 "--provider".to_owned(),
                 "bedrock".to_owned(),
+                "--model".to_owned(),
+                "non-existent-claude-99".to_owned(),
                 "--dir".to_owned(),
                 providers_dir.display().to_string(),
             ]
@@ -9752,12 +10153,7 @@ mod tests {
             temporary.path(),
         )
         .unwrap_err();
-        assert!(err_unavail.to_string().contains("UNAVAILABLE"));
-        assert!(
-            err_unavail
-                .to_string()
-                .contains("was not found in provider models list")
-        );
+        assert!(err_unavail.to_string().contains("not found for provider `bedrock`"));
     }
 
     #[test]
@@ -10672,6 +11068,88 @@ public class App {
         assert!(report_out.contains("optimization-conservative@1"));
 
         // 4. Backlog format
+        let backlog_out = run(
+            [
+                "report".to_owned(),
+                run_id,
+                "--format".to_owned(),
+                "backlog".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(backlog_out.contains("# Project Backlog & Gap Tracking"));
+    }
+
+    #[test]
+    fn maintainability_pipeline_audit_work_and_reporting() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temporary.path().join("Cargo.toml"),
+            b"[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(temporary.path().join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        let primed = run(
+            ["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let run_id = primed.split_whitespace().nth(2).unwrap().to_owned();
+
+        // 1. Audit --pipeline maintainability
+        let audit_out = run(
+            [
+                "audit".to_owned(),
+                "--pipeline".to_owned(),
+                "maintainability".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(audit_out.contains("Maintainability plan for run"));
+
+        // 2. Cancel remaining pending items so run can be finalized
+        run(
+            ["cancel".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        let finalize_out = run(
+            ["finalize".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(finalize_out.contains("Finalized run"));
+
+        for name in [
+            "maintainability-report.json",
+            "maintainability-report.jsonl",
+            "maintainability-report.md",
+        ] {
+            assert!(
+                temporary
+                    .path()
+                    .join(".argus/reviews")
+                    .join(&run_id)
+                    .join(name)
+                    .is_file()
+            );
+        }
+
+        let report_out = run(
+            ["report".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(report_out.contains("Maintainability Review Report"));
+        assert!(report_out.contains("maintainability-conservative@1"));
+
+        // 3. Backlog format
         let backlog_out = run(
             [
                 "report".to_owned(),

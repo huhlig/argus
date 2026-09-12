@@ -35,6 +35,11 @@ mod documentation_review;
 mod documentation_runtime;
 mod documentation_worker;
 mod evidence_actor;
+mod maintainability_outcome_actor;
+mod maintainability_plan;
+mod maintainability_review;
+mod maintainability_runtime;
+mod maintainability_worker;
 mod optimization_outcome_actor;
 mod optimization_plan;
 mod optimization_review;
@@ -110,6 +115,25 @@ pub use documentation_worker::{
     DocumentationWorkerRuntime, WorkflowFailureDiagnostics,
 };
 pub use evidence_actor::{EvidenceExpander, EvidenceExpansionActor, EvidenceRequestEvaluatorActor};
+pub use maintainability_outcome_actor::{
+    DurableMaintainabilityOutcomeActor, MAINTAINABILITY_ASSESSMENT_ARTIFACT_KIND,
+    MaintainabilityOutcomeActor,
+};
+pub use maintainability_plan::{
+    MAINTAINABILITY_EVIDENCE_PACKAGE_ARTIFACT_KIND, MAINTAINABILITY_REVIEW_CONTEXT_ARTIFACT_KIND,
+    MAINTAINABILITY_REVIEW_PLAN_SCHEMA_VERSION, MaintainabilityEvidenceCatalog,
+    MaintainabilityReviewAdmission, MaintainabilityReviewBatch,
+    MaintainabilityReviewMaterialization, MaintainabilityReviewPlan, MaintainabilityReviewPlanner,
+    MaintainabilityReviewUnit,
+};
+pub use maintainability_review::{
+    MaintainabilityAssessmentContract, MaintainabilityReviewTransportValidator,
+    maintainability_assessment_draft_schema,
+};
+pub use maintainability_runtime::{MaintainabilityRuntimeIdentity, maintainability_actor_registry};
+pub use maintainability_worker::{
+    MaintainabilityWorker, MaintainabilityWorkerConfig, MaintainabilityWorkerResult,
+};
 pub use optimization_outcome_actor::{
     DurableOptimizationOutcomeActor, OPTIMIZATION_ASSESSMENT_ARTIFACT_KIND,
     OptimizationOutcomeActor,

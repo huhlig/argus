@@ -17,6 +17,7 @@
 mod architecture;
 mod correctness;
 mod documentation;
+mod maintainability;
 mod optimization;
 
 pub use architecture::{
@@ -51,6 +52,16 @@ pub use documentation::{
     DocumentationTargetClass, DocumentationTargetProfile, DocumentationVisibility,
     EvidenceCitation, SourceMateriality,
 };
+pub use maintainability::{
+    ALL_MAINTAINABILITY_DIMENSIONS, MAINTAINABILITY_ASSESSMENT_SCHEMA_VERSION,
+    MAINTAINABILITY_POLICY_SCHEMA_VERSION, MaintainabilityApplicability,
+    MaintainabilityApplicabilityPolicy, MaintainabilityAssessment, MaintainabilityAssessmentDraft,
+    MaintainabilityCandidate, MaintainabilityCandidateDraft, MaintainabilityDimension,
+    MaintainabilityDimensionDraft, MaintainabilityDimensionResult, MaintainabilityDimensionStatus,
+    MaintainabilityEvidenceCitation, MaintainabilityFindingKind, MaintainabilityRefactoringDirection,
+    MaintainabilityResult, MaintainabilityResultDraft, MaintainabilityTargetClass,
+    MaintainabilityTargetProfile,
+};
 pub use optimization::{
     ALL_OPTIMIZATION_DIMENSIONS, OPTIMIZATION_ASSESSMENT_SCHEMA_VERSION,
     OptimizationApplicabilityDecision, OptimizationApplicabilityPolicy,
@@ -60,5 +71,5 @@ pub use optimization::{
     OptimizationDimensionStatus, OptimizationEvidenceCitation, OptimizationFindingKind,
     OptimizationImpactAnalysis, OptimizationImpactAnalysisDraft, OptimizationResult,
     OptimizationResultDraft, OptimizationTargetClass, OptimizationTargetProfile,
-    OptimizationVisibility,
+    OptimizationVisibility, ProfilingEvidenceStatus,
 };

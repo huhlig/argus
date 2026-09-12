@@ -18,8 +18,8 @@ use argus_core::{
     WorkItemId,
 };
 use argus_policies::{
-    OptimizationAssessment, OptimizationCandidate, OptimizationDimension,
-    OptimizationEvidenceCitation, OptimizationFindingKind, OptimizationResult,
+    MaintainabilityAssessment, MaintainabilityCandidate, MaintainabilityDimension,
+    MaintainabilityEvidenceCitation, MaintainabilityFindingKind, MaintainabilityResult,
 };
 use argus_storage::{OutcomeRecord, QueueState, QueueWork, StoredArtifact};
 use argus_workflow::EffectiveOutcome;
@@ -30,11 +30,11 @@ use std::{
     path::Path,
 };
 
-pub const OPTIMIZATION_REPORT_SCHEMA_VERSION: u32 = 1;
-pub const OPTIMIZATION_ASSESSMENT_ARTIFACT_KIND: &str = "optimization-assessment.v1";
+pub const MAINTAINABILITY_REPORT_SCHEMA_VERSION: u32 = 1;
+pub const MAINTAINABILITY_ASSESSMENT_ARTIFACT_KIND: &str = "maintainability-assessment.v1";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct OptimizationReportSummary {
+pub struct MaintainabilityReportSummary {
     pub total: usize,
     pub pending: usize,
     pub leased: usize,
@@ -57,13 +57,13 @@ pub struct OptimizationReportSummary {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct OptimizationReportAssessment {
+pub struct MaintainabilityReportAssessment {
     pub outcome: EffectiveOutcome,
-    pub assessment: OptimizationAssessment,
+    pub assessment: MaintainabilityAssessment,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct OptimizationFindingOccurrence {
+pub struct MaintainabilityFindingOccurrence {
     pub work_item: WorkItemId,
     pub target: TargetId,
     pub finding_index: usize,
@@ -72,22 +72,22 @@ pub struct OptimizationFindingOccurrence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct OptimizationFindingCluster {
+pub struct MaintainabilityFindingCluster {
     pub id: FindingId,
-    pub representative: OptimizationCandidate,
-    pub occurrences: Vec<OptimizationFindingOccurrence>,
+    pub representative: MaintainabilityCandidate,
+    pub occurrences: Vec<MaintainabilityFindingOccurrence>,
     #[serde(default)]
     pub adjudication: AdjudicationState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct OptimizationReport {
+pub struct MaintainabilityReport {
     pub schema_version: u32,
     pub run_id: RunId,
     pub policy_version: String,
-    pub summary: OptimizationReportSummary,
-    pub finding_clusters: Vec<OptimizationFindingCluster>,
-    pub assessments: Vec<OptimizationReportAssessment>,
+    pub summary: MaintainabilityReportSummary,
+    pub finding_clusters: Vec<MaintainabilityFindingCluster>,
+    pub assessments: Vec<MaintainabilityReportAssessment>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -100,16 +100,16 @@ struct CanonicalCitation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-struct CanonicalOptimizationFindingKey {
+struct CanonicalMaintainabilityFindingKey {
     title: String,
     description: String,
-    finding_kind: OptimizationFindingKind,
-    proposed_optimization: String,
-    dimensions: Vec<OptimizationDimension>,
+    finding_kind: MaintainabilityFindingKind,
+    refactoring_pattern: String,
+    dimensions: Vec<MaintainabilityDimension>,
     citations: Vec<CanonicalCitation>,
 }
 
-impl OptimizationReport {
+impl MaintainabilityReport {
     pub fn build(
         run_id: RunId,
         policy_version: &str,
@@ -120,7 +120,6 @@ impl OptimizationReport {
         Self::build_with_adjudications(run_id, policy_version, work, outcomes, artifacts, &[])
     }
 
-    #[allow(clippy::too_many_lines)]
     pub fn build_with_adjudications(
         run_id: RunId,
         policy_version: &str,
@@ -130,7 +129,7 @@ impl OptimizationReport {
         adjudications: &[HumanAdjudication],
     ) -> Result<Self, argus_core::ArgusError> {
         let policy_version = policy_version.to_owned();
-        let mut summary = OptimizationReportSummary::default();
+        let mut summary = MaintainabilityReportSummary::default();
 
         let mut artifact_map = HashMap::new();
         for artifact in artifacts {
@@ -146,14 +145,14 @@ impl OptimizationReport {
             };
             if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref) {
                 if let Ok(assessment) =
-                    serde_json::from_slice::<OptimizationAssessment>(&artifact.payload)
+                    serde_json::from_slice::<MaintainabilityAssessment>(&artifact.payload)
                 {
                     assessments_by_work.insert(effective_outcome.logical_key.work_id, assessment);
                 }
             }
         }
 
-        let mut clusters_by_key: BTreeMap<String, OptimizationFindingCluster> = BTreeMap::new();
+        let mut clusters_by_key: BTreeMap<String, MaintainabilityFindingCluster> = BTreeMap::new();
         let mut report_assessments = Vec::new();
 
         for item in work {
@@ -185,21 +184,21 @@ impl OptimizationReport {
                         })?;
                     if let Some(assessment) = assessments_by_work.remove(&item.id) {
                         match &assessment.result {
-                            OptimizationResult::Passed => summary.passed += 1,
-                            OptimizationResult::CandidateFindings { findings } => {
+                            MaintainabilityResult::Passed => summary.passed += 1,
+                            MaintainabilityResult::CandidateFindings { findings } => {
                                 summary.candidate_findings += 1;
                                 for (index, candidate) in findings.iter().enumerate() {
                                     summary.finding_occurrences += 1;
                                     let key = canonical_finding_key(candidate)?;
                                     let cluster = clusters_by_key.entry(key).or_insert_with(|| {
-                                        OptimizationFindingCluster {
+                                        MaintainabilityFindingCluster {
                                             id: canonical_finding_id(candidate),
                                             representative: candidate.clone(),
                                             occurrences: Vec::new(),
                                             adjudication: AdjudicationState::Unreviewed,
                                         }
                                     });
-                                    cluster.occurrences.push(OptimizationFindingOccurrence {
+                                    cluster.occurrences.push(MaintainabilityFindingOccurrence {
                                         work_item: item.id.clone(),
                                         target: assessment.target.target.clone(),
                                         finding_index: index,
@@ -208,11 +207,11 @@ impl OptimizationReport {
                                     });
                                 }
                             }
-                            OptimizationResult::UnableToVerify { .. } => {
+                            MaintainabilityResult::UnableToVerify { .. } => {
                                 summary.unable_to_verify += 1;
                             }
                         }
-                        report_assessments.push(OptimizationReportAssessment {
+                        report_assessments.push(MaintainabilityReportAssessment {
                             outcome: effective_outcome,
                             assessment,
                         });
@@ -268,7 +267,7 @@ impl OptimizationReport {
         });
 
         Ok(Self {
-            schema_version: OPTIMIZATION_REPORT_SCHEMA_VERSION,
+            schema_version: MAINTAINABILITY_REPORT_SCHEMA_VERSION,
             run_id,
             policy_version,
             summary,
@@ -279,60 +278,80 @@ impl OptimizationReport {
 
     pub fn to_json(&self) -> Result<Vec<u8>, argus_core::ArgusError> {
         serde_json::to_vec_pretty(self).map_err(|error| {
-            argus_core::ArgusError::invariant("cannot serialize optimization report to JSON")
+            argus_core::ArgusError::invariant("cannot serialize maintainability report to json")
                 .with_source(error)
         })
     }
 
+    pub fn write_bundle(&self, directory: &Path) -> Result<(), argus_core::ArgusError> {
+        let json_path = directory.join("maintainability-report.json");
+        let json_bytes = self.to_json()?;
+        write_reconciled(&json_path, &json_bytes)?;
+
+        let jsonl_path = directory.join("maintainability-report.jsonl");
+        let jsonl_bytes = self.to_jsonl()?;
+        write_reconciled(&jsonl_path, &jsonl_bytes)?;
+
+        let md_path = directory.join("maintainability-report.md");
+        let md_bytes = self.to_markdown().into_bytes();
+        write_reconciled(&md_path, &md_bytes)?;
+
+        Ok(())
+    }
+
+    pub fn read_jsonl(path: &Path) -> Result<Vec<MaintainabilityReportAssessment>, argus_core::ArgusError> {
+        read_jsonl(path)
+    }
+
     pub fn to_jsonl(&self) -> Result<Vec<u8>, argus_core::ArgusError> {
-        let mut out = Vec::new();
-        for cluster in &self.finding_clusters {
-            let line = serde_json::to_vec(cluster).map_err(|error| {
-                argus_core::ArgusError::invariant("cannot serialize optimization finding cluster")
-                    .with_source(error)
+        let mut buffer = Vec::new();
+        for item in &self.assessments {
+            let bytes = serde_json::to_vec(item).map_err(|error| {
+                argus_core::ArgusError::invariant(
+                    "cannot serialize maintainability assessment to jsonl",
+                )
+                .with_source(error)
             })?;
-            out.extend_from_slice(&line);
-            out.push(b'\n');
+            buffer.extend_from_slice(&bytes);
+            buffer.push(b'\n');
         }
-        Ok(out)
+        Ok(buffer)
     }
 
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "# Optimization Review Report — Run `{}`\n",
+            "# Maintainability Review Report: Run `{}`\n",
             self.run_id
         );
         let _ = writeln!(out, "**Policy Version**: `{}`\n", self.policy_version);
 
         let _ = writeln!(out, "## Summary\n");
         let _ = writeln!(out, "| Metric | Count |");
-        let _ = writeln!(out, "|---|---|");
-        let _ = writeln!(out, "| Total Targets Reviewed | {} |", self.summary.total);
+        let _ = writeln!(out, "| --- | ---: |");
+        let _ = writeln!(out, "| Total Targets | {} |", self.summary.total);
         let _ = writeln!(out, "| Passed | {} |", self.summary.passed);
         let _ = writeln!(
             out,
-            "| Candidate Findings | {} |",
+            "| Candidate Findings Targets | {} |",
             self.summary.candidate_findings
-        );
-        let _ = writeln!(
-            out,
-            "| Unable to Verify | {} |",
-            self.summary.unable_to_verify
-        );
-        let _ = writeln!(out, "| Failed | {} |", self.summary.failed);
-        let _ = writeln!(
-            out,
-            "| Finding Clusters (Unique Opportunities) | {} |",
-            self.summary.finding_clusters
         );
         let _ = writeln!(
             out,
             "| Total Finding Occurrences | {} |",
             self.summary.finding_occurrences
+        );
+        let _ = writeln!(
+            out,
+            "| Unique Finding Clusters | {} |",
+            self.summary.finding_clusters
+        );
+        let _ = writeln!(
+            out,
+            "| Duplicate Findings Deduplicated | {} |",
+            self.summary.duplicate_findings
         );
         let _ = writeln!(
             out,
@@ -351,23 +370,27 @@ impl OptimizationReport {
         );
         let _ = writeln!(
             out,
-            "| Deferred Findings | {} |\n",
+            "| Deferred Findings | {} |",
             self.summary.deferred_findings
         );
+        let _ = writeln!(
+            out,
+            "| Unable to Verify | {} |",
+            self.summary.unable_to_verify
+        );
+        let _ = writeln!(out, "| Failed | {} |", self.summary.failed);
+        let _ = writeln!(out, "| Pending / In Progress | {} |", self.summary.pending);
+        let _ = writeln!(out, "| Cancelled | {} |\n", self.summary.cancelled);
 
+        let _ = writeln!(out, "## Findings\n");
         if self.finding_clusters.is_empty() {
             let _ = writeln!(
                 out,
-                "No optimization opportunities or performance hazards identified.\n"
+                "No maintainability defects or refactoring candidates identified.\n"
             );
         } else {
-            let _ = writeln!(
-                out,
-                "## Optimization Opportunities & Hazards ({} unique across {} occurrences)\n",
-                self.summary.finding_clusters, self.summary.finding_occurrences
-            );
             for cluster in &self.finding_clusters {
-                let location_str = optimization_citations(&cluster.representative.citations);
+                let location_str = maintainability_citations(&cluster.representative.citations);
                 let target_ids = cluster
                     .occurrences
                     .iter()
@@ -409,97 +432,24 @@ impl OptimizationReport {
                 let _ = writeln!(out, "- **Occurrences**: {}", cluster.occurrences.len());
                 let _ = writeln!(
                     out,
-                    "- **Strictly Semantic Preserving**: {}",
-                    if cluster.representative.impact.strictly_semantic_preserving {
-                        "Yes"
-                    } else {
-                        "**NO (Alters or risks altering observable behavior)**"
-                    }
-                );
-                if let Some(change) = &cluster.representative.impact.behavior_change {
-                    let _ = writeln!(out, "- **Behavior Change**: {change}");
-                }
-                if !cluster.representative.impact.risks.is_empty() {
-                    let _ = writeln!(
-                        out,
-                        "- **Risks**: {}",
-                        cluster.representative.impact.risks.join("; ")
-                    );
-                }
-                let _ = writeln!(
-                    out,
-                    "- **Blast Radius**: {}",
-                    cluster.representative.impact.blast_radius
+                    "- **Refactoring Pattern**: {}",
+                    cluster.representative.refactoring.pattern
                 );
                 let _ = writeln!(
                     out,
-                    "- **Potential Benefit**: {}",
-                    cluster.representative.impact.potential_benefit
-                );
-
-                let _ = writeln!(
-                    out,
-                    "\n**Proposed Optimization**:\n```text\n{}\n```\n",
-                    cluster.representative.proposed_optimization
+                    "- **Refactoring Advice**: {}",
+                    cluster.representative.refactoring.advice
                 );
                 let _ = writeln!(
                     out,
-                    "**Description**:\n{}\n",
+                    "- **Expected Benefit**: {}",
+                    cluster.representative.refactoring.benefit
+                );
+                let _ = writeln!(
+                    out,
+                    "\n**Description**:\n{}\n",
                     cluster.representative.description
                 );
-            }
-        }
-
-        let _ = writeln!(out, "\n## Profiling & Benchmark Evidence\n");
-        let profiling_entries: Vec<_> = self
-            .assessments
-            .iter()
-            .filter_map(|a| {
-                a.assessment
-                    .profiling_evidence
-                    .as_ref()
-                    .map(|pe| (&a.assessment.target.target, pe))
-            })
-            .collect();
-
-        if profiling_entries.is_empty() {
-            let _ = writeln!(
-                out,
-                "> [!NOTE]\n> Benchmark and profiling evidence was unavailable for this audit run. For critical paths and hot loops, adding micro-benchmarks or CPU/heap profiling traces will significantly improve candidate accuracy and impact quantification.\n"
-            );
-        } else {
-            for (target, pe) in profiling_entries {
-                match pe {
-                    argus_policies::ProfilingEvidenceStatus::Available { summary, metrics } => {
-                        let _ = writeln!(out, "### Target `{target}`");
-                        let _ = writeln!(out, "- **Status**: Available");
-                        let _ = writeln!(out, "- **Summary**: {summary}");
-                        if !metrics.is_empty() {
-                            let _ = writeln!(out, "- **Metrics**:");
-                            for (k, v) in metrics {
-                                let _ = writeln!(out, "  * **{k}**: {v}");
-                            }
-                        }
-                        let _ = writeln!(out);
-                    }
-                    argus_policies::ProfilingEvidenceStatus::Unavailable { suggested_benchmarks } => {
-                        let _ = writeln!(out, "### Target `{target}`");
-                        let _ = writeln!(out, "- **Status**: Unavailable");
-                        if !suggested_benchmarks.is_empty() {
-                            let _ = writeln!(
-                                out,
-                                "- **Suggested Benchmarks / Traces**: {}",
-                                suggested_benchmarks.join(", ")
-                            );
-                        } else {
-                            let _ = writeln!(
-                                out,
-                                "- **Suggestion**: Add benchmark or profiling traces for this target."
-                            );
-                        }
-                        let _ = writeln!(out);
-                    }
-                }
             }
         }
 
@@ -507,8 +457,8 @@ impl OptimizationReport {
     }
 }
 
-fn optimization_citations(values: &[OptimizationEvidenceCitation]) -> String {
-    if values.empty() {
+fn maintainability_citations(values: &[MaintainabilityEvidenceCitation]) -> String {
+    if values.is_empty() {
         return "none".to_owned();
     }
     values
@@ -542,18 +492,8 @@ fn optimization_citations(values: &[OptimizationEvidenceCitation]) -> String {
         .join(", ")
 }
 
-trait EmptyExt {
-    fn empty(&self) -> bool;
-}
-
-impl<T> EmptyExt for [T] {
-    fn empty(&self) -> bool {
-        self.is_empty()
-    }
-}
-
 fn canonical_finding_key(
-    candidate: &OptimizationCandidate,
+    candidate: &MaintainabilityCandidate,
 ) -> Result<String, argus_core::ArgusError> {
     let mut citations = candidate
         .citations
@@ -569,30 +509,30 @@ fn canonical_finding_key(
     citations.sort();
     let mut dimensions = candidate.dimensions.iter().copied().collect::<Vec<_>>();
     dimensions.sort();
-    let key = CanonicalOptimizationFindingKey {
+    let key = CanonicalMaintainabilityFindingKey {
         title: candidate.title.clone(),
         description: candidate.description.clone(),
         finding_kind: candidate.finding_kind,
-        proposed_optimization: candidate.proposed_optimization.clone(),
+        refactoring_pattern: candidate.refactoring.pattern.clone(),
         dimensions,
         citations,
     };
     serde_json::to_string(&key).map_err(|e| {
-        argus_core::ArgusError::invariant("cannot serialize canonical optimization finding key")
+        argus_core::ArgusError::invariant("cannot serialize canonical maintainability finding key")
             .with_source(e)
     })
 }
 
-fn canonical_finding_id(candidate: &OptimizationCandidate) -> FindingId {
+fn canonical_finding_id(candidate: &MaintainabilityCandidate) -> FindingId {
     let key = canonical_finding_key(candidate).unwrap_or_default();
     FindingId::derive([key.as_bytes()])
 }
 
-pub fn write_optimization_bundle_reports(
+pub fn write_maintainability_bundle_reports(
     bundle: &Path,
     run_id: RunId,
     policy_version: &str,
-) -> Result<OptimizationReport, argus_core::ArgusError> {
+) -> Result<MaintainabilityReport, argus_core::ArgusError> {
     let work: Vec<QueueWork> = read_jsonl(&bundle.join("work.jsonl"))?;
     let outcomes: Vec<OutcomeRecord> = read_jsonl(&bundle.join("outcomes.jsonl"))?;
     let artifacts: Vec<StoredArtifact> = read_jsonl(&bundle.join("artifacts.jsonl"))?;
@@ -601,7 +541,7 @@ pub fn write_optimization_bundle_reports(
     } else {
         Vec::new()
     };
-    let report = OptimizationReport::build_with_adjudications(
+    let report = MaintainabilityReport::build_with_adjudications(
         run_id,
         policy_version,
         &work,
@@ -610,27 +550,27 @@ pub fn write_optimization_bundle_reports(
         &adjudications,
     )?;
     write_reconciled(
-        &bundle.join("optimization-report.json"),
+        &bundle.join("maintainability-report.json"),
         &report.to_json()?,
     )?;
     write_reconciled(
-        &bundle.join("optimization-report.jsonl"),
+        &bundle.join("maintainability-report.jsonl"),
         &report.to_jsonl()?,
     )?;
     write_reconciled(
-        &bundle.join("optimization-report.md"),
+        &bundle.join("maintainability-report.md"),
         report.to_markdown().as_bytes(),
     )?;
     Ok(report)
 }
 
-pub fn optimization_report_from_queue(
+pub fn maintainability_report_from_queue(
     queue: &argus_storage::DurableQueue,
     run_id: RunId,
     policy_version: &str,
-) -> Result<OptimizationReport, argus_core::ArgusError> {
+) -> Result<MaintainabilityReport, argus_core::ArgusError> {
     let records = queue.run_records(&run_id)?;
-    OptimizationReport::build_with_adjudications(
+    MaintainabilityReport::build_with_adjudications(
         run_id,
         policy_version,
         &records.work,
@@ -645,12 +585,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_empty_optimization_report() {
+    fn build_empty_maintainability_report() {
         let run_id = RunId::derive([b"run-1".as_slice()]);
-        let report = OptimizationReport::build(run_id, "optimization-conservative@1", &[], &[], &[])
+        let report = MaintainabilityReport::build(run_id, "maintainability-conservative@1", &[], &[], &[])
             .unwrap();
         assert_eq!(report.summary.total, 0);
         assert_eq!(report.summary.finding_clusters, 0);
-        assert!(report.to_markdown().contains("No optimization opportunities"));
+        assert!(report.to_markdown().contains("No maintainability defects"));
     }
 }
+
