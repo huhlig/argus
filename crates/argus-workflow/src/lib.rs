@@ -23,6 +23,11 @@ mod architecture_runtime;
 mod architecture_worker;
 mod candidate_actor;
 mod checkpoint;
+mod conformance_outcome_actor;
+mod conformance_plan;
+mod conformance_review;
+mod conformance_runtime;
+mod conformance_worker;
 mod correctness_outcome_actor;
 mod correctness_plan;
 mod correctness_review;
@@ -79,6 +84,21 @@ pub use architecture_worker::{
 };
 pub use candidate_actor::{CandidateRecorderActor, FindingWorkSchedulerActor};
 pub use checkpoint::{CHECKPOINT_DATABASE_FILE, CheckpointOpenError, open_checkpoint_store};
+pub use conformance_outcome_actor::{
+    CONFORMANCE_ASSESSMENT_ARTIFACT_KIND, ConformanceOutcomeActor, DurableConformanceOutcomeActor,
+};
+pub use conformance_plan::{
+    CONFORMANCE_EVIDENCE_PACKAGE_ARTIFACT_KIND, CONFORMANCE_REVIEW_CONTEXT_ARTIFACT_KIND,
+    CONFORMANCE_REVIEW_PLAN_SCHEMA_VERSION, ConformanceEvidenceCatalog, ConformanceReviewAdmission,
+    ConformanceReviewBatch, ConformanceReviewMaterialization, ConformanceReviewPlan,
+    ConformanceReviewPlanner, ConformanceReviewUnit,
+};
+pub use conformance_review::{
+    ConformanceAssessmentContract, ConformanceReviewTransportValidator,
+    conformance_assessment_draft_schema,
+};
+pub use conformance_runtime::{ConformanceRuntimeIdentity, conformance_actor_registry};
+pub use conformance_worker::{ConformanceWorker, ConformanceWorkerConfig, ConformanceWorkerResult};
 pub use correctness_outcome_actor::{
     CORRECTNESS_ASSESSMENT_ARTIFACT_KIND, CorrectnessOutcomeActor, DurableCorrectnessOutcomeActor,
 };

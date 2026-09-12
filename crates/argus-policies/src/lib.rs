@@ -30,8 +30,8 @@ pub use drift::{
 pub use conformance::{
     ALL_CONFORMANCE_DIMENSIONS, CONFORMANCE_ASSESSMENT_SCHEMA_VERSION,
     ConformanceApplicabilityDecision, ConformanceApplicabilityPolicy,
-    ConformanceApplicabilityRule, ConformanceAssessment, ConformanceAssessmentDraft,
-    ConformanceCandidate, ConformanceCandidateDraft, ConformanceDimension,
+    ConformanceApplicabilityRule, ConformanceAssessment, ConformanceAssessmentBinding,
+    ConformanceAssessmentDraft, ConformanceCandidate, ConformanceCandidateDraft, ConformanceDimension,
     ConformanceDimensionDraft, ConformanceDimensionResult, ConformanceDimensionStatus,
     ConformanceDisposition, ConformanceEvidenceCitation, ConformanceResult,
     ConformanceResultDraft, ConformanceTargetClass, ConformanceTargetProfile,

@@ -15,8 +15,9 @@
 //! Semantic design document conformance policy, rubrics, and assessment contracts.
 
 use argus_core::{
-    ApplicabilityState, ArgusError, Confidence, DesignArtifactId, EvidenceId, InventoryState,
-    PolicyId, Severity, SourceLocation, Target, TargetId, TargetKind, TargetVisibility, WorkItemId,
+    ApplicabilityState, ArgusError, Confidence, DesignArtifactId, EvidenceId, EvidenceKind,
+    InventoryState, PolicyId, Severity, SourceLocation, Target, TargetId, TargetKind,
+    TargetVisibility, WorkItemId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -537,6 +538,125 @@ impl ConformanceAssessmentDraft {
 
         assessment.validate()?;
         Ok(assessment)
+    }
+}
+
+/// Trusted binding context for constructing validated conformance assessments.
+#[derive(Clone, Debug)]
+pub struct ConformanceAssessmentBinding {
+    pub work_item: WorkItemId,
+    pub target: ConformanceTargetProfile,
+    pub policy: PolicyId,
+    pub policy_version: String,
+    pub applicability: ApplicabilityState,
+    pub evidence_revision: u32,
+    pub evidence: BTreeMap<EvidenceId, ConformanceEvidenceCitation>,
+    pub evidence_kinds: BTreeMap<EvidenceId, EvidenceKind>,
+}
+
+impl ConformanceAssessmentBinding {
+    pub fn bind(
+        &self,
+        draft: ConformanceAssessmentDraft,
+    ) -> Result<ConformanceAssessment, ArgusError> {
+        self.bind_assessment(draft)
+    }
+
+    pub fn bind_assessment(
+        &self,
+        draft: ConformanceAssessmentDraft,
+    ) -> Result<ConformanceAssessment, ArgusError> {
+        let mut dimensions = Vec::with_capacity(draft.dimensions.len());
+        for d in draft.dimensions {
+            let citations = self.bind_citations(&d.evidence)?;
+            dimensions.push(ConformanceDimensionResult {
+                dimension: d.dimension,
+                status: d.status,
+                rationale: d.rationale,
+                citations,
+            });
+        }
+
+        let result = match draft.result {
+            ConformanceResultDraft::Passed => ConformanceResult::Passed,
+            ConformanceResultDraft::CandidateFindings { findings } => {
+                let mut bound_findings = Vec::with_capacity(findings.len());
+                for (idx, f) in findings.into_iter().enumerate() {
+                    let confidence = Confidence::from_basis_points(f.confidence_basis_points)?;
+                    let citations = self.bind_citations(&f.evidence)?;
+                    let id = format!("{}:{}", self.target.target, idx + 1);
+                    bound_findings.push(ConformanceCandidate {
+                        id,
+                        title: f.title,
+                        description: f.description,
+                        severity: f.severity,
+                        confidence,
+                        dimensions: f.dimensions,
+                        governing_artifacts: f.governing_artifacts,
+                        declared_intent: f.declared_intent,
+                        observed_implementation: f.observed_implementation,
+                        discrepancy: f.discrepancy,
+                        impact: f.impact,
+                        suggested_disposition: f.suggested_disposition,
+                        citations,
+                    });
+                }
+                ConformanceResult::CandidateFindings {
+                    findings: bound_findings,
+                }
+            }
+            ConformanceResultDraft::UnableToVerify { reason } => {
+                ConformanceResult::UnableToVerify { reason }
+            }
+        };
+
+        let assessment = ConformanceAssessment {
+            schema_version: CONFORMANCE_ASSESSMENT_SCHEMA_VERSION,
+            work_item: self.work_item.clone(),
+            target: self.target.clone(),
+            policy: self.policy.clone(),
+            policy_version: self.policy_version.clone(),
+            applicability: self.applicability,
+            evidence_revision: self.evidence_revision,
+            dimensions,
+            result,
+        };
+        assessment.validate()?;
+        Ok(assessment)
+    }
+
+    pub fn validate_catalog(
+        &self,
+        catalog_kinds: &BTreeMap<EvidenceId, EvidenceKind>,
+    ) -> Result<(), ArgusError> {
+        if self.evidence_kinds.len() != catalog_kinds.len()
+            || self
+                .evidence_kinds
+                .iter()
+                .any(|(id, kind)| catalog_kinds.get(id) != Some(kind))
+        {
+            return Err(ArgusError::invariant(
+                "conformance evidence catalog kind identities do not match citations",
+            ));
+        }
+        Ok(())
+    }
+
+    fn bind_citations(
+        &self,
+        evidence_ids: &[EvidenceId],
+    ) -> Result<Vec<ConformanceEvidenceCitation>, ArgusError> {
+        let mut citations = Vec::with_capacity(evidence_ids.len());
+        for id in evidence_ids {
+            if let Some(citation) = self.evidence.get(id) {
+                citations.push(citation.clone());
+            } else {
+                return Err(ArgusError::invalid_input(format!(
+                    "evidence ID '{id}' is not present in trusted evidence set"
+                )));
+            }
+        }
+        Ok(citations)
     }
 }
 
