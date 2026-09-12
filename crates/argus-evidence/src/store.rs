@@ -200,10 +200,12 @@ impl EvidenceStore {
                     if path.extension().is_none() {
                         if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                             if let Ok(hash) = ContentHash::parse(file_name) {
-                                let size = file
-                                    .metadata()
-                                    .map_err(io_error("cannot read object metadata"))?
-                                    .len() as usize;
+                                let size = usize::try_from(
+                                    file.metadata()
+                                        .map_err(io_error("cannot read object metadata"))?
+                                        .len(),
+                                )
+                                .unwrap_or(usize::MAX);
                                 objects.push((hash, size, path));
                             }
                         }

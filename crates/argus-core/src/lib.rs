@@ -17,6 +17,7 @@
 mod audit;
 mod error;
 mod evidence;
+mod fingerprint;
 mod id;
 mod lifecycle;
 mod source;
@@ -26,6 +27,7 @@ pub use error::{ArgusError, ErrorCode};
 pub use evidence::{
     EvidenceKind, EvidenceOrigin, EvidenceProvenance, EvidenceRecord, ResolutionQuality,
 };
+pub use fingerprint::{FingerprintDifference, ReviewFingerprint};
 pub use id::{
     AssessmentId, AttemptId, ConfigurationId, DesignArtifactId, DesignLinkId, EvidenceId, FindingId,
     PolicyId, RelationId, RunId, SnapshotId, SourceTreeId, TargetId, WorkItemId, WorkflowId,

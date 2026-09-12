@@ -75,7 +75,7 @@ pub struct SourceLocation {
 }
 
 /// BLAKE3 hash of immutable source bytes.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ContentHash(String);
 

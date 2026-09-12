@@ -18,10 +18,13 @@ mod capture;
 mod manifest;
 mod store;
 
-pub use capture::{CaptureOptions, capture_snapshot, git_diff_changed_paths};
+pub use capture::{
+    CaptureOptions, FileChangeKind, FileDelta, capture_snapshot, git_diff_changed_paths,
+    git_diff_delta,
+};
 pub use manifest::{
     AnalysisConfiguration, CaptureIssue, CaptureIssueKind, CompilerInput, DriftKind, DriftRecord,
-    DriftReport, EnvironmentInput, FileClass, FileRecord, SnapshotManifest, VcsState,
+    DriftReport, EnvironmentInput, FileClass, FileRecord, SnapshotDelta, SnapshotManifest, VcsState,
 };
 pub use store::{LineIndex, SnapshotRepository, SourceReader};
 

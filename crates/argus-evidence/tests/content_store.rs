@@ -107,7 +107,7 @@ fn list_and_prune_objects_removes_files_and_cleans_shards() {
     assert_eq!(objects.len(), 2);
 
     // Prune first object
-    let (pruned_count, reclaimed_bytes) = store.prune_objects(&[first.clone()]).unwrap();
+    let (pruned_count, reclaimed_bytes) = store.prune_objects(std::slice::from_ref(&first)).unwrap();
     assert_eq!(pruned_count, 1);
     assert!(reclaimed_bytes > 0);
 

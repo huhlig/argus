@@ -17,7 +17,13 @@ use crate::{
     SNAPSHOT_SCHEMA_VERSION, SnapshotManifest, SnapshotRepository, VcsState,
 };
 use argus_core::{ContentHash, SnapshotId, SourcePath, SourceTreeId};
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+    process::Command,
+};
 
 /// Configuration options controlling source snapshot capture.
 ///
@@ -314,28 +320,107 @@ fn vcs_state(root: &Path) -> VcsState {
     VcsState { revision, dirty }
 }
 
-/// Returns the set of changed source paths compared to a git base ref (branch, commit, or tag).
+/// Category of change to a file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileChangeKind {
+    /// File was newly added.
+    Added,
+    /// File contents or metadata modified.
+    Modified,
+    /// File was removed/deleted.
+    Removed,
+}
+
+/// Structured set of file-level additions, modifications, and removals.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FileDelta {
+    /// Files added in this revision.
+    pub added: BTreeSet<SourcePath>,
+    /// Files modified in this revision.
+    pub modified: BTreeSet<SourcePath>,
+    /// Files removed in this revision.
+    pub removed: BTreeSet<SourcePath>,
+}
+
+impl FileDelta {
+    /// Returns `true` if no files were added, modified, or removed.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.added.is_empty() && self.modified.is_empty() && self.removed.is_empty()
+    }
+
+    /// Returns the total count of changed files.
+    #[must_use]
+    pub fn total_changed(&self) -> usize {
+        self.added.len() + self.modified.len() + self.removed.len()
+    }
+
+    /// Returns all changed source paths across additions, modifications, and removals.
+    #[must_use]
+    pub fn changed_paths(&self) -> BTreeSet<SourcePath> {
+        let mut paths = BTreeSet::new();
+        paths.extend(self.added.iter().cloned());
+        paths.extend(self.modified.iter().cloned());
+        paths.extend(self.removed.iter().cloned());
+        paths
+    }
+}
+
+/// Returns the structured file delta (`added`, `modified`, `removed`) compared to a git base ref.
 ///
 /// If `base_ref` is provided, this resolves the merge base between `base_ref` and `HEAD`
-/// (or uses `base_ref` directly) and queries `git diff --name-only`. It also includes any
-/// untracked or unstaged working tree changes.
-pub fn git_diff_changed_paths(
+/// (or uses `base_ref` directly) and queries `git diff --name-status`. It also includes any
+/// untracked, staged, or unstaged working tree changes.
+///
+/// # Errors
+///
+/// Returns [`argus_core::ArgusError`] if git commands fail unexpectedly.
+pub fn git_diff_delta(
     repository_root: &Path,
     base_ref: Option<&str>,
-) -> Result<std::collections::BTreeSet<SourcePath>, argus_core::ArgusError> {
-    let mut changed = std::collections::BTreeSet::new();
+) -> Result<FileDelta, argus_core::ArgusError> {
+    let mut delta = FileDelta::default();
 
-    // 1. If base_ref is given, query diff between merge-base (or base_ref) and HEAD
+    // 1. If base_ref is given, query diff between merge-base (or base_ref) and HEAD with status
     if let Some(base) = base_ref {
-        // Try merge-base first for PR/branch comparisons
         let merge_base = git(repository_root, &["merge-base", base, "HEAD"]);
         let target_base = merge_base.as_deref().unwrap_or(base);
-        if let Some(diff_output) = git(repository_root, &["diff", "--name-only", target_base]) {
+        if let Some(diff_output) = git(repository_root, &["diff", "--name-status", target_base]) {
             for line in diff_output.lines() {
                 let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    if let Ok(path) = SourcePath::new(trimmed) {
-                        changed.insert(path);
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let mut parts = trimmed.split('\t');
+                if let (Some(status), Some(first_path)) = (parts.next(), parts.next()) {
+                    let status_char = status.chars().next().unwrap_or(' ');
+                    match status_char {
+                        'A' => {
+                            if let Ok(path) = SourcePath::new(first_path) {
+                                delta.added.insert(path);
+                            }
+                        }
+                        'D' => {
+                            if let Ok(path) = SourcePath::new(first_path) {
+                                delta.removed.insert(path);
+                            }
+                        }
+                        'R' => {
+                            if let Ok(old_p) = SourcePath::new(first_path) {
+                                delta.removed.insert(old_p);
+                            }
+                            if let Some(new_file) = parts.next() {
+                                if let Ok(new_p) = SourcePath::new(new_file) {
+                                    delta.added.insert(new_p);
+                                }
+                            }
+                        }
+                        _ => {
+                            if let Ok(path) = SourcePath::new(first_path) {
+                                delta.modified.insert(path);
+                            }
+                        }
                     }
                 }
             }
@@ -348,18 +433,63 @@ pub fn git_diff_changed_paths(
         &["status", "--porcelain", "--untracked-files=all"],
     ) {
         for line in status_output.lines() {
-            if line.len() >= 4 {
-                let file_path = line[3..].trim();
-                // Handle rename syntax: "R  old -> new"
-                let target_file = file_path.split(" -> ").last().unwrap_or(file_path);
-                if let Ok(path) = SourcePath::new(target_file) {
-                    changed.insert(path);
+            let (status, file_path) = if line.len() >= 3 && &line[2..3] == " " {
+                (&line[..2], line[3..].trim())
+            } else if line.len() >= 2 && &line[1..2] == " " {
+                (&line[..1], line[2..].trim())
+            } else {
+                continue;
+            };
+
+            let is_untracked = status == "??" || status.contains('?');
+            let is_added = status.contains('A');
+            let is_deleted = status.contains('D');
+            let is_renamed = status.contains('R');
+
+            if is_renamed {
+                let mut rename_parts = file_path.split(" -> ");
+                if let (Some(old_f), Some(new_f)) = (rename_parts.next(), rename_parts.next()) {
+                    if let Ok(p) = SourcePath::new(old_f) {
+                        delta.removed.insert(p);
+                    }
+                    if let Ok(p) = SourcePath::new(new_f) {
+                        delta.added.insert(p);
+                    }
+                }
+            } else if is_untracked || is_added {
+                if let Ok(p) = SourcePath::new(file_path) {
+                    delta.added.insert(p);
+                }
+            } else if is_deleted {
+                if let Ok(p) = SourcePath::new(file_path) {
+                    delta.removed.insert(p);
+                }
+            } else if let Ok(p) = SourcePath::new(file_path) {
+                if !delta.added.contains(&p) {
+                    delta.modified.insert(p);
                 }
             }
         }
     }
 
-    Ok(changed)
+    Ok(delta)
+}
+
+/// Returns the set of changed source paths compared to a git base ref (branch, commit, or tag).
+///
+/// If `base_ref` is provided, this resolves the merge base between `base_ref` and `HEAD`
+/// (or uses `base_ref` directly) and queries `git diff --name-only`. It also includes any
+/// untracked or unstaged working tree changes.
+///
+/// # Errors
+///
+/// Returns [`argus_core::ArgusError`] if git queries fail.
+pub fn git_diff_changed_paths(
+    repository_root: &Path,
+    base_ref: Option<&str>,
+) -> Result<std::collections::BTreeSet<SourcePath>, argus_core::ArgusError> {
+    let delta = git_diff_delta(repository_root, base_ref)?;
+    Ok(delta.changed_paths())
 }
 
 fn git(root: &Path, args: &[&str]) -> Option<String> {
@@ -371,7 +501,7 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
     output
         .status
         .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .then(|| String::from_utf8_lossy(&output.stdout).trim_end().to_owned())
 }
 
 fn path_text(path: &Path) -> String {

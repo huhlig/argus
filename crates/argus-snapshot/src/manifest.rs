@@ -363,4 +363,93 @@ impl SnapshotManifest {
             })?;
         Ok(SourceTreeId::derive([identity.as_slice()]))
     }
+
+    /// Computes a structural and content diff comparing `self` (current) against a `baseline` snapshot.
+    #[must_use]
+    pub fn diff(&self, baseline: &SnapshotManifest) -> SnapshotDelta {
+        let mut added = BTreeMap::new();
+        let mut modified = BTreeMap::new();
+        let mut removed = BTreeMap::new();
+        let mut unchanged = BTreeMap::new();
+
+        for (path, current_record) in &self.files {
+            if let Some(baseline_record) = baseline.files.get(path) {
+                if baseline_record.content != current_record.content
+                    || baseline_record.size != current_record.size
+                    || baseline_record.class != current_record.class
+                {
+                    modified.insert(
+                        path.clone(),
+                        (baseline_record.clone(), current_record.clone()),
+                    );
+                } else {
+                    unchanged.insert(path.clone(), current_record.clone());
+                }
+            } else {
+                added.insert(path.clone(), current_record.clone());
+            }
+        }
+
+        for (path, baseline_record) in &baseline.files {
+            if !self.files.contains_key(path) {
+                removed.insert(path.clone(), baseline_record.clone());
+            }
+        }
+
+        SnapshotDelta {
+            baseline_id: Some(baseline.id.clone()),
+            current_id: Some(self.id.clone()),
+            added,
+            modified,
+            removed,
+            unchanged,
+        }
+    }
+}
+
+/// Detailed diff between two snapshot manifests.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotDelta {
+    /// Baseline snapshot ID, if comparing against a known snapshot.
+    pub baseline_id: Option<SnapshotId>,
+    /// Target / current snapshot ID, if comparing against a known snapshot.
+    pub current_id: Option<SnapshotId>,
+    /// Files present in current that were not in baseline.
+    pub added: BTreeMap<SourcePath, FileRecord>,
+    /// Files present in both whose content, size, or class changed: (`baseline_record`, `current_record`).
+    pub modified: BTreeMap<SourcePath, (FileRecord, FileRecord)>,
+    /// Files present in baseline that are not in current.
+    pub removed: BTreeMap<SourcePath, FileRecord>,
+    /// Files identical in baseline and current.
+    pub unchanged: BTreeMap<SourcePath, FileRecord>,
+}
+
+impl SnapshotDelta {
+    /// Returns `true` if there are no added, modified, or removed files.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.added.is_empty() && self.modified.is_empty() && self.removed.is_empty()
+    }
+
+    /// Returns the total count of changed (added, modified, removed) files.
+    #[must_use]
+    pub fn total_changed(&self) -> usize {
+        self.added.len() + self.modified.len() + self.removed.len()
+    }
+
+    /// Returns the set of all changed (added, modified, removed) source paths.
+    #[must_use]
+    pub fn changed_paths(&self) -> BTreeSet<SourcePath> {
+        let mut paths = BTreeSet::new();
+        for p in self.added.keys() {
+            paths.insert(p.clone());
+        }
+        for p in self.modified.keys() {
+            paths.insert(p.clone());
+        }
+        for p in self.removed.keys() {
+            paths.insert(p.clone());
+        }
+        paths
+    }
 }

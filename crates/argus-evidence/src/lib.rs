@@ -17,9 +17,20 @@
 mod context;
 mod design;
 mod design_link;
+mod impact;
+mod invalidation_graph;
 mod package;
 mod request;
 mod store;
+
+pub use impact::{
+    ImpactAnalysisConfig, ImpactAnalysisReport, ImpactAnalyzer, ImpactPropagationKind,
+    TargetChangeKind, TargetDelta, TargetImpactDetail,
+};
+pub use invalidation_graph::{
+    CallEdge, CallTreeBehaviorDifference, DependencyKind, DocumentedContract, InvalidationEngine,
+    InvalidationReason, InvalidationReport, ReviewDependencyGraph, TargetReviewInputs,
+};
 
 pub use design::{
     DesignArtifact, DesignArtifactIndex, DesignArtifactKind, DesignArtifactParser,

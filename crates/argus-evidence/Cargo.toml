@@ -22,6 +22,8 @@ rust-version.workspace = true
 
 [dependencies]
 argus-core = { path = "../argus-core" }
+argus-snapshot = { path = "../argus-snapshot" }
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
