@@ -25,6 +25,7 @@ argus-core = { path = "../argus-core" }
 argus-policies = { path = "../argus-policies" }
 argus-storage = { path = "../argus-storage" }
 argus-workflow = { path = "../argus-workflow" }
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

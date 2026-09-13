@@ -21,6 +21,8 @@ use std::{
     process::ExitCode,
 };
 
+mod mcp;
+
 const HELP: &str = "Argus repository source intelligence
 
 Usage: argus [OPTIONS] <COMMAND>
@@ -46,9 +48,13 @@ Inspection & Telemetry:
 Review, Adjudication & Evaluation:
   report       Render the documentation review report for a run (Markdown)
   backlog      Surface candidate gap findings into backlog items or top-level tracking
+  publish      Publish review findings to Beads or GitHub with cryptographic receipts
   adjudicate   Record a human adjudication decision on a candidate finding
   evaluate     Measure precision, recall, and stability against a versioned corpus
   finalize     Publish an immutable terminal run bundle to .argus/reviews/
+
+Server & Integration:
+  mcp          Run Model Context Protocol (MCP) server over stdio (alias: serve)
 
 Design & Architecture Conformance:
   design       Inspect design documents (ADRs, PRDs), validate health, and evaluate drift
@@ -126,7 +132,7 @@ Examples:
 
 const HELP_AUDIT: &str = "Plan and durably admit review work items for a policy pipeline
 
-Usage: argus audit --pipeline <pipeline> [--preset <local|ci>] [--ci] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]
+Usage: argus audit --pipeline <pipeline> [--preset <local|ci>] [--ci] [--ci-lite] [--baseline <ref|run-id>] [--incremental] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]
 
 Description:
   Evaluates policy applicability rules across discovered targets in the current
@@ -137,6 +143,9 @@ Options:
   --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, correctness, architecture, optimization, maintainability, conformance, full)
   --preset <preset>       Execution preset: local (default, developer interactive) or ci (strict budget, automated gating)
   --ci                    Non-interactive CI execution mode (equivalent to --preset ci)
+  --ci-lite               Fast CI review restricting admitted work to changed and impacted targets
+  --baseline <ref|run-id> Baseline git reference or prior run ID to compare against
+  --incremental           Admit targets using review fingerprints and invalidation graph
   --base <ref>            Examine targets changed and impacted relative to git base ref (merge-base vs HEAD)
   --diff <ref>            Alias for --base <ref>
   --since <ref>           Alias for --base <ref>
@@ -155,12 +164,14 @@ Examples:
   argus audit --pipeline full
   argus audit --pipeline full --preset ci
   argus audit --pipeline full --ci
+  argus audit --pipeline full --ci-lite
+  argus audit --pipeline full --incremental --baseline main
   argus audit --pipeline full --base main
   argus audit --pipeline full --diff origin/main --ci";
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work [documentation|correctness|architecture|optimization|maintainability|conformance|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
+Usage: argus work [documentation|correctness|architecture|optimization|maintainability|conformance|all] [--preset <local|ci>] [--ci] [--incremental] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -171,6 +182,7 @@ Arguments & Options:
   documentation | correctness | architecture | optimization | maintainability | conformance | all  Review policy to execute (default: all)
   --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency)
   --ci                                        Non-interactive CI execution mode (equivalent to --preset ci)
+  --incremental                               Use review assessment cache to short-circuit unchanged reviews
   -p, --provider, --profile <name[:model]>    Provider configuration (e.g. 'bedrock:claude-3-haiku', 'lemonade:default') or path
   -j, --concurrency, --threads <number>       Number of concurrent review threads/workers (default: provider max concurrency)
   --limit <number>                            Maximum number of work items to process (0 for no limit, default: 1)
@@ -190,6 +202,7 @@ Examples:
   argus work --provider lemonade:default -j 2 --no-limit
   argus work --provider bedrock:sonnet --no-limit -j 4
   argus work --preset ci --provider bedrock:claude-3-haiku --no-limit
+  argus work --incremental --no-limit
   argus work documentation --provider ollama:llama3.2 --no-limit
   argus work correctness --provider bedrock:claude-3-haiku --limit 5
   argus work optimization --provider bedrock:claude-3-haiku --limit 5
@@ -198,7 +211,7 @@ Examples:
 
 const HELP_RUN: &str = "Execute complete review lifecycle (prime -> audit -> work -> finalize -> report)
 
-Usage: argus run [--preset <local|ci>] [--ci] [--thresholds <path>] [--adapter <adapter>] [--pipeline <pipeline>] [--provider <name[:model]>] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only] [--format <format>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
+Usage: argus run [--preset <local|ci>] [--ci] [--ci-lite] [--baseline <ref|run-id>] [--incremental] [--thresholds <path>] [--adapter <adapter>] [--pipeline <pipeline>] [--provider <name[:model]>] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only] [--format <format>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
 
 Description:
   Executes an end-to-end review lifecycle pipeline in a single unified command:
@@ -210,6 +223,9 @@ Description:
 Options:
   --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency, strict checks)
   --ci                                        Non-interactive CI execution mode (equivalent to --preset ci)
+  --ci-lite                                   Fast CI review restricting admitted work to changed and impacted targets
+  --baseline <ref|run-id>                     Baseline git reference or prior run ID for impact analysis and differential report
+  --incremental                               Admit targets and short-circuit evaluation using review fingerprints and cache
   --thresholds <path>                         Path to quality thresholds configuration to enforce on run reports
   --adapter <adapter>                         Language adapter to run (supported: rust, typescript, all; default: rust)
   --pipeline <pipeline>                       Policy pipeline to admit (default: full)
@@ -229,6 +245,8 @@ Examples:
   argus run
   argus run --preset ci --base origin/main
   argus run --ci --diff origin/main --provider bedrock:claude-3-haiku
+  argus run --ci-lite --baseline origin/main
+  argus run --incremental --baseline main
   argus run --pipeline documentation --changed-only";
 
 const HELP_TARGETS: &str = "List or inspect persisted semantic targets from the current inventory
@@ -363,7 +381,7 @@ Examples:
 
 const HELP_REPORT: &str = "Render the audit report for a run (documentation or correctness)
 
-Usage: argus report [run-id] [--format <markdown|json|jsonl|backlog|beads>] [--dimension <dimension>] [--severity <severity>] [--gaps-only]
+Usage: argus report [run-id] [--baseline <run-id>] [--format <markdown|html|sarif|json|jsonl|backlog|beads>] [--html <path>] [--sarif <path>] [--dimension <dimension>] [--severity <severity>] [--gaps-only]
 
 Description:
   Generates a developer report from the durable queue or finalized bundle,
@@ -374,14 +392,22 @@ Arguments:
   [run-id]   Run identifier to report (default: current run)
 
 Options:
-  --format <format>        Output format: markdown (default), json, jsonl, backlog, beads
+  --baseline <run-id>      Compare against a prior baseline review run to render differential findings
+  --format <format>        Output format: markdown (default), html, sarif, json, jsonl, backlog, beads
+  --html <path>            Write standalone interactive HTML report to file
+  --sarif <path>           Write standard SARIF v2.1.0 report to file
   --dimension <dimension>  Filter findings by dimension
   --severity <severity>    Filter findings by severity (e.g. critical, high, medium, low, info)
   --gaps-only              Only include findings classified as documented gaps, stubs, or TODOs
 
 Examples:
   argus report 5c82a1...
+  argus report 5c82a1... --format html
+  argus report 5c82a1... --format sarif
+  argus report 5c82a1... --sarif results.sarif
+  argus report 5c82a1... --html report.html
   argus report 5c82a1... --format json
+  argus report 5c82a1... --baseline 3a18f2...
   argus report 5c82a1... --format backlog
   argus report 5c82a1... --format beads
   argus report 5c82a1... --gaps-only";
@@ -407,6 +433,34 @@ Examples:
   argus backlog
   argus backlog --format beads
   argus backlog 5c82a1... --format json";
+
+const HELP_PUBLISH: &str = "Publish review findings to Beads or GitHub with cryptographic receipts
+
+Usage:
+  argus publish [run-id] --target <beads|github> [--dry-run] [--force] [--receipt <path>] [--severity <severity>] [--policy <policy>]
+
+Description:
+  Publishes review findings to external issue trackers (Beads or GitHub) with
+  cryptographic receipt generation and deduplication.
+  Receipts are stored under `.argus/publications/` by default.
+
+Arguments:
+  [run-id]                Run identifier to publish (default: current run)
+
+Required Flags:
+  --target <beads|github> Target issue tracker destination
+
+Options:
+  --dry-run               Preview publication without writing receipt or executing mutations
+  --force                 Publish all findings even if already present in prior publication receipts
+  --receipt <path>        Custom file path to write publication receipt JSON
+  --severity <severity>   Filter findings by minimum or exact severity
+  --policy <policy>       Filter findings by originating policy substring
+
+Examples:
+  argus publish --target beads --dry-run
+  argus publish 5c82a1... --target beads
+  argus publish --target github --severity high";
 
 const HELP_ADJUDICATE: &str = "Record a human decision about a candidate finding
 
@@ -635,6 +689,16 @@ Examples:
   argus design health
   argus design drift";
 
+const HELP_MCP: &str = "Run Model Context Protocol (MCP) stdio server
+
+Usage: argus mcp
+       argus serve --mcp
+
+Description:
+  Runs a standard Model Context Protocol (MCP) JSON-RPC 2.0 server over stdio.
+  Enables LLM agents (Claude, Cursor, Antigravity) to inspect run status,
+  render reports, search candidate findings, and record human adjudications.";
+
 fn is_help_flag(value: Option<&str>) -> bool {
     matches!(value, Some("-h" | "--help" | "help"))
 }
@@ -656,10 +720,12 @@ fn command_help(command: &str) -> Result<String, argus_core::ArgusError> {
         "clean" => Ok(HELP_CLEAN.to_owned()),
         "report" => Ok(HELP_REPORT.to_owned()),
         "backlog" => Ok(HELP_BACKLOG.to_owned()),
+        "publish" => Ok(HELP_PUBLISH.to_owned()),
         "adjudicate" => Ok(HELP_ADJUDICATE.to_owned()),
         "evaluate" => Ok(HELP_EVALUATE.to_owned()),
         "design" => Ok(HELP_DESIGN.to_owned()),
         "provider" | "profile" => Ok(HELP_PROVIDER.to_owned()),
+        "mcp" | "serve" => Ok(HELP_MCP.to_owned()),
         _ => Err(argus_core::ArgusError::invalid_input(format!(
             "unknown help topic `{command}`; run `argus --help` for available commands"
         ))),
@@ -1329,6 +1395,10 @@ pub enum CliCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    Publish {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     Adjudicate {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -1346,6 +1416,14 @@ pub enum CliCommand {
         args: Vec<String>,
     },
     Design {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    Mcp {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    Serve {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -1427,6 +1505,9 @@ fn run(
             }
             report_command(root, backlog_args.into_iter())
         }
+        CliCommand::Publish { args } => {
+            publish_command(root, append_config(args).into_iter())
+        }
         CliCommand::Adjudicate { args } => {
             adjudicate_command(root, append_config(args).into_iter())
         }
@@ -1435,10 +1516,24 @@ fn run(
         CliCommand::Profile { args } | CliCommand::Provider { args } => {
             provider_command(root, append_config(args).into_iter())
         }
+        CliCommand::Mcp { args } | CliCommand::Serve { args } => {
+            mcp_command(root, append_config(args).into_iter())
+        }
     }
 }
 
-fn working_queue(
+fn mcp_command(
+    root: &std::path::Path,
+    mut args: impl Iterator<Item = String>,
+) -> Result<String, argus_core::ArgusError> {
+    if is_help_flag(args.next().as_deref()) {
+        return Ok(HELP_MCP.to_owned());
+    }
+    mcp::run_mcp_stdio_server(root)?;
+    Ok("MCP server shut down gracefully".to_owned())
+}
+
+pub(crate) fn working_queue(
     root: &std::path::Path,
 ) -> Result<argus_storage::DurableQueue, argus_core::ArgusError> {
     argus_storage::DurableQueue::open(&root.join(".argus/state/working.redb")).map_err(|error| {
@@ -1926,7 +2021,7 @@ fn now_millis() -> Result<u64, argus_core::ArgusError> {
     Ok(u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
 }
 
-fn current_run(root: &std::path::Path) -> Result<argus_core::RunId, argus_core::ArgusError> {
+pub(crate) fn current_run(root: &std::path::Path) -> Result<argus_core::RunId, argus_core::ArgusError> {
     std::fs::read_to_string(root.join(".argus/state/current-run"))
         .map_err(io_error(
             "cannot read current run; run `argus prime --adapter rust`",
@@ -2050,12 +2145,14 @@ fn audit_command(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_AUDIT.to_owned());
     }
-    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|optimization|maintainability|conformance|full> [--preset <local|ci>] [--ci] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
+    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|optimization|maintainability|conformance|full> [--preset <local|ci>] [--ci] [--ci-lite] [--baseline <ref|run-id>] [--incremental] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
     let mut iter = args.into_iter().peekable();
     let mut pipeline = None;
     let mut preset = PipelinePreset::Local;
     let mut base_ref = None;
     let mut changed_only = false;
+    let mut ci_lite = false;
+    let mut incremental = false;
 
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -2079,6 +2176,19 @@ fn audit_command(
             }
             "--ci" => {
                 preset = PipelinePreset::Ci;
+            }
+            "--ci-lite" => {
+                ci_lite = true;
+                preset = PipelinePreset::Ci;
+            }
+            "--baseline" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+                base_ref = Some(val);
+            }
+            "--incremental" => {
+                incremental = true;
             }
             "--base" | "--diff" | "--since" => {
                 let val = iter
@@ -2119,7 +2229,7 @@ fn audit_command(
     }
 
     // Determine target subset if change examination is requested
-    let change_filter_active = base_ref.is_some() || changed_only;
+    let change_filter_active = base_ref.is_some() || changed_only || ci_lite || incremental;
     let (targets_to_plan, change_diagnostic) = if change_filter_active {
         let changed_files = argus_snapshot::git_diff_changed_paths(root, base_ref.as_deref())?;
         let filtered = filter_changed_and_impacted_targets(
@@ -2128,12 +2238,28 @@ fn audit_command(
             &changed_files,
         );
         let ref_desc = base_ref.as_deref().unwrap_or("working tree");
-        let diag = format!(
-            " (change examination active against `{ref_desc}`: {} changed files, {} directly/impacted targets of {} total)",
-            changed_files.len(),
-            filtered.len(),
-            inventory.targets.len()
-        );
+        let diag = if ci_lite {
+            format!(
+                " (CI-lite active against `{ref_desc}`: {} changed files, {} admitted targets [directly/impacted] of {} total)",
+                changed_files.len(),
+                filtered.len(),
+                inventory.targets.len()
+            )
+        } else if incremental {
+            format!(
+                " (incremental review active against `{ref_desc}`: {} changed files, {} admitted targets of {} total)",
+                changed_files.len(),
+                filtered.len(),
+                inventory.targets.len()
+            )
+        } else {
+            format!(
+                " (change examination active against `{ref_desc}`: {} changed files, {} directly/impacted targets of {} total)",
+                changed_files.len(),
+                filtered.len(),
+                inventory.targets.len()
+            )
+        };
         (filtered, diag)
     } else {
         (inventory.targets.clone(), String::new())
@@ -2637,6 +2763,7 @@ fn work_command_with_env(
     let mut no_limit_explicit = false;
     let mut concurrency_override: Option<usize> = None;
     let mut fail_fast_explicit: Option<bool> = None;
+    let mut incremental = false;
     let mut config_path = None;
 
     while let Some(flag) = iter.next() {
@@ -2649,6 +2776,9 @@ fn work_command_with_env(
             }
             "--ci" => {
                 preset = PipelinePreset::Ci;
+            }
+            "--incremental" => {
+                incremental = true;
             }
             "--fail-fast" => {
                 fail_fast_explicit = Some(true);
@@ -2743,58 +2873,94 @@ fn work_command_with_env(
         .enable_all()
         .build()
         .map_err(io_error("cannot start worker runtime"))?;
-    match policy_name {
+
+    let mut cache_prefix = String::new();
+    if incremental {
+        if let Ok(queue) = working_queue(root) {
+            if let Ok(run_id) = current_run(root) {
+                if let Ok(Some(run)) = queue.get_run(&run_id) {
+                    let queue_arc = std::sync::Arc::new(queue);
+                    let resolver = std::sync::Arc::new(argus_workflow::MapFingerprintResolver::new());
+                    let worker = argus_workflow::ShortCircuitCacheWorker::new(
+                        queue_arc,
+                        None,
+                        resolver,
+                        argus_workflow::ShortCircuitCacheWorkerConfig {
+                            audit_run: run_id,
+                            audit_snapshot: run.snapshot,
+                            adapter: None,
+                            policy: if policy_name == "all" { None } else { Some(policy_name.to_owned()) },
+                            lease_duration_millis: 60_000,
+                        },
+                    );
+                    let now_millis = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    if let Ok(sweep) = runtime.block_on(worker.run_sweep(now_millis, limit.unwrap_or(0))) {
+                        if sweep.hits > 0 {
+                            cache_prefix = format!("Cache short-circuit: {} assessment hit(s), {} miss(es)\n", sweep.hits, sweep.misses);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let work_result = match policy_name {
         "documentation" => runtime.block_on(execute_documentation_work(
             root,
             profile,
             limit,
             concurrency,
             fail_fast,
-        )),
+        ))?,
         "correctness" => runtime.block_on(execute_correctness_work(
             root,
             profile,
             limit,
             concurrency,
             fail_fast,
-        )),
+        ))?,
         "architecture" => runtime.block_on(execute_architecture_work(
             root,
             profile,
             limit,
             concurrency,
             fail_fast,
-        )),
+        ))?,
         "optimization" => runtime.block_on(execute_optimization_work(
             root,
             profile,
             limit,
             concurrency,
             fail_fast,
-        )),
+        ))?,
         "maintainability" => runtime.block_on(execute_maintainability_work(
             root,
             profile,
             limit,
             concurrency,
             fail_fast,
-        )),
+        ))?,
         "conformance" => runtime.block_on(execute_conformance_work(
             root,
             profile,
             limit,
             concurrency,
             fail_fast,
-        )),
+        ))?,
         "all" => runtime.block_on(execute_all_work(
             root,
             profile,
             limit,
             concurrency,
             fail_fast,
-        )),
+        ))?,
         _ => unreachable!(),
-    }
+    };
+
+    Ok(format!("{cache_prefix}{work_result}"))
 }
 
 fn format_work_summary(
@@ -3907,6 +4073,9 @@ fn run_command(
     let mut provider_arg = None;
     let mut base_ref = None;
     let mut changed_only = false;
+    let mut ci_lite = false;
+    let mut baseline_arg: Option<String> = None;
+    let mut incremental = false;
     let mut limit_arg: Option<usize> = None;
     let mut limit_explicit = false;
     let mut no_limit_explicit = false;
@@ -3926,6 +4095,20 @@ fn run_command(
             }
             "--ci" => {
                 preset = PipelinePreset::Ci;
+            }
+            "--ci-lite" => {
+                preset = PipelinePreset::Ci;
+                ci_lite = true;
+            }
+            "--baseline" => {
+                let val = iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("missing value for --baseline")
+                })?;
+                baseline_arg = Some(val.clone());
+                base_ref = Some(val);
+            }
+            "--incremental" => {
+                incremental = true;
             }
             "--thresholds" => {
                 let val = iter.next().ok_or_else(|| {
@@ -4029,6 +4212,12 @@ fn run_command(
         PipelinePreset::Local => "local".to_owned(),
         PipelinePreset::Ci => "ci".to_owned(),
     });
+    if ci_lite {
+        audit_args.push("--ci-lite".to_owned());
+    }
+    if incremental {
+        audit_args.push("--incremental".to_owned());
+    }
     if let Some(base) = base_ref {
         audit_args.push("--base".to_owned());
         audit_args.push(base);
@@ -4051,6 +4240,9 @@ fn run_command(
         PipelinePreset::Local => "local".to_owned(),
         PipelinePreset::Ci => "ci".to_owned(),
     });
+    if incremental {
+        work_args.push("--incremental".to_owned());
+    }
     if let Some(prov) = provider_arg {
         work_args.push("--provider".to_owned());
         work_args.push(prov);
@@ -4087,6 +4279,10 @@ fn run_command(
         report_args.push("--format".to_owned());
         report_args.push(fmt);
     }
+    if let Some(ref base) = baseline_arg {
+        report_args.push("--baseline".to_owned());
+        report_args.push(base.clone());
+    }
     if let Some(ref cfg) = config_arg {
         report_args.push("--config".to_owned());
         report_args.push(cfg.clone());
@@ -4118,6 +4314,41 @@ fn run_command(
             return Err(argus_core::ArgusError::invalid_input(format!(
                 "CI gate failure: {failed_work} review work item(s) failed during audit run {run_id}"
             )));
+        }
+    }
+
+    // Differential CI gate check against baseline
+    if let Some(ref base) = baseline_arg {
+        if let Ok(base_run_id) = base.parse::<argus_core::RunId>() {
+            let queue = working_queue(root)?;
+            let run_id = current_run(root)?;
+            let diff_report = argus_report::differential_report_from_queue(
+                &queue,
+                base_run_id.clone(),
+                run_id.clone(),
+                Some(&argus_report::DifferentialThresholds::default()),
+            )
+            .or_else(|_| {
+                let base_bundle = root.join(".argus/reviews").join(base_run_id.as_str());
+                let cur_bundle = root.join(".argus/reviews").join(run_id.as_str());
+                argus_report::differential_report_from_bundles(
+                    &base_bundle,
+                    &cur_bundle,
+                    base_run_id,
+                    run_id,
+                    Some(&argus_report::DifferentialThresholds::default()),
+                )
+            });
+            if let Ok(report) = diff_report {
+                if let Some(gate) = report.gate_result {
+                    if !gate.passed && (matches!(preset, PipelinePreset::Ci) || ci_lite) {
+                        return Err(argus_core::ArgusError::invalid_input(format!(
+                            "CI gate check failed on new findings: {}",
+                            gate.violations.join("; ")
+                        )));
+                    }
+                }
+            }
         }
     }
 
@@ -5100,11 +5331,11 @@ fn clean_command(
 }
 
 #[allow(clippy::too_many_lines)]
-fn report_command(
+pub(crate) fn report_command(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    let usage = "usage: argus report [run-id] [--format <markdown|json|jsonl|backlog|beads>] [--dimension <dimension>] [--severity <severity>] [--gaps-only]";
+    let usage = "usage: argus report [run-id] [--baseline <run-id>] [--format <markdown|html|sarif|json|jsonl|backlog|beads>] [--html <path>] [--sarif <path>] [--dimension <dimension>] [--severity <severity>] [--gaps-only]";
     let first = args.next();
     if is_help_flag(first.as_deref()) {
         return Ok(HELP_REPORT.to_owned());
@@ -5119,6 +5350,9 @@ fn report_command(
     let mut dimension_str: Option<String> = None;
     let mut severity_filter: Option<argus_core::Severity> = None;
     let mut gaps_only = false;
+    let mut baseline_run_id: Option<argus_core::RunId> = None;
+    let mut html_output_path: Option<std::path::PathBuf> = None;
+    let mut sarif_output_path: Option<std::path::PathBuf> = None;
 
     let flag_iter = flag_peek.into_iter().chain(args);
     let mut iter = flag_iter.peekable();
@@ -5135,15 +5369,27 @@ fn report_command(
             .next()
             .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
         match flag.as_str() {
+            "--baseline" => {
+                let base_val = value.parse::<argus_core::RunId>()?;
+                baseline_run_id = Some(base_val);
+            }
+            "--html" => {
+                html_output_path = Some(std::path::PathBuf::from(value));
+            }
+            "--sarif" => {
+                sarif_output_path = Some(std::path::PathBuf::from(value));
+            }
             "--format" => match value.as_str() {
                 "markdown" => format = "markdown",
+                "html" => format = "html",
+                "sarif" => format = "sarif",
                 "json" => format = "json",
                 "jsonl" => format = "jsonl",
                 "backlog" => format = "backlog",
                 "beads" => format = "beads",
                 _ => {
                     return Err(argus_core::ArgusError::invalid_input(
-                        "supported report formats: markdown, json, jsonl, backlog, beads",
+                        "supported report formats: markdown, html, sarif, json, jsonl, backlog, beads",
                     ));
                 }
             },
@@ -5164,7 +5410,124 @@ fn report_command(
         }
     }
 
+    if let Some(base_id) = baseline_run_id {
+        let queue = working_queue(root)?;
+        let diff_report = argus_report::differential_report_from_queue(
+            &queue,
+            base_id.clone(),
+            id.clone(),
+            Some(&argus_report::DifferentialThresholds::default()),
+        )
+        .or_else(|_| {
+            let base_bundle = root.join(".argus/reviews").join(base_id.as_str());
+            let cur_bundle = root.join(".argus/reviews").join(id.as_str());
+            argus_report::differential_report_from_bundles(
+                &base_bundle,
+                &cur_bundle,
+                base_id,
+                id.clone(),
+                Some(&argus_report::DifferentialThresholds::default()),
+            )
+        })?;
+
+        if let Some(ref path) = html_output_path {
+            std::fs::write(path, diff_report.to_html()).map_err(|e| {
+                argus_core::ArgusError::invariant(format!(
+                    "failed to write HTML report to {}",
+                    path.display()
+                ))
+                .with_source(e)
+            })?;
+        }
+
+        if let Some(ref path) = sarif_output_path {
+            let sarif_json = diff_report.to_sarif().to_json_pretty()?;
+            std::fs::write(path, sarif_json).map_err(|e| {
+                argus_core::ArgusError::invariant(format!(
+                    "failed to write SARIF report to {}",
+                    path.display()
+                ))
+                .with_source(e)
+            })?;
+        }
+
+        return match format {
+            "html" => Ok(diff_report.to_html()),
+            "sarif" => diff_report.to_sarif().to_json_pretty(),
+            "json" | "jsonl" => diff_report.to_json_pretty(),
+            _ => Ok(diff_report.to_markdown()),
+        };
+    }
+
     let queue = working_queue(root)?;
+
+    if format == "html" || html_output_path.is_some() {
+        let findings = argus_report::extract_all_findings_from_queue(&queue, &id).or_else(|_| {
+            let bundle_dir = root.join(".argus/reviews").join(id.as_str());
+            argus_report::extract_all_findings_from_bundle(&bundle_dir, &id)
+        })?;
+        let mut filtered = findings;
+        if let Some(sev) = severity_filter {
+            filtered.retain(|f| f.severity == sev);
+        }
+        if let Some(ref dim) = dimension_str {
+            let dim_lower = dim.to_lowercase();
+            filtered.retain(|f| f.dimensions.iter().any(|d| d.to_lowercase() == dim_lower));
+        }
+        let options = argus_report::HtmlReportOptions {
+            title: Some(format!("Argus Audit Report: {id}")),
+            subtitle: Some(format!("Run: {id}")),
+            baseline_run_id: None,
+        };
+        let html_content = argus_report::render_findings_html_report(&id, &filtered, &options);
+        if let Some(ref path) = html_output_path {
+            std::fs::write(path, &html_content).map_err(|e| {
+                argus_core::ArgusError::invariant(format!(
+                    "failed to write HTML report to {}",
+                    path.display()
+                ))
+                .with_source(e)
+            })?;
+            if format == "markdown" {
+                return Ok(format!("HTML report written to {}", path.display()));
+            }
+        }
+        if format == "html" {
+            return Ok(html_content);
+        }
+    }
+
+    if format == "sarif" || sarif_output_path.is_some() {
+        let findings = argus_report::extract_all_findings_from_queue(&queue, &id).or_else(|_| {
+            let bundle_dir = root.join(".argus/reviews").join(id.as_str());
+            argus_report::extract_all_findings_from_bundle(&bundle_dir, &id)
+        })?;
+        let mut filtered = findings;
+        if let Some(sev) = severity_filter {
+            filtered.retain(|f| f.severity == sev);
+        }
+        if let Some(ref dim) = dimension_str {
+            let dim_lower = dim.to_lowercase();
+            filtered.retain(|f| f.dimensions.iter().any(|d| d.to_lowercase() == dim_lower));
+        }
+        let sarif_report = argus_report::render_sarif_report(&id, &filtered);
+        let sarif_content = sarif_report.to_json_pretty()?;
+        if let Some(ref path) = sarif_output_path {
+            std::fs::write(path, &sarif_content).map_err(|e| {
+                argus_core::ArgusError::invariant(format!(
+                    "failed to write SARIF report to {}",
+                    path.display()
+                ))
+                .with_source(e)
+            })?;
+            if format == "markdown" {
+                return Ok(format!("SARIF report written to {}", path.display()));
+            }
+        }
+        if format == "sarif" {
+            return Ok(sarif_content);
+        }
+    }
     let records = queue.run_records(&id)?;
     let is_architecture = records
         .work
@@ -5732,7 +6095,193 @@ fn report_command(
 }
 
 #[allow(clippy::too_many_lines)]
-fn adjudicate_command(
+pub(crate) fn publish_command(
+    root: &std::path::Path,
+    mut args: impl Iterator<Item = String>,
+) -> Result<String, argus_core::ArgusError> {
+    let usage = "usage: argus publish [run-id] --target <beads|github> [--dry-run] [--force] [--receipt <path>] [--severity <severity>] [--policy <policy>]";
+    let first = args.next();
+    if is_help_flag(first.as_deref()) {
+        return Ok(HELP_PUBLISH.to_owned());
+    }
+    let (id, flag_peek) = match first {
+        Some(ref arg) if !arg.starts_with('-') => (arg.parse::<argus_core::RunId>()?, None),
+        Some(arg) => (current_run(root)?, Some(arg)),
+        None => (current_run(root)?, None),
+    };
+
+    let mut target_opt: Option<argus_report::PublicationTarget> = None;
+    let mut dry_run = false;
+    let mut force = false;
+    let mut custom_receipt_path: Option<std::path::PathBuf> = None;
+    let mut severity_filter: Option<argus_core::Severity> = None;
+    let mut policy_filter: Option<String> = None;
+
+    let flag_iter = flag_peek.into_iter().chain(args);
+    let mut iter = flag_iter.peekable();
+
+    while let Some(flag) = iter.next() {
+        if is_help_flag(Some(&flag)) {
+            return Ok(HELP_PUBLISH.to_owned());
+        }
+        if flag == "--dry-run" {
+            dry_run = true;
+            continue;
+        }
+        if flag == "--force" {
+            force = true;
+            continue;
+        }
+        let value = iter
+            .next()
+            .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
+        match flag.as_str() {
+            "--target" => {
+                let target = match value.to_lowercase().as_str() {
+                    "beads" => argus_report::PublicationTarget::Beads,
+                    "github" => argus_report::PublicationTarget::GitHub,
+                    _ => {
+                        return Err(argus_core::ArgusError::invalid_input(
+                            "target must be either `beads` or `github`",
+                        ));
+                    }
+                };
+                target_opt = Some(target);
+            }
+            "--receipt" => {
+                custom_receipt_path = Some(std::path::PathBuf::from(value));
+            }
+            "--severity" => {
+                let sev: argus_core::Severity = serde_json::from_value(serde_json::Value::String(
+                    value.clone(),
+                ))
+                .map_err(|error| {
+                    argus_core::ArgusError::invalid_input(format!("unknown severity `{value}`"))
+                        .with_source(error)
+                })?;
+                severity_filter = Some(sev);
+            }
+            "--policy" => {
+                policy_filter = Some(value);
+            }
+            "--config" | "-c" => {}
+            _ => return Err(argus_core::ArgusError::invalid_input(usage)),
+        }
+    }
+
+    let target = target_opt.ok_or_else(|| {
+        argus_core::ArgusError::invalid_input("missing required flag `--target <beads|github>`")
+    })?;
+
+    let findings = {
+        let from_queue = working_queue(root)
+            .ok()
+            .and_then(|q| argus_report::extract_all_findings_from_queue(&q, &id).ok());
+        if let Some(f) = from_queue {
+            f
+        } else {
+            let bundle_dir = root.join(".argus/reviews").join(id.as_str());
+            argus_report::extract_all_findings_from_bundle(&bundle_dir, &id)?
+        }
+    };
+
+    let mut filtered = findings;
+    if let Some(sev) = severity_filter {
+        filtered.retain(|f| f.severity == sev);
+    }
+    if let Some(ref pol) = policy_filter {
+        let pol_lower = pol.to_lowercase();
+        filtered.retain(|f| f.policy.to_lowercase().contains(&pol_lower));
+    }
+
+    let pub_dir = root.join(".argus/publications");
+    let mut prior_receipts = Vec::new();
+    if pub_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&pub_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if let Ok(receipt) =
+                            serde_json::from_str::<argus_report::PublicationReceipt>(&content)
+                        {
+                            prior_receipts.push(receipt);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let now_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let (receipt, script) = argus_report::prepare_publication(
+        &id,
+        target,
+        &filtered,
+        &prior_receipts,
+        dry_run,
+        force,
+        now_millis,
+    );
+
+    if dry_run {
+        let dry_run_count = receipt
+            .items
+            .iter()
+            .filter(|i| i.status == argus_report::PublicationStatus::DryRun)
+            .count();
+        let mut out = format!(
+            "[Dry Run] Publication preview for run {id} to {target}\nTotal findings evaluated: {}\nItems to publish: {}\nSkipped duplicates: {}\nReceipt digest: {}\n\n",
+            receipt.total_findings,
+            dry_run_count,
+            receipt.skipped_count,
+            receipt.receipt_digest
+        );
+        out.push_str(&script);
+        return Ok(out);
+    }
+
+    let receipt_path = custom_receipt_path.unwrap_or_else(|| {
+        pub_dir.join(format!("{}-{}.json", id, target))
+    });
+
+    if let Some(parent) = receipt_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            argus_core::ArgusError::invariant(format!(
+                "cannot create publications directory {}",
+                parent.display()
+            ))
+            .with_source(e)
+        })?;
+    }
+
+    let receipt_json = receipt.to_json_pretty()?;
+    std::fs::write(&receipt_path, &receipt_json).map_err(|e| {
+        argus_core::ArgusError::invariant(format!(
+            "cannot write publication receipt to {}",
+            receipt_path.display()
+        ))
+        .with_source(e)
+    })?;
+
+    let mut out = format!(
+        "Published findings for run {id} to {target}\nReceipt written to: {}\nTotal findings evaluated: {}\nItems published: {}\nSkipped duplicates: {}\nReceipt digest: {}\n\n",
+        receipt_path.display(),
+        receipt.total_findings,
+        receipt.published_count,
+        receipt.skipped_count,
+        receipt.receipt_digest
+    );
+    out.push_str(&script);
+    Ok(out)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn adjudicate_command(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
@@ -6488,7 +7037,7 @@ fn parse_run_id(
     }
 }
 
-fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
+pub(crate) fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
     let queue = working_queue(root)?;
     let now = now_millis()?;
     let telemetry = queue.telemetry(now)?;
@@ -8536,8 +9085,10 @@ mod tests {
             "finalize",
             "report",
             "backlog",
+            "publish",
             "adjudicate",
             "evaluate",
+            "mcp",
         ];
 
         for cmd in commands {
@@ -11958,6 +12509,407 @@ public class App {
         .unwrap();
         let parsed_drift: serde_json::Value = serde_json::from_str(&drift_json).unwrap();
         assert_eq!(parsed_drift.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_incremental_and_ci_lite_cli_help_options() {
+        let temporary = tempfile::tempdir().unwrap();
+
+        // 1. Audit help
+        let audit_help = run(["audit".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(audit_help.contains("--ci-lite"));
+        assert!(audit_help.contains("--baseline"));
+        assert!(audit_help.contains("--incremental"));
+
+        // 2. Work help
+        let work_help = run(["work".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(work_help.contains("--incremental"));
+
+        // 3. Run help
+        let run_help = run(["run".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(run_help.contains("--ci-lite"));
+        assert!(run_help.contains("--baseline"));
+        assert!(run_help.contains("--incremental"));
+
+        // 4. Report help
+        let report_help = run(["report".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        assert!(report_help.contains("--baseline"));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn test_differential_report_cli_bundle_execution() {
+        let temporary = tempfile::tempdir().unwrap();
+        let reviews_dir = temporary.path().join(".argus/reviews");
+        std::fs::create_dir_all(&reviews_dir).unwrap();
+
+        let base_run_id = argus_core::RunId::derive([b"base-run-1".as_slice()]);
+        let cur_run_id = argus_core::RunId::derive([b"cur-run-2".as_slice()]);
+
+        let base_bundle_dir = reviews_dir.join(base_run_id.as_str());
+        let cur_bundle_dir = reviews_dir.join(cur_run_id.as_str());
+        std::fs::create_dir_all(&base_bundle_dir).unwrap();
+        std::fs::create_dir_all(&cur_bundle_dir).unwrap();
+
+        let finding1 = argus_report::DocumentationReport {
+            schema_version: 1,
+            run_id: base_run_id.clone(),
+            policy_version: "documentation-public-api@1".to_owned(),
+            summary: argus_report::DocumentationReportSummary::default(),
+            finding_clusters: vec![
+                argus_report::DocumentationFindingCluster {
+                    id: argus_core::FindingId::derive([b"cluster-1".as_slice()]),
+                    representative: argus_policies::DocumentationCandidate {
+                        title: "Missing documentation for public function".to_owned(),
+                        description: "Public function lacks doc comment".to_owned(),
+                        severity: argus_core::Severity::High,
+                        confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
+                        dimensions: std::collections::BTreeSet::new(),
+                        citations: Vec::new(),
+                    },
+                    occurrences: vec![
+                        argus_report::DocumentationFindingOccurrence {
+                            work_item: argus_core::WorkItemId::derive([b"work-1".as_slice()]),
+                            target: argus_core::TargetId::derive([b"target-1".as_slice()]),
+                            finding_index: 0,
+                            severity: argus_core::Severity::High,
+                            confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
+                        },
+                    ],
+                    adjudication: argus_core::AdjudicationState::Unreviewed,
+                },
+            ],
+            assessments: Vec::new(),
+        };
+
+        let finding2 = argus_report::DocumentationReport {
+            schema_version: 1,
+            run_id: cur_run_id.clone(),
+            policy_version: "documentation-public-api@1".to_owned(),
+            summary: argus_report::DocumentationReportSummary::default(),
+            finding_clusters: vec![
+                argus_report::DocumentationFindingCluster {
+                    id: argus_core::FindingId::derive([b"cluster-1".as_slice()]),
+                    representative: argus_policies::DocumentationCandidate {
+                        title: "Missing documentation for public function".to_owned(),
+                        description: "Public function lacks doc comment".to_owned(),
+                        severity: argus_core::Severity::High,
+                        confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
+                        dimensions: std::collections::BTreeSet::new(),
+                        citations: Vec::new(),
+                    },
+                    occurrences: vec![
+                        argus_report::DocumentationFindingOccurrence {
+                            work_item: argus_core::WorkItemId::derive([b"work-2".as_slice()]),
+                            target: argus_core::TargetId::derive([b"target-1".as_slice()]),
+                            finding_index: 0,
+                            severity: argus_core::Severity::High,
+                            confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
+                        },
+                    ],
+                    adjudication: argus_core::AdjudicationState::Unreviewed,
+                },
+                argus_report::DocumentationFindingCluster {
+                    id: argus_core::FindingId::derive([b"cluster-2".as_slice()]),
+                    representative: argus_policies::DocumentationCandidate {
+                        title: "New undocumented struct".to_owned(),
+                        description: "Public struct missing documentation".to_owned(),
+                        severity: argus_core::Severity::Critical,
+                        confidence: argus_core::Confidence::from_basis_points(9500).unwrap(),
+                        dimensions: std::collections::BTreeSet::new(),
+                        citations: Vec::new(),
+                    },
+                    occurrences: vec![
+                        argus_report::DocumentationFindingOccurrence {
+                            work_item: argus_core::WorkItemId::derive([b"work-3".as_slice()]),
+                            target: argus_core::TargetId::derive([b"target-2".as_slice()]),
+                            finding_index: 0,
+                            severity: argus_core::Severity::Critical,
+                            confidence: argus_core::Confidence::from_basis_points(9500).unwrap(),
+                        },
+                    ],
+                    adjudication: argus_core::AdjudicationState::Unreviewed,
+                },
+            ],
+            assessments: Vec::new(),
+        };
+
+        std::fs::write(
+            base_bundle_dir.join("documentation-report.json"),
+            serde_json::to_string(&finding1).unwrap(),
+        )
+        .unwrap();
+
+        std::fs::write(
+            cur_bundle_dir.join("documentation-report.json"),
+            serde_json::to_string(&finding2).unwrap(),
+        )
+        .unwrap();
+
+        // Run argus report cur_run_id --baseline base_run_id
+        let diff_md = run(
+            [
+                "report".to_owned(),
+                cur_run_id.to_string(),
+                "--baseline".to_owned(),
+                base_run_id.to_string(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(diff_md.contains("# Argus Differential Review Report"));
+        assert!(diff_md.contains("🔴 **New**"));
+        assert!(diff_md.contains("⚪ **Persistent**"));
+        assert!(diff_md.contains("New undocumented struct"));
+
+        // Run with --format json
+        let diff_json = run(
+            [
+                "report".to_owned(),
+                cur_run_id.to_string(),
+                "--baseline".to_owned(),
+                base_run_id.to_string(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&diff_json).unwrap();
+        assert_eq!(parsed["summary"]["new_count"], 1);
+        assert_eq!(parsed["summary"]["persistent_count"], 1);
+        assert_eq!(parsed["summary"]["resolved_count"], 0);
+
+        // Run with --format html
+        let diff_html = run(
+            [
+                "report".to_owned(),
+                cur_run_id.to_string(),
+                "--baseline".to_owned(),
+                base_run_id.to_string(),
+                "--format".to_owned(),
+                "html".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(diff_html.contains("<!DOCTYPE html>"));
+        assert!(diff_html.contains("Argus Differential Review"));
+        assert!(diff_html.contains("New undocumented struct"));
+
+        // Run with --html <path>
+        let html_file = temporary.path().join("report.html");
+        let html_msg = run(
+            [
+                "report".to_owned(),
+                cur_run_id.to_string(),
+                "--html".to_owned(),
+                html_file.to_str().unwrap().to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(html_file.exists());
+        assert!(html_msg.contains("HTML report written to"));
+        let saved_html = std::fs::read_to_string(&html_file).unwrap();
+        assert!(saved_html.contains("<!DOCTYPE html>"));
+        assert!(saved_html.contains("New undocumented struct"));
+
+        // Run with --format sarif
+        let diff_sarif = run(
+            [
+                "report".to_owned(),
+                cur_run_id.to_string(),
+                "--baseline".to_owned(),
+                base_run_id.to_string(),
+                "--format".to_owned(),
+                "sarif".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let sarif_val: serde_json::Value = serde_json::from_str(&diff_sarif).unwrap();
+        assert_eq!(sarif_val["version"], "2.1.0");
+        assert_eq!(sarif_val["runs"][0]["tool"]["driver"]["name"], "argus");
+
+        // Run with --sarif <path>
+        let sarif_file = temporary.path().join("report.sarif");
+        let sarif_msg = run(
+            [
+                "report".to_owned(),
+                cur_run_id.to_string(),
+                "--sarif".to_owned(),
+                sarif_file.to_str().unwrap().to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(sarif_file.exists());
+        assert!(sarif_msg.contains("SARIF report written to"));
+        let saved_sarif = std::fs::read_to_string(&sarif_file).unwrap();
+        let saved_val: serde_json::Value = serde_json::from_str(&saved_sarif).unwrap();
+        assert_eq!(saved_val["version"], "2.1.0");
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn publish_command_beads_and_github_receipts() {
+        let temporary = tempfile::tempdir().unwrap();
+        initialize(temporary.path()).unwrap();
+
+        let run_id = argus_core::RunId::derive([b"test-publish-run".as_slice()]);
+        let target_id = argus_core::TargetId::derive([b"test-publish-target".as_slice()]);
+        let cluster_id = argus_core::FindingId::derive([b"test-publish-finding".as_slice()]);
+
+        let reviews_dir = temporary.path().join(".argus/reviews");
+        let cur_bundle_dir = reviews_dir.join(run_id.as_str());
+        std::fs::create_dir_all(&cur_bundle_dir).unwrap();
+
+        let report = argus_report::DocumentationReport {
+            schema_version: 1,
+            run_id: run_id.clone(),
+            policy_version: "documentation-public-api@1".to_owned(),
+            summary: argus_report::DocumentationReportSummary::default(),
+            finding_clusters: vec![
+                argus_report::DocumentationFindingCluster {
+                    id: cluster_id,
+                    representative: argus_policies::DocumentationCandidate {
+                        title: "Undocumented public API".to_owned(),
+                        description: "Function `publish_test` missing documentation".to_owned(),
+                        severity: argus_core::Severity::High,
+                        confidence: argus_core::Confidence::from_basis_points(9500).unwrap(),
+                        dimensions: std::collections::BTreeSet::new(),
+                        citations: Vec::new(),
+                    },
+                    occurrences: vec![
+                        argus_report::DocumentationFindingOccurrence {
+                            work_item: argus_core::WorkItemId::derive([b"work-1".as_slice()]),
+                            target: target_id,
+                            finding_index: 0,
+                            severity: argus_core::Severity::High,
+                            confidence: argus_core::Confidence::from_basis_points(9500).unwrap(),
+                        },
+                    ],
+                    adjudication: argus_core::AdjudicationState::Unreviewed,
+                },
+            ],
+            assessments: Vec::new(),
+        };
+
+        std::fs::write(
+            cur_bundle_dir.join("documentation-report.json"),
+            serde_json::to_string(&report).unwrap(),
+        )
+        .unwrap();
+
+        // 1. Dry run publication with Beads target
+        let dry_output = run(
+            [
+                "publish".to_owned(),
+                run_id.to_string(),
+                "--target".to_owned(),
+                "beads".to_owned(),
+                "--dry-run".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(dry_output.contains("[Dry Run] Publication preview"));
+        assert!(dry_output.contains("bd create \"Undocumented public API\""));
+        assert!(dry_output.contains("--type task --priority 1"));
+
+        let pub_dir = temporary.path().join(".argus/publications");
+        assert!(!pub_dir.exists());
+
+        // 2. Full publication with Beads target
+        let pub_output = run(
+            [
+                "publish".to_owned(),
+                run_id.to_string(),
+                "--target".to_owned(),
+                "beads".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(pub_output.contains("Published findings for run"));
+        let receipt_file = pub_dir.join(format!("{run_id}-beads.json"));
+        assert!(receipt_file.exists());
+
+        let receipt_json = std::fs::read_to_string(&receipt_file).unwrap();
+        let receipt: argus_report::PublicationReceipt =
+            serde_json::from_str(&receipt_json).unwrap();
+        assert_eq!(receipt.schema_version, 1);
+        assert_eq!(receipt.total_findings, 1);
+        assert_eq!(receipt.published_count, 1);
+        assert_eq!(receipt.skipped_count, 0);
+        assert!(receipt.verify_digest());
+
+        // 3. Second publication without --force -> skips duplicate
+        let dup_output = run(
+            [
+                "publish".to_owned(),
+                run_id.to_string(),
+                "--target".to_owned(),
+                "beads".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(dup_output.contains("Skipped duplicates: 1"));
+
+        // 4. Force publication -> publishes again
+        let force_output = run(
+            [
+                "publish".to_owned(),
+                run_id.to_string(),
+                "--target".to_owned(),
+                "beads".to_owned(),
+                "--force".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(force_output.contains("Items published: 1"));
+
+        // 5. GitHub publication with custom receipt path
+        let custom_receipt = temporary.path().join("github_receipt.json");
+        let gh_output = run(
+            [
+                "publish".to_owned(),
+                run_id.to_string(),
+                "--target".to_owned(),
+                "github".to_owned(),
+                "--receipt".to_owned(),
+                custom_receipt.to_str().unwrap().to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        assert!(gh_output.contains("gh issue create"));
+        assert!(custom_receipt.exists());
+        let gh_receipt: argus_report::PublicationReceipt =
+            serde_json::from_str(&std::fs::read_to_string(&custom_receipt).unwrap()).unwrap();
+        assert_eq!(gh_receipt.target, argus_report::PublicationTarget::GitHub);
+        assert!(gh_receipt.verify_digest());
     }
 }
 

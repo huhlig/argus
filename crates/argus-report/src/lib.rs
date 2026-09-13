@@ -21,6 +21,10 @@ mod conformance;
 mod conformance_evaluation;
 mod correctness;
 mod correctness_evaluation;
+pub mod differential;
+pub mod html;
+pub mod publish;
+pub mod sarif;
 mod evaluation;
 mod maintainability;
 mod maintainability_evaluation;
@@ -63,6 +67,30 @@ pub use correctness_evaluation::{
     CORRECTNESS_CORPUS_SCHEMA_VERSION, CORRECTNESS_EVALUATION_SCHEMA_VERSION,
     CorrectnessEvaluation, CorrectnessEvaluationCorpus, CorrectnessEvaluationThresholds,
     ExpectedCorrectnessIssue, evaluate_correctness,
+};
+pub use differential::{
+    compare_findings, differential_report_from_bundles, differential_report_from_queue,
+    extract_all_findings_from_bundle, extract_all_findings_from_queue,
+    extract_architecture_findings, extract_conformance_findings, extract_correctness_findings,
+    extract_documentation_findings, extract_maintainability_findings, extract_optimization_findings,
+    DifferentialFinding, DifferentialGateResult, DifferentialReport, DifferentialSummary,
+    DifferentialThresholds, FindingCategory, SeverityBreakdown, DIFFERENTIAL_REPORT_SCHEMA_VERSION,
+};
+pub use html::{
+    escape_html, render_differential_html_report, render_findings_html_report, HtmlReportOptions,
+};
+pub use publish::{
+    compute_finding_content_hash, compute_receipt_digest, format_beads_create_command,
+    format_github_issue_command, prepare_publication, severity_to_beads_priority,
+    PublicationReceipt, PublicationReceiptItem, PublicationStatus, PublicationTarget,
+    PUBLICATION_RECEIPT_SCHEMA_VERSION,
+};
+pub use sarif::{
+    build_rule_catalog, parse_sarif_location, render_differential_sarif_report, render_sarif_report,
+    SarifArtifactLocation, SarifDriver, SarifLevel, SarifLocation, SarifMessage,
+    SarifMultiformatMessageString, SarifPhysicalLocation, SarifRegion, SarifReport,
+    SarifReportingConfiguration, SarifResult, SarifRule, SarifRun, SarifTool, SARIF_SCHEMA_URI,
+    SARIF_VERSION,
 };
 pub use evaluation::{
     DOCUMENTATION_CORPUS_SCHEMA_VERSION, DOCUMENTATION_EVALUATION_SCHEMA_VERSION,
