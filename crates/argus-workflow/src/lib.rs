@@ -16,11 +16,13 @@
 //! Versioned Langchart workflows owned by Argus.
 
 mod actor_registry;
+mod admission_planner;
 mod architecture_outcome_actor;
 mod architecture_plan;
 mod architecture_review;
 mod architecture_runtime;
 mod architecture_worker;
+mod cache_worker;
 mod candidate_actor;
 mod checkpoint;
 mod conformance_outcome_actor;
@@ -60,6 +62,9 @@ use langchart_model::{validation::CompiledWorkflow, workflow::WorkflowDocument};
 use std::{error::Error, fmt};
 
 pub use actor_registry::{ActorFactory, ActorRegistry, ActorRegistryError};
+pub use admission_planner::{
+    AdmissionMode, AdmissionStats, TargetAdmissionDecision, WorkAdmissionPlanner,
+};
 pub use architecture_outcome_actor::{
     ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ArchitectureOutcomeActor,
     DurableArchitectureOutcomeActor,
@@ -81,6 +86,11 @@ pub use architecture_runtime::{ArchitectureRuntimeIdentity, architecture_actor_r
 pub use architecture_worker::{
     ArchitectureContextResolver, ArchitectureWorker, ArchitectureWorkerConfig,
     ArchitectureWorkerResult,
+};
+pub use cache_worker::{
+    FingerprintResolver, MapFingerprintResolver, ShortCircuitCacheWorker,
+    ShortCircuitCacheWorkerConfig, ShortCircuitCacheWorkerResult, ShortCircuitSummary,
+    assessment_artifact_kind,
 };
 pub use candidate_actor::{CandidateRecorderActor, FindingWorkSchedulerActor};
 pub use checkpoint::{CHECKPOINT_DATABASE_FILE, CheckpointOpenError, open_checkpoint_store};
