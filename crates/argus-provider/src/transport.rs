@@ -347,13 +347,18 @@ impl ModelProvider for LangchartModelProvider {
             prompt = %user_content,
             "Sending prompt to LLM provider"
         );
+        let temperature = if self.capabilities.identity.provider == "bedrock" {
+            None
+        } else {
+            Some(0.0)
+        };
         let stream = self
             .adapter
             .complete_stream(LlmRequest {
                 model_policy: ModelPolicy {
                     profile: None,
                     model: Some(self.capabilities.identity.model.clone()),
-                    temperature: Some(0.0),
+                    temperature,
                     max_tokens: Some(
                         request
                             .max_output_tokens
@@ -396,10 +401,15 @@ impl ModelProvider for LangchartModelProvider {
                     "model output was filtered".to_owned(),
                 ));
             }
-            FinishReason::ToolCalls | FinishReason::Other(_) => {
+            FinishReason::ToolCalls => {
                 return Err(ProviderError::InvalidOutput(
-                    "transport did not return a terminal JSON response".to_owned(),
+                    "transport did not return a terminal JSON response: tool calls returned".to_owned(),
                 ));
+            }
+            FinishReason::Other(reason) => {
+                return Err(ProviderError::InvalidOutput(format!(
+                    "transport did not return a terminal JSON response: {reason}"
+                )));
             }
         }
         if !response.tool_calls.is_empty() {
@@ -684,6 +694,30 @@ async fn drive_llm_stream(mut stream: LlmEventStream) -> Result<LlmResponse, Pro
     ))
 }
 
+fn format_llm_error(error: &LlmError) -> String {
+    let mut chain = Vec::new();
+    let display = error.to_string();
+    if !display.is_empty() {
+        chain.push(display);
+    }
+    let mut source = (error as &dyn std::error::Error).source();
+    while let Some(src) = source {
+        let msg = src.to_string();
+        if !msg.is_empty() && !chain.contains(&msg) {
+            chain.push(msg);
+        }
+        source = src.source();
+    }
+    let formatted = chain.join(": ");
+    if formatted == "unhandled error" || formatted.is_empty() {
+        let debug_str = format!("{error:?}");
+        if debug_str != formatted && !debug_str.is_empty() {
+            return format!("unhandled error ({debug_str})");
+        }
+    }
+    formatted
+}
+
 #[allow(clippy::match_wildcard_for_single_variants)]
 fn map_error(error: LlmError) -> ProviderError {
     match error {
@@ -704,8 +738,11 @@ fn map_error(error: LlmError) -> ProviderError {
                 "adapter `{adapter}` cannot honor required response format `{requested}`"
             ))
         }
-        LlmError::Provider(message) => ProviderError::Unavailable(message),
-        other => ProviderError::Unavailable(other.to_string()),
+        LlmError::Provider(message) => {
+            let formatted = format_llm_error(&LlmError::Provider(message));
+            ProviderError::Unavailable(formatted)
+        }
+        other => ProviderError::Unavailable(format_llm_error(&other)),
     }
 }
 
@@ -1171,5 +1208,13 @@ mod tests {
             messages.last(),
             Some(Message::Assistant { content }) if content == "<think>\n\n</think>\n\n"
         ));
+    }
+
+    #[test]
+    fn format_llm_error_unhandled_error_falls_back_to_debug() {
+        let err = LlmError::Provider("unhandled error".to_owned());
+        let formatted = format_llm_error(&err);
+        assert!(formatted.contains("unhandled error"));
+        assert!(formatted.contains("Provider"));
     }
 }

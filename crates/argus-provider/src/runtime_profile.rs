@@ -441,7 +441,14 @@ impl ProviderRuntimeProfile {
             } => {
                 let region = substitute_value(region, &mut read_secret)?;
                 let endpoint_url =
-                    substitute_optional_value(endpoint_url.as_deref(), &mut read_secret)?;
+                    substitute_optional_value(endpoint_url.as_deref(), &mut read_secret)?
+                        .map(|url| {
+                            let mut trimmed = url.trim().trim_end_matches('/');
+                            if let Some(without_v1) = trimmed.strip_suffix("/v1") {
+                                trimmed = without_v1.trim_end_matches('/');
+                            }
+                            trimmed.to_owned()
+                        });
                 let profile_name =
                     substitute_optional_value(profile_name.as_deref(), &mut read_secret)?;
                 let inference_profile = substitute_optional_value(

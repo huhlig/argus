@@ -232,19 +232,13 @@ impl PolicyAssessmentContract for OptimizationAssessmentContract {
         };
         findings
             .into_iter()
-            .enumerate()
-            .map(|(index, finding)| {
-                serde_json::to_value(json!({
-                    "id": format!("candidate-{}", index + 1),
+            .map(|finding| {
+                Ok(json!({
                     "title": finding.title,
                     "description": finding.description,
-                    "finding_kind": finding.finding_kind,
-                    "proposed_optimization": finding.proposed_optimization,
-                    "impact": finding.impact,
                     "severity": finding.severity,
                     "confidence_basis_points": finding.confidence.basis_points(),
                 }))
-                .map_err(|error| error.to_string())
             })
             .collect()
     }

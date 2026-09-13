@@ -1369,6 +1369,10 @@ pub enum CliCommand {
         args: Vec<String>,
     },
     Status,
+    Errorlog {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     Coverage {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -1491,6 +1495,7 @@ fn run(
         CliCommand::Work { args } => work_command(root, append_config(args).into_iter()),
         CliCommand::Targets { args } => targets_command(root, append_config(args).into_iter()),
         CliCommand::Status => status_command(root),
+        CliCommand::Errorlog { args } => errorlog_command(root, append_config(args).into_iter()),
         CliCommand::Coverage { args } => coverage_command(root, append_config(args).into_iter()),
         CliCommand::Resume { args } => resume_command(root, args.into_iter()),
         CliCommand::Cancel { run_id } => cancel_command(root, run_id),
@@ -7185,7 +7190,7 @@ pub(crate) fn status_command(root: &std::path::Path) -> Result<String, argus_cor
     }
     append_stalled_warnings(&telemetry.stalled_items, &mut output)?;
     append_architecture_status(root, &queue, &mut output)?;
-    append_work_errors(root, &queue, &mut output)?;
+    append_work_errors_summary(root, &queue, &mut output)?;
     Ok(output.trim_end().to_owned())
 }
 
@@ -7341,13 +7346,37 @@ fn append_architecture_status(
     Ok(())
 }
 
-fn append_work_errors(
+fn append_work_errors_summary(
     root: &std::path::Path,
     queue: &argus_storage::DurableQueue,
     output: &mut String,
 ) -> Result<(), argus_core::ArgusError> {
     let Ok(run_id) = current_run(root) else {
         return Ok(());
+    };
+    let failure_count = queue
+        .run_records(&run_id)?
+        .work
+        .into_iter()
+        .filter(|work| work.last_error.is_some())
+        .count();
+    if failure_count > 0 {
+        writeln!(
+            output,
+            "\nWork errors: {failure_count} (run 'argus errorlog' to inspect details)"
+        )
+        .expect("writing to a String cannot fail");
+    }
+    Ok(())
+}
+
+pub(crate) fn errorlog_command(
+    root: &std::path::Path,
+    _args: impl Iterator<Item = String>,
+) -> Result<String, argus_core::ArgusError> {
+    let queue = working_queue(root)?;
+    let Ok(run_id) = current_run(root) else {
+        return Ok("No active run found.".to_owned());
     };
     let failures = queue
         .run_records(&run_id)?
@@ -7356,10 +7385,23 @@ fn append_work_errors(
         .filter(|work| work.last_error.is_some())
         .collect::<Vec<_>>();
     if failures.is_empty() {
-        return Ok(());
+        return Ok(format!("No work errors recorded for run {run_id}."));
     }
     let events = queue.events()?;
-    writeln!(output, "\nWork errors: {}", failures.len()).expect("writing to a String cannot fail");
+    let mut output = String::new();
+    writeln!(output, "Work errors: {}", failures.len()).expect("writing to a String cannot fail");
+
+    let mut categories: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for work in &failures {
+        let cat = categorize_error(work.last_error.as_deref().unwrap_or(""));
+        *categories.entry(cat).or_default() += 1;
+    }
+    writeln!(output, "Error categories:").expect("writing to a String cannot fail");
+    for (cat, count) in categories {
+        writeln!(output, "  - {cat}: {count}").expect("writing to a String cannot fail");
+    }
+    writeln!(output).expect("writing to a String cannot fail");
+
     for work in failures {
         let detail = work.last_error.as_deref().map_or_else(
             || "no error detail recorded".to_owned(),
@@ -7382,7 +7424,23 @@ fn append_work_errors(
             }
         }
     }
-    Ok(())
+    Ok(output.trim_end().to_owned())
+}
+
+fn categorize_error(err: &str) -> &'static str {
+    if err.contains("invalid candidates") || err.contains("policy candidate contract violation") {
+        "Candidate Schema Mismatch"
+    } else if err.contains("provider unavailable") {
+        "Provider Unavailable"
+    } else if err.contains("budget exceeded") || err.contains("token budget") {
+        "Budget Exceeded"
+    } else if err.contains("stalled") || err.contains("lease expired") {
+        "Work Stalled"
+    } else if err.contains("invalid policy assessment") {
+        "Policy Assessment Invalid"
+    } else {
+        "Other Work Failure"
+    }
 }
 
 const ARGUS_GITIGNORE: &str = "# Ephemeral working state (database, inventory streams, blobs)
@@ -9529,11 +9587,15 @@ mod tests {
 
         let output = status_command(temporary.path()).unwrap();
         assert!(output.contains("Work errors: 1"));
-        assert!(output.contains(&format!(
+
+        let errorlog = errorlog_command(temporary.path(), std::iter::empty()).unwrap();
+        assert!(errorlog.contains("Work errors: 1"));
+        assert!(errorlog.contains("Error categories:"));
+        assert!(errorlog.contains(&format!(
             "Work {} (Failed): assessment binding failed invalid evidence",
             work.id
         )));
-        assert!(output.contains("Failed 3: assessment binding failed invalid evidence"));
+        assert!(errorlog.contains("Failed 3: assessment binding failed invalid evidence"));
     }
 
     #[test]

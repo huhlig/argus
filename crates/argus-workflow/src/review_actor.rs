@@ -678,9 +678,14 @@ impl PrimaryReviewActor {
                 }
                 candidates
                     .iter()
-                    .try_for_each(validate_candidate_draft)
+                    .enumerate()
+                    .try_for_each(|(index, candidate)| {
+                        validate_candidate_draft(candidate).map_err(|message| {
+                            format!("candidate #{index} is invalid: {message}")
+                        })
+                    })
                     .map_err(|message| {
-                        AgentError::Internal(format!("invalid candidates: {message}"))
+                        AgentError::Internal(format!("policy candidate contract violation: {message}"))
                     })?;
                 payload
                     .as_object_mut()

@@ -226,23 +226,13 @@ impl PolicyAssessmentContract for ConformanceAssessmentContract {
         };
         findings
             .into_iter()
-            .enumerate()
-            .map(|(index, finding)| {
-                serde_json::to_value(json!({
-                    "id": format!("candidate-{}", index + 1),
+            .map(|finding| {
+                Ok(json!({
                     "title": finding.title,
                     "description": finding.description,
                     "severity": finding.severity,
                     "confidence_basis_points": finding.confidence.basis_points(),
-                    "dimensions": finding.dimensions,
-                    "governing_artifacts": finding.governing_artifacts,
-                    "declared_intent": finding.declared_intent,
-                    "observed_implementation": finding.observed_implementation,
-                    "discrepancy": finding.discrepancy,
-                    "impact": finding.impact,
-                    "suggested_disposition": finding.suggested_disposition,
                 }))
-                .map_err(|error| error.to_string())
             })
             .collect()
     }
