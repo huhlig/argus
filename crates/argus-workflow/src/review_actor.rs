@@ -1006,24 +1006,24 @@ fn frame_prompt_fields(
 
 pub(crate) fn validate_review_output(output: &Value) -> Result<(), String> {
     let (event_type, payload) = review_event(output)?;
-    let allowed = match event_type {
-        "review.pass" => &["assessment"][..],
-        "review.suggestion" => &["assessment", "suggestions"][..],
-        "review.unable_to_verify" => &["reason", "requested_evidence"][..],
-        "review.candidate_found" => {
-            let keys = payload
-                .as_object()
-                .ok_or_else(|| "review payload must be an object".to_owned())?;
-            if keys.len() == 1 && keys.contains_key("assessment") {
-                &["assessment"][..]
-            } else {
-                &["assessment", "candidates"][..]
-            }
-        }
-        "review.failed" => &["reason"][..],
+    let (required, allowed_optional) = match event_type {
+        "review.pass" => (
+            &["assessment"][..],
+            &["confidence", "confidence_basis_points"][..],
+        ),
+        "review.suggestion" => (
+            &["assessment", "suggestions"][..],
+            &["confidence", "confidence_basis_points"][..],
+        ),
+        "review.unable_to_verify" => (&["reason", "requested_evidence"][..], &[][..]),
+        "review.candidate_found" => (
+            &["assessment"][..],
+            &["candidates", "confidence", "confidence_basis_points"][..],
+        ),
+        "review.failed" => (&["reason"][..], &[][..]),
         _ => return Err(format!("unsupported review event `{event_type}`")),
     };
-    validate_exact_keys(payload, allowed)?;
+    validate_review_payload_keys(payload, required, allowed_optional)?;
     match event_type {
         "review.pass" => assessment_object(payload),
         "review.suggestion" => {
@@ -1119,7 +1119,23 @@ fn review_event(output: &Value) -> Result<(&str, &Value), String> {
     let object = output
         .as_object()
         .ok_or_else(|| "review output must be an object".to_owned())?;
-    if object.len() != 2 || !object.contains_key("event_type") || !object.contains_key("payload") {
+    if !object.contains_key("event_type") || !object.contains_key("payload") {
+        return Err("review output must contain only `event_type` and `payload`".to_owned());
+    }
+    const ALLOWED_ROOT_KEYS: &[&str] = &[
+        "event_type",
+        "payload",
+        "confidence",
+        "confidence_basis_points",
+        "notes",
+        "summary",
+        "reasoning",
+        "$schema",
+    ];
+    if object
+        .keys()
+        .any(|key| !ALLOWED_ROOT_KEYS.contains(&key.as_str()))
+    {
         return Err("review output must contain only `event_type` and `payload`".to_owned());
     }
     let event_type = object["event_type"]
@@ -1130,6 +1146,35 @@ fn review_event(output: &Value) -> Result<(&str, &Value), String> {
         .map(|_| &object["payload"])
         .ok_or_else(|| "`payload` must be an object".to_owned())?;
     Ok((event_type, payload))
+}
+
+fn validate_review_payload_keys(
+    payload: &Value,
+    required: &[&str],
+    allowed_optional: &[&str],
+) -> Result<(), String> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| "review payload must be an object".to_owned())?;
+    for &key in required {
+        if !object.contains_key(key) {
+            let mut received = object.keys().map(String::as_str).collect::<Vec<_>>();
+            received.sort_unstable();
+            return Err(format!(
+                "review payload must contain exactly {required:?}; received {received:?}"
+            ));
+        }
+    }
+    if object.keys().any(|key| {
+        !required.contains(&key.as_str()) && !allowed_optional.contains(&key.as_str())
+    }) {
+        let mut received = object.keys().map(String::as_str).collect::<Vec<_>>();
+        received.sort_unstable();
+        return Err(format!(
+            "review payload must contain exactly {required:?}; received {received:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_exact_keys(payload: &Value, allowed: &[&str]) -> Result<(), String> {
@@ -1392,6 +1437,76 @@ mod tests {
         assert!(
             validator
                 .validate(&review_decision_schema(), &malicious)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn validator_accepts_confidence_and_benign_metadata() {
+        let validator = ReviewDecisionValidator;
+        let schema = review_decision_schema();
+
+        // review.pass with confidence in payload
+        assert!(
+            validator
+                .validate(
+                    &schema,
+                    &json!({
+                        "event_type": "review.pass",
+                        "payload": {
+                            "assessment": {},
+                            "confidence": 9500
+                        }
+                    })
+                )
+                .is_ok()
+        );
+
+        // review.pass with confidence at root
+        assert!(
+            validator
+                .validate(
+                    &schema,
+                    &json!({
+                        "event_type": "review.pass",
+                        "payload": {
+                            "assessment": {}
+                        },
+                        "confidence": 9500
+                    })
+                )
+                .is_ok()
+        );
+
+        // review.candidate_found with confidence in payload
+        assert!(
+            validator
+                .validate(
+                    &schema,
+                    &json!({
+                        "event_type": "review.candidate_found",
+                        "payload": {
+                            "assessment": {},
+                            "confidence": 9500
+                        }
+                    })
+                )
+                .is_ok()
+        );
+
+        // Disallowed root key rejected
+        assert!(
+            validator
+                .validate(
+                    &schema,
+                    &json!({
+                        "event_type": "review.pass",
+                        "payload": {
+                            "assessment": {}
+                        },
+                        "publish": true
+                    })
+                )
                 .is_err()
         );
     }

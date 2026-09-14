@@ -7430,6 +7430,8 @@ pub(crate) fn errorlog_command(
 fn categorize_error(err: &str) -> &'static str {
     if err.contains("invalid candidates") || err.contains("policy candidate contract violation") {
         "Candidate Schema Mismatch"
+    } else if err.contains("invalid provider output") {
+        "Invalid Provider Output"
     } else if err.contains("provider unavailable") {
         "Provider Unavailable"
     } else if err.contains("budget exceeded") || err.contains("token budget") {
