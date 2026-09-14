@@ -303,6 +303,9 @@ pub enum ProviderTransportProfile {
         /// Optional Bedrock inference profile ID or ARN (e.g. `us.anthropic.claude-3-7-sonnet-20250219-v1:0`).
         #[serde(default, alias = "inference_profile_id", alias = "inference_profile_env")]
         inference_profile: Option<String>,
+        /// Optional request timeout in seconds.
+        #[serde(default)]
+        request_timeout_seconds: Option<u64>,
     },
 }
 
@@ -438,6 +441,7 @@ impl ProviderRuntimeProfile {
                 endpoint_url,
                 profile_name,
                 inference_profile,
+                request_timeout_seconds,
             } => {
                 let region = substitute_value(region, &mut read_secret)?;
                 let endpoint_url =
@@ -496,6 +500,7 @@ impl ProviderRuntimeProfile {
                         profile_name,
                         inference_profile,
                         models: vec![self.capabilities.identity.model.clone()],
+                        request_timeout_seconds: *request_timeout_seconds,
                     },
                     credentials,
                 )
@@ -752,6 +757,7 @@ mod tests {
                 endpoint_url: None,
                 profile_name: None,
                 inference_profile: None,
+                request_timeout_seconds: None,
             }),
         ];
         for value in profiles {
@@ -845,6 +851,7 @@ mod tests {
                 endpoint_url: None,
                 profile_name: None,
                 inference_profile: None,
+                request_timeout_seconds: None,
             },
             default_policy: None,
             default_repair: None,

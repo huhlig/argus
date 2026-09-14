@@ -103,6 +103,7 @@ fn bedrock_runtime_profile_roundtrip_and_build() {
             endpoint_url: None,
             profile_name: None,
             inference_profile: None,
+            request_timeout_seconds: None,
         },
     };
 
@@ -140,6 +141,7 @@ fn bedrock_runtime_profile_roundtrip_and_build() {
             endpoint_url: None,
             profile_name: None,
             inference_profile: None,
+            request_timeout_seconds: None,
         },
     };
 
@@ -223,6 +225,7 @@ fn bedrock_runtime_profile_with_inference_profile() {
             endpoint_url: None,
             profile_name: None,
             inference_profile: None,
+            request_timeout_seconds: None,
         },
     };
     let built_fallback = fallback_profile
@@ -419,5 +422,38 @@ async fn bedrock_user_inference_profile_config() {
     assert_eq!(
         built.provider.health().await.unwrap(),
         argus_provider::ProviderHealth::Ready
+    );
+}
+
+#[tokio::test]
+async fn bedrock_runtime_profile_with_request_timeout_seconds() {
+    let profile = ProviderRuntimeProfile {
+        schema_version: PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION,
+        capabilities: bedrock_capabilities(),
+        policy: bedrock_policy(),
+        repair: RepairPolicy {
+            max_repair_attempts: 1,
+        },
+        transport: ProviderTransportProfile::Bedrock {
+            region: "us-east-1".to_owned(),
+            access_key_id: None,
+            secret_access_key: None,
+            session_token: None,
+            bearer_token: Some("fixture-token".to_owned()),
+            endpoint_url: None,
+            profile_name: None,
+            inference_profile: None,
+            request_timeout_seconds: Some(600),
+        },
+    };
+
+    let serialized = serde_json::to_string_pretty(&profile).unwrap();
+    assert!(serialized.contains(r#""request_timeout_seconds": 600"#));
+
+    let deserialized: ProviderRuntimeProfile = serde_json::from_str(&serialized).unwrap();
+    let built = deserialized.build_with_secrets(|_| None).unwrap();
+    assert_eq!(
+        built.provider.capabilities().identity.model,
+        "anthropic.claude-3-7-sonnet-20250219-v1:0"
     );
 }

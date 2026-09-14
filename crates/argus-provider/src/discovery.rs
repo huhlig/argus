@@ -628,6 +628,7 @@ pub fn generate_runtime_profile(
                 },
                 profile_name: None,
                 inference_profile: None,
+                request_timeout_seconds: request_timeout_seconds.or(Some(1800)),
             }
         }
         DiscoveredProviderKind::Watsonx => {
@@ -790,6 +791,7 @@ pub fn generate_provider_config(
                 },
                 profile_name: None,
                 inference_profile: None,
+                request_timeout_seconds: request_timeout_seconds.or(Some(1800)),
             }
         }
         DiscoveredProviderKind::Watsonx => {
