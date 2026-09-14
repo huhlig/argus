@@ -336,6 +336,7 @@ pub struct ArchitectureCandidateDraft {
     pub severity: Severity,
     pub defect_kind: ArchitectureFindingKind,
     pub dimensions: BTreeSet<ArchitectureDimension>,
+    #[serde(alias = "confidence_basis_points")]
     pub confidence: Confidence,
     pub explanation: String,
     pub citations: Vec<ArchitectureEvidenceCitationDraft>,

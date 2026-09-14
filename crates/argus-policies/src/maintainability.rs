@@ -394,6 +394,7 @@ pub struct MaintainabilityCandidateDraft {
     pub finding_kind: MaintainabilityFindingKind,
     pub refactoring: MaintainabilityRefactoringDirection,
     pub severity: Severity,
+    #[serde(alias = "confidence_basis_points")]
     pub confidence: Confidence,
     pub dimensions: BTreeSet<MaintainabilityDimension>,
     pub citations: Vec<EvidenceId>,
@@ -619,5 +620,44 @@ mod tests {
 
         assert_eq!(bound.dimensions.len(), 8);
         assert_eq!(bound.result, MaintainabilityResult::Passed);
+    }
+
+    #[test]
+    fn candidate_draft_deserializes_with_confidence_or_confidence_basis_points() {
+        let json_basis_points = serde_json::json!({
+            "title": "Complex method",
+            "description": "Method has high cognitive load",
+            "finding_kind": "high_cyclomatic_complexity",
+            "refactoring": {
+                "pattern": "Extract Method",
+                "advice": "Split into helper functions",
+                "benefit": "Improved readability"
+            },
+            "severity": "medium",
+            "confidence_basis_points": 8500,
+            "dimensions": ["cyclomatic_complexity"],
+            "citations": []
+        });
+        let draft: MaintainabilityCandidateDraft =
+            serde_json::from_value(json_basis_points).unwrap();
+        assert_eq!(draft.confidence.basis_points(), 8500);
+
+        let json_confidence = serde_json::json!({
+            "title": "Complex method",
+            "description": "Method has high cognitive load",
+            "finding_kind": "high_cyclomatic_complexity",
+            "refactoring": {
+                "pattern": "Extract Method",
+                "advice": "Split into helper functions",
+                "benefit": "Improved readability"
+            },
+            "severity": "medium",
+            "confidence": 9000,
+            "dimensions": ["cyclomatic_complexity"],
+            "citations": []
+        });
+        let draft: MaintainabilityCandidateDraft =
+            serde_json::from_value(json_confidence).unwrap();
+        assert_eq!(draft.confidence.basis_points(), 9000);
     }
 }

@@ -383,6 +383,7 @@ pub struct CorrectnessCandidateDraft {
     pub defect_kind: CorrectnessDefectKind,
     pub failure_path: String,
     pub severity: Severity,
+    #[serde(alias = "confidence")]
     pub confidence_basis_points: u16,
     pub dimensions: BTreeSet<CorrectnessDimension>,
     pub evidence: Vec<EvidenceId>,

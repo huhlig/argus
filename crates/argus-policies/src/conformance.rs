@@ -409,6 +409,7 @@ pub struct ConformanceCandidateDraft {
     pub title: String,
     pub description: String,
     pub severity: Severity,
+    #[serde(alias = "confidence")]
     pub confidence_basis_points: u16,
     pub dimensions: BTreeSet<ConformanceDimension>,
     pub governing_artifacts: Vec<DesignArtifactId>,

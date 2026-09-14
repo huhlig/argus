@@ -469,6 +469,7 @@ pub struct OptimizationCandidateDraft {
     pub proposed_optimization: String,
     pub impact: OptimizationImpactAnalysisDraft,
     pub severity: Severity,
+    #[serde(alias = "confidence")]
     pub confidence_basis_points: u16,
     pub dimensions: BTreeSet<OptimizationDimension>,
     pub evidence: Vec<EvidenceId>,
