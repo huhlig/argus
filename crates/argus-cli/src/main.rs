@@ -2981,8 +2981,197 @@ fn format_work_summary(
     )
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct TargetCatalog {
+    targets: std::collections::HashMap<String, TargetCatalogEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TargetCatalogEntry {
+    pub name: String,
+    pub kind: String,
+    pub language: Option<String>,
+    pub path: Option<String>,
+}
+
+impl TargetCatalog {
+    pub fn load(root: &std::path::Path, snapshot: Option<&str>) -> Self {
+        let mut catalog = Self::default();
+        let inv_dir = root.join(".argus/state/inventory");
+        if !inv_dir.exists() {
+            return catalog;
+        }
+
+        if let Some(snap) = snapshot {
+            catalog.load_snapshot_dir(&inv_dir.join(snap));
+        }
+
+        if catalog.targets.is_empty() {
+            if let Ok(entries) = std::fs::read_dir(&inv_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        catalog.load_snapshot_dir(&path);
+                    } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("current-") {
+                            if let Ok(snap) = std::fs::read_to_string(&path) {
+                                catalog.load_snapshot_dir(&inv_dir.join(snap.trim()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        catalog
+    }
+
+    pub fn insert(
+        &mut self,
+        id: impl Into<String>,
+        name: impl Into<String>,
+        kind: impl Into<String>,
+        language: Option<String>,
+        path: Option<String>,
+    ) {
+        self.targets.insert(
+            id.into(),
+            TargetCatalogEntry {
+                name: name.into(),
+                kind: kind.into(),
+                language,
+                path,
+            },
+        );
+    }
+
+    fn load_snapshot_dir(&mut self, dir: &std::path::Path) {
+        if !dir.is_dir() {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                let default_adapter = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(ToOwned::to_owned);
+                self.load_jsonl_file(&path, default_adapter.as_deref());
+            }
+        }
+    }
+
+    fn load_jsonl_file(&mut self, path: &std::path::Path, default_adapter: Option<&str>) {
+        use std::io::BufRead;
+        let Ok(file) = std::fs::File::open(path) else {
+            return;
+        };
+        let reader = std::io::BufReader::new(file);
+
+        #[derive(serde::Deserialize)]
+        struct TargetEntryRecord {
+            record: String,
+            value: Option<TargetEntryValue>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct TargetEntryValue {
+            id: String,
+            name: String,
+            #[serde(default)]
+            kind: Option<serde_json::Value>,
+            #[serde(default)]
+            location: Option<TargetEntryLocation>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct TargetEntryLocation {
+            path: String,
+        }
+
+        for line in reader.lines().flatten() {
+            if !line.contains("\"record\":\"target\"") {
+                continue;
+            }
+            if let Ok(rec) = serde_json::from_str::<TargetEntryRecord>(&line) {
+                if rec.record == "target" {
+                    if let Some(val) = rec.value {
+                        let (lang, kind_str) = match &val.kind {
+                            Some(serde_json::Value::Object(map)) => {
+                                let lang = map
+                                    .get("language")
+                                    .and_then(|v| v.as_str())
+                                    .map(ToOwned::to_owned)
+                                    .or_else(|| default_adapter.map(ToOwned::to_owned));
+                                let kind = map
+                                    .get("kind")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("target")
+                                    .to_owned();
+                                (lang, kind)
+                            }
+                            _ => (default_adapter.map(ToOwned::to_owned), "target".to_owned()),
+                        };
+                        let path = val.location.map(|l| l.path);
+                        self.targets.insert(
+                            val.id,
+                            TargetCatalogEntry {
+                                name: val.name,
+                                kind: kind_str,
+                                language: lang,
+                                path,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn describe(&self, target_id: &str, coverage: Option<&argus_storage::CoverageKey>) -> String {
+        if let Some(entry) = self.targets.get(target_id) {
+            let lang = entry
+                .language
+                .as_deref()
+                .or_else(|| coverage.map(|c| c.adapter.as_str()))
+                .filter(|s| !s.is_empty() && *s != "unspecified")
+                .unwrap_or("");
+            let lang_prefix = if lang.is_empty() {
+                String::new()
+            } else {
+                format!("{lang} ")
+            };
+            let kind = if entry.kind.is_empty() { "target" } else { &entry.kind };
+            let path_suffix = entry
+                .path
+                .as_deref()
+                .filter(|p| !p.is_empty())
+                .map(|p| format!(" ({p})"))
+                .unwrap_or_default();
+            format!("{lang_prefix}{kind} {}{path_suffix}", entry.name)
+        } else if let Some(cov) = coverage {
+            if !cov.target_kind.is_empty() && cov.target_kind != "unspecified" {
+                let lang_prefix = if !cov.adapter.is_empty() && cov.adapter != "unspecified" {
+                    format!("{} ", cov.adapter)
+                } else {
+                    String::new()
+                };
+                format!("{lang_prefix}{} {target_id}", cov.target_kind)
+            } else {
+                target_id.to_owned()
+            }
+        } else {
+            target_id.to_owned()
+        }
+    }
+}
+
 async fn run_worker_step<F, Fut, R>(
     category: &str,
+    worker_id: usize,
     index: usize,
     limit: Option<usize>,
     provider_id: &str,
@@ -3007,49 +3196,56 @@ where
         |l| format!("{}/{}", index + 1, l),
     );
 
-    let span = tracing::info_span!(
-        "worker_step",
-        policy = %category,
-        step = index + 1,
-        limit = limit.unwrap_or(0),
-        provider = %provider_id,
-        model = %model_id
-    );
-    let _guard = span.enter();
-
     let queue_note =
         remaining_in_queue.map_or_else(String::new, |count| format!(" ({count} pending in queue)"));
 
+    tracing::info!(
+        policy = %category,
+        worker = worker_id,
+        step = index + 1,
+        limit = limit.unwrap_or(0),
+        provider = %provider_id,
+        model = %model_id,
+        queue_pending = remaining_in_queue.unwrap_or(0),
+        "[{category}] [worker {worker_id}] Dispatched item {item_label}{queue_note} (provider: {provider_id}, model: {model_id})"
+    );
+
     let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
     let ticker_category = category.clone();
+    let ticker_worker = worker_id;
     let ticker_provider = provider_id.clone();
     let ticker_model = model_id.clone();
     let ticker_queue_note = queue_note.clone();
     let ticker_item_label = item_label.clone();
+    let ticker_queue_pending = remaining_in_queue.unwrap_or(0);
 
-    let ticker_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        interval.tick().await;
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    let elapsed = start.elapsed().as_secs();
-                    tracing::info!(
-                        policy = %ticker_category,
-                        step = index + 1,
-                        limit = limit.unwrap_or(0),
-                        elapsed_secs = elapsed,
-                        provider = %ticker_provider,
-                        model = %ticker_model,
-                        "[{ticker_category}] Processing item {ticker_item_label}{ticker_queue_note}... ({elapsed}s elapsed, provider: {ticker_provider}, model: {ticker_model})"
-                    );
-                }
-                _ = &mut stop_rx => {
-                    break;
+    let ticker_handle = tokio::spawn(
+        async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let elapsed = start.elapsed().as_secs();
+                        tracing::info!(
+                            policy = %ticker_category,
+                            worker = ticker_worker,
+                            step = index + 1,
+                            limit = limit.unwrap_or(0),
+                            elapsed_secs = elapsed,
+                            provider = %ticker_provider,
+                            model = %ticker_model,
+                            queue_pending = ticker_queue_pending,
+                            "[{ticker_category}] [worker {ticker_worker}] Item {ticker_item_label}{ticker_queue_note} in progress... ({elapsed}s elapsed, provider: {ticker_provider}, model: {ticker_model})"
+                        );
+                    }
+                    _ = &mut stop_rx => {
+                        break;
+                    }
                 }
             }
-        }
-    });
+        },
+    );
 
     let step_task = tokio::spawn(step_fn());
     let result = match tokio::time::timeout(WORK_ITEM_WATCHDOG, step_task).await {
@@ -3088,6 +3284,36 @@ fn queue_pending_count(
         .filter(|w| w.coverage.policy.starts_with(policy) && !completed_work_ids.contains(&w.id))
         .count();
     Some(pending)
+}
+
+fn work_item_target(
+    queue: &argus_storage::DurableQueue,
+    catalog: &TargetCatalog,
+    work_id: &argus_core::WorkItemId,
+) -> String {
+    let Ok(Some(work)) = queue.get(work_id) else {
+        return work_id.to_string();
+    };
+    let target_id = serde_json::from_slice::<serde_json::Value>(&work.payload)
+        .ok()
+        .and_then(|val| {
+            val.get("unit")
+                .and_then(|u| u.get("target"))
+                .and_then(|t| t.get("target"))
+                .and_then(|t| t.as_str())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    val.get("target")
+                        .and_then(|t| t.as_str().or_else(|| t.get("target").and_then(|x| x.as_str())))
+                        .map(ToOwned::to_owned)
+                })
+        });
+
+    if let Some(tid) = target_id {
+        catalog.describe(&tid, Some(&work.coverage))
+    } else {
+        work_id.to_string()
+    }
 }
 
 enum WorkerStepResult {
@@ -3129,6 +3355,7 @@ async fn execute_concurrent_worker_pool<W, F, Fut>(
     model_id: &str,
     queue: std::sync::Arc<argus_storage::DurableQueue>,
     run_id: &argus_core::RunId,
+    catalog: std::sync::Arc<TargetCatalog>,
     worker: std::sync::Arc<W>,
     step_runner: F,
     fail_fast: bool,
@@ -3192,7 +3419,8 @@ where
     let pool_size = concurrency.max(1);
     let mut join_set = tokio::task::JoinSet::new();
 
-    for _ in 0..pool_size {
+    for worker_index in 0..pool_size {
+        let worker_slot = worker_index + 1;
         let dispatched = dispatched.clone();
         let succeeded = succeeded.clone();
         let retries = retries.clone();
@@ -3203,6 +3431,7 @@ where
         let shutdown_requested = shutdown_requested.clone();
         let queue = queue.clone();
         let run_id = run_id.clone();
+        let catalog = catalog.clone();
         let worker = worker.clone();
         let step_runner = step_runner.clone();
         let provider_id = provider_id.to_owned();
@@ -3229,6 +3458,7 @@ where
 
                 let step_res = run_worker_step(
                     category,
+                    worker_slot,
                     item_index,
                     limit,
                     &provider_id,
@@ -3256,26 +3486,39 @@ where
                         // handled the same way as WorkerStepResult::Failed instead of propagating.
                         failed.fetch_add(1, Ordering::SeqCst);
                         metrics::counter!("argus.worker.failed", "policy" => category).increment(1);
+                        let remaining = queue_pending_count(&queue, &run_id, category);
+                        let queue_note = remaining.map_or_else(String::new, |count| format!(" ({count} pending in queue)"));
                         tracing::error!(
                             policy = category,
+                            worker = worker_slot,
+                            step = item_index + 1,
+                            limit = limit.unwrap_or(0),
+                            provider = %provider_id,
+                            model = %model_id,
+                            queue_pending = remaining.unwrap_or(0),
                             error = %err,
-                            "[{category}] Item {item_label} step failed: {err}"
+                            "[{category}] [worker {worker_slot}] Item {item_label} step failed: {err}{queue_note} (provider: {provider_id}, model: {model_id})"
                         );
                         let consecutive = consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
                         if fail_fast || consecutive >= CIRCUIT_BREAKER_CONSECUTIVE_FAILURES {
                             breaker_tripped.store(true, Ordering::SeqCst);
                             tracing::error!(
                                 policy = category,
+                                worker = worker_slot,
                                 provider = %provider_id,
                                 model = %model_id,
                                 consecutive_failures = consecutive,
-                                "[{category}] Aborting: worker failure encountered (fail_fast: {fail_fast}, consecutive: {consecutive}). Stopping worker pool."
+                                "[{category}] [worker {worker_slot}] Aborting: worker failure encountered (fail_fast: {fail_fast}, consecutive: {consecutive}). Stopping worker pool."
                             );
                             break;
                         }
                         continue;
                     }
                 };
+
+                let remaining = queue_pending_count(&queue, &run_id, category);
+                let queue_note =
+                    remaining.map_or_else(String::new, |count| format!(" ({count} pending in queue)"));
 
                 match result {
                     WorkerStepResult::Idle => {
@@ -3287,35 +3530,59 @@ where
                         consecutive_failures.store(0, Ordering::SeqCst);
                         metrics::counter!("argus.worker.succeeded", "policy" => category)
                             .increment(1);
+                        let target = work_item_target(&queue, &catalog, &work_id);
                         tracing::info!(
                             policy = category,
+                            target = %target,
                             work_id = %work_id,
+                            worker = worker_slot,
+                            step = item_index + 1,
+                            limit = limit.unwrap_or(0),
+                            provider = %provider_id,
+                            model = %model_id,
                             duration_secs = duration.as_secs_f64(),
-                            "[{category}] Item {item_label} ({work_id}) Succeeded in {:.1}s",
+                            queue_pending = remaining.unwrap_or(0),
+                            "[{category}] [worker {worker_slot}] Item {item_label} ({target}) Succeeded in {:.1}s{queue_note} (provider: {provider_id}, model: {model_id})",
                             duration.as_secs_f64()
                         );
                     }
                     WorkerStepResult::RetryScheduled { work_id, error } => {
                         retries.fetch_add(1, Ordering::SeqCst);
                         metrics::counter!("argus.worker.retries", "policy" => category).increment(1);
+                        let target = work_item_target(&queue, &catalog, &work_id);
                         tracing::warn!(
                             policy = category,
+                            target = %target,
                             work_id = %work_id,
-                            error = %error,
+                            worker = worker_slot,
+                            step = item_index + 1,
+                            limit = limit.unwrap_or(0),
+                            provider = %provider_id,
+                            model = %model_id,
                             duration_secs = duration.as_secs_f64(),
-                            "[{category}] Item {item_label} ({work_id}) RetryScheduled in {:.1}s: {error}",
+                            queue_pending = remaining.unwrap_or(0),
+                            error = %error,
+                            "[{category}] [worker {worker_slot}] Item {item_label} ({target}) RetryScheduled in {:.1}s: {error}{queue_note} (provider: {provider_id}, model: {model_id})",
                             duration.as_secs_f64()
                         );
                     }
                     WorkerStepResult::Failed { work_id, error } => {
                         failed.fetch_add(1, Ordering::SeqCst);
                         metrics::counter!("argus.worker.failed", "policy" => category).increment(1);
+                        let target = work_item_target(&queue, &catalog, &work_id);
                         tracing::error!(
                             policy = category,
+                            target = %target,
                             work_id = %work_id,
-                            error = %error,
+                            worker = worker_slot,
+                            step = item_index + 1,
+                            limit = limit.unwrap_or(0),
+                            provider = %provider_id,
+                            model = %model_id,
                             duration_secs = duration.as_secs_f64(),
-                            "[{category}] Item {item_label} ({work_id}) Failed in {:.1}s: {error}",
+                            queue_pending = remaining.unwrap_or(0),
+                            error = %error,
+                            "[{category}] [worker {worker_slot}] Item {item_label} ({target}) Failed in {:.1}s: {error}{queue_note} (provider: {provider_id}, model: {model_id})",
                             duration.as_secs_f64()
                         );
                         let consecutive =
@@ -3324,10 +3591,11 @@ where
                             breaker_tripped.store(true, Ordering::SeqCst);
                             tracing::error!(
                                 policy = category,
+                                worker = worker_slot,
                                 provider = %provider_id,
                                 model = %model_id,
                                 consecutive_failures = consecutive,
-                                "[{category}] Aborting: failure encountered (fail_fast: {fail_fast}, consecutive: {consecutive}). Stopping worker pool."
+                                "[{category}] [worker {worker_slot}] Aborting: failure encountered (fail_fast: {fail_fast}, consecutive: {consecutive}). Stopping worker pool."
                             );
                             break;
                         }
@@ -3493,7 +3761,7 @@ async fn execute_documentation_work(
         argus_workflow::DocumentationWorkerConfig {
             state_directory,
             identity: argus_workflow::DocumentationRuntimeIdentity {
-                audit_snapshot: run.snapshot,
+                audit_snapshot: run.snapshot.clone(),
                 audit_run: run.id,
                 provenance: argus_workflow::OutcomeProvenance {
                     prompt_version: "documentation-review@4".to_owned(),
@@ -3512,6 +3780,7 @@ async fn execute_documentation_work(
         },
     )?);
 
+    let catalog = std::sync::Arc::new(TargetCatalog::load(root, Some(&run.snapshot.to_string())));
     execute_concurrent_worker_pool(
         "documentation",
         "Documentation",
@@ -3521,6 +3790,7 @@ async fn execute_documentation_work(
         &provider_identity.model,
         queue,
         &run_id,
+        catalog,
         worker,
         |w| async move {
             match w.run_next(now_millis()?).await? {
@@ -3597,7 +3867,7 @@ async fn execute_correctness_work(
         argus_workflow::CorrectnessWorkerConfig {
             state_directory,
             identity: argus_workflow::CorrectnessRuntimeIdentity {
-                audit_snapshot: run.snapshot,
+                audit_snapshot: run.snapshot.clone(),
                 audit_run: run.id,
                 provenance: argus_workflow::OutcomeProvenance {
                     prompt_version: "correctness-review@1".to_owned(),
@@ -3616,6 +3886,7 @@ async fn execute_correctness_work(
         },
     )?);
 
+    let catalog = std::sync::Arc::new(TargetCatalog::load(root, Some(&run.snapshot.to_string())));
     execute_concurrent_worker_pool(
         "correctness",
         "Correctness",
@@ -3625,6 +3896,7 @@ async fn execute_correctness_work(
         &provider_identity.model,
         queue,
         &run_id,
+        catalog,
         worker,
         |w| async move {
             match w.run_next(now_millis()?).await? {
@@ -3701,7 +3973,7 @@ async fn execute_architecture_work(
         argus_workflow::ArchitectureWorkerConfig {
             state_directory,
             identity: argus_workflow::ArchitectureRuntimeIdentity {
-                audit_snapshot: run.snapshot,
+                audit_snapshot: run.snapshot.clone(),
                 audit_run: run.id,
                 provenance: argus_workflow::OutcomeProvenance {
                     prompt_version: "architecture-review@1".to_owned(),
@@ -3720,6 +3992,7 @@ async fn execute_architecture_work(
         },
     )?);
 
+    let catalog = std::sync::Arc::new(TargetCatalog::load(root, Some(&run.snapshot.to_string())));
     execute_concurrent_worker_pool(
         "architecture",
         "Architecture",
@@ -3729,6 +4002,7 @@ async fn execute_architecture_work(
         &provider_identity.model,
         queue,
         &run_id,
+        catalog,
         worker,
         |w| async move {
             match w.run_next(now_millis()?).await? {
@@ -3805,7 +4079,7 @@ async fn execute_optimization_work(
         argus_workflow::OptimizationWorkerConfig {
             state_directory,
             identity: argus_workflow::OptimizationRuntimeIdentity {
-                audit_snapshot: run.snapshot,
+                audit_snapshot: run.snapshot.clone(),
                 audit_run: run.id,
                 provenance: argus_workflow::OutcomeProvenance {
                     prompt_version: "optimization-review@1".to_owned(),
@@ -3824,6 +4098,7 @@ async fn execute_optimization_work(
         },
     )?);
 
+    let catalog = std::sync::Arc::new(TargetCatalog::load(root, Some(&run.snapshot.to_string())));
     execute_concurrent_worker_pool(
         "optimization",
         "Optimization",
@@ -3833,6 +4108,7 @@ async fn execute_optimization_work(
         &provider_identity.model,
         queue,
         &run_id,
+        catalog,
         worker,
         |w| async move {
             match w.run_next(now_millis()?).await? {
@@ -3909,7 +4185,7 @@ async fn execute_maintainability_work(
         argus_workflow::MaintainabilityWorkerConfig {
             state_directory,
             identity: argus_workflow::MaintainabilityRuntimeIdentity {
-                audit_snapshot: run.snapshot,
+                audit_snapshot: run.snapshot.clone(),
                 audit_run: run.id,
                 provenance: argus_workflow::OutcomeProvenance {
                     prompt_version: "maintainability-review@1".to_owned(),
@@ -3928,6 +4204,7 @@ async fn execute_maintainability_work(
         },
     )?);
 
+    let catalog = std::sync::Arc::new(TargetCatalog::load(root, Some(&run.snapshot.to_string())));
     execute_concurrent_worker_pool(
         "maintainability",
         "Maintainability",
@@ -3937,6 +4214,7 @@ async fn execute_maintainability_work(
         &provider_identity.model,
         queue,
         &run_id,
+        catalog,
         worker,
         |w| async move {
             match w.run_next(now_millis()?).await? {
@@ -4013,7 +4291,7 @@ async fn execute_conformance_work(
         argus_workflow::ConformanceWorkerConfig {
             state_directory,
             identity: argus_workflow::ConformanceRuntimeIdentity {
-                audit_snapshot: run.snapshot,
+                audit_snapshot: run.snapshot.clone(),
                 audit_run: run.id,
                 provenance: argus_workflow::OutcomeProvenance {
                     prompt_version: "conformance-review@1".to_owned(),
@@ -4032,6 +4310,7 @@ async fn execute_conformance_work(
         },
     )?);
 
+    let catalog = std::sync::Arc::new(TargetCatalog::load(root, Some(&run.snapshot.to_string())));
     execute_concurrent_worker_pool(
         "conformance",
         "Conformance",
@@ -4041,6 +4320,7 @@ async fn execute_conformance_work(
         &provider_identity.model,
         queue,
         &run_id,
+        catalog,
         worker,
         |w| async move {
             match w.run_next(now_millis()?).await? {
@@ -9758,6 +10038,7 @@ mod tests {
         let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let step_dispatched = dispatched.clone();
 
+        let catalog = std::sync::Arc::new(TargetCatalog::default());
         let result = execute_concurrent_worker_pool(
             "documentation",
             "Documentation",
@@ -9767,6 +10048,7 @@ mod tests {
             "broken-model",
             queue,
             &run_id,
+            catalog,
             std::sync::Arc::new(()),
             move |_worker| {
                 let step_dispatched = step_dispatched.clone();
@@ -11660,6 +11942,7 @@ mod tests {
         // 1. Simulate worker pool executing partially: item 0 and 1 succeed, then simulated interruption
         let queue_clone = queue.clone();
         let q_worker = queue.clone();
+        let catalog = std::sync::Arc::new(TargetCatalog::default());
         let res = execute_concurrent_worker_pool(
             "documentation",
             "Documentation",
@@ -11669,6 +11952,7 @@ mod tests {
             "test-model",
             queue_clone,
             &run_id,
+            catalog.clone(),
             std::sync::Arc::new(()),
             move |_worker| {
                 let q = q_worker.clone();
@@ -11720,6 +12004,7 @@ mod tests {
             "test-model",
             queue.clone(),
             &run_id,
+            catalog,
             std::sync::Arc::new(()),
             move |_worker| {
                 let q = q_worker2.clone();
@@ -12974,6 +13259,86 @@ public class App {
             serde_json::from_str(&std::fs::read_to_string(&custom_receipt).unwrap()).unwrap();
         assert_eq!(gh_receipt.target, argus_report::PublicationTarget::GitHub);
         assert!(gh_receipt.verify_digest());
+    }
+
+    #[test]
+    fn test_work_item_target_resolution() {
+        let temporary = tempfile::tempdir().unwrap();
+        let queue_path = temporary.path().join("queue.db");
+        let queue = argus_storage::DurableQueue::open(&queue_path).unwrap();
+
+        let run = argus_core::RunId::derive([b"run-1".as_slice()]);
+        let snapshot = argus_core::SnapshotId::derive([b"snap-1".as_slice()]);
+        let configuration = argus_core::ConfigurationId::derive([b"default".as_slice()]);
+        queue
+            .create_run(&argus_storage::RunRecord {
+                id: run.clone(),
+                snapshot,
+                configuration,
+                state: argus_storage::RunState::Active,
+                created_at_millis: 0,
+                updated_at_millis: 0,
+                finalized_at_millis: None,
+            })
+            .unwrap();
+
+        let mut catalog = TargetCatalog::default();
+        catalog.insert(
+            "target-hash-1",
+            "SourceAccess",
+            "type",
+            Some("rust".to_owned()),
+            Some("crates/argus-language/src/contract.rs".to_owned()),
+        );
+
+        let work_id_catalog = argus_core::WorkItemId::derive([b"work-catalog".as_slice()]);
+        let payload_catalog = serde_json::json!({
+            "schema_version": 1,
+            "unit": {
+                "target": {
+                    "target": "target-hash-1"
+                }
+            }
+        });
+        let work_catalog = argus_storage::QueueWork::pending_for(
+            work_id_catalog.clone(),
+            serde_json::to_vec(&payload_catalog).unwrap(),
+            run.clone(),
+            argus_storage::CoverageKey::unspecified(),
+        );
+        assert!(queue.admit(&work_catalog).unwrap());
+
+        let resolved = work_item_target(&queue, &catalog, &work_id_catalog);
+        assert_eq!(
+            resolved,
+            "rust type SourceAccess (crates/argus-language/src/contract.rs)"
+        );
+
+        let work_id_direct = argus_core::WorkItemId::derive([b"work-direct".as_slice()]);
+        let payload_direct = serde_json::json!({
+            "schema_version": 1,
+            "unit": {
+                "target": {
+                    "target": "crate::foo::bar"
+                }
+            }
+        });
+        let work_direct = argus_storage::QueueWork::pending_for(
+            work_id_direct.clone(),
+            serde_json::to_vec(&payload_direct).unwrap(),
+            run,
+            argus_storage::CoverageKey::unspecified(),
+        );
+        assert!(queue.admit(&work_direct).unwrap());
+
+        let direct_resolved = work_item_target(&queue, &catalog, &work_id_direct);
+        assert_eq!(direct_resolved, "crate::foo::bar");
+
+        let unknown_id = argus_core::WorkItemId::derive([b"work-unknown".as_slice()]);
+        assert_eq!(
+            work_item_target(&queue, &catalog, &unknown_id),
+            unknown_id.to_string()
+        );
     }
 }
 
