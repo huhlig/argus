@@ -709,10 +709,10 @@ fn format_llm_error(error: &LlmError) -> String {
         source = src.source();
     }
     let formatted = chain.join(": ");
-    if formatted == "unhandled error" || formatted.is_empty() {
+    if formatted.trim().ends_with("unhandled error") || formatted.is_empty() {
         let debug_str = format!("{error:?}");
         if debug_str != formatted && !debug_str.is_empty() {
-            return format!("unhandled error ({debug_str})");
+            return format!("{formatted} ({debug_str})");
         }
     }
     formatted
