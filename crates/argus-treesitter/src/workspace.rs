@@ -64,6 +64,7 @@ impl TreeSitterWorkspaceAdapter {
         let engine = TreeSitterEngine::new(self.configuration.clone());
         let mut seen_targets = BTreeSet::new();
         let mut seen_relations = BTreeSet::new();
+        let mut seen_evidence = BTreeSet::new();
         let mut package_targets: Vec<(String, TargetId)> = Vec::new();
 
         // 1. Discover package manifests
@@ -196,7 +197,9 @@ impl TreeSitterWorkspaceAdapter {
             }
 
             for evidence in file_inv.evidence {
-                sink.evidence(evidence)?;
+                if seen_evidence.insert(evidence.id.clone()) {
+                    sink.evidence(evidence)?;
+                }
             }
 
             for relation in file_inv.relations {

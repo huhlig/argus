@@ -61,6 +61,7 @@ impl RustWorkspaceAdapter {
         let mut semantic_targets = cargo_inventory.targets.clone();
         let mut seen_targets = BTreeSet::new();
         let mut seen_relations = BTreeSet::new();
+        let mut seen_evidence = BTreeSet::new();
         sink.begin(self.identity(), source.snapshot_id().clone())?;
         for partition in cargo_inventory.partitions {
             sink.partition(partition)?;
@@ -82,19 +83,18 @@ impl RustWorkspaceAdapter {
                 .syntax
                 .inventory_crate(source, &path, Some(cargo_target))?;
             sink.partition(syntax_partition(&path, &syntax))?;
-            let review_evidence = syntax_review_evidence(source, &syntax, &self.configuration)?;
             let mut crate_relations = Vec::new();
-            let mut new_targets = BTreeSet::new();
+            let mut accepted_targets = Vec::new();
             for target in syntax.targets {
-                if let Some(parent) = &target.parent {
-                    crate_relations.push(contains_relation(
-                        parent.clone(),
-                        target.id.clone(),
-                        self.configuration.clone(),
-                    ));
-                }
                 if seen_targets.insert(target.id.clone()) {
-                    new_targets.insert(target.id.clone());
+                    if let Some(parent) = &target.parent {
+                        crate_relations.push(contains_relation(
+                            parent.clone(),
+                            target.id.clone(),
+                            self.configuration.clone(),
+                        ));
+                    }
+                    accepted_targets.push(target.clone());
                     semantic_targets.push(target.clone());
                     sink.target(target)?;
                 } else {
@@ -106,12 +106,14 @@ impl RustWorkspaceAdapter {
                     })?;
                 }
             }
+            let review_evidence = syntax_review_evidence(
+                source,
+                &accepted_targets,
+                &syntax.documentation,
+                &self.configuration,
+            )?;
             for evidence in review_evidence {
-                if evidence
-                    .target
-                    .as_ref()
-                    .is_some_and(|target| new_targets.contains(target))
-                {
+                if seen_evidence.insert(evidence.id.clone()) {
                     sink.evidence(evidence)?;
                 }
             }
@@ -155,13 +157,14 @@ impl RustWorkspaceAdapter {
 
 fn syntax_review_evidence(
     source: &dyn SourceAccess,
-    syntax: &crate::RustSyntaxInventory,
+    targets: &[Target],
+    documentation: &BTreeMap<TargetId, String>,
     configuration: &ConfigurationId,
 ) -> Result<Vec<EvidenceRecord>, argus_core::ArgusError> {
-    let mut records = Vec::with_capacity(syntax.targets.len().saturating_mul(2));
+    let mut records = Vec::with_capacity(targets.len().saturating_mul(2));
     let mut sources = BTreeMap::new();
-    for target in &syntax.targets {
-        let documentation = syntax.documentation.get(&target.id);
+    for target in targets {
+        let documentation = documentation.get(&target.id);
         let presence = if documentation.is_some() {
             b"present".as_slice()
         } else {

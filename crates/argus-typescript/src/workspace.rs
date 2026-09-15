@@ -55,6 +55,7 @@ impl TypeScriptWorkspaceAdapter {
 
         let mut seen_targets = BTreeSet::new();
         let mut seen_relations = BTreeSet::new();
+        let mut seen_evidence = BTreeSet::new();
         let mut all_targets = Vec::new();
         let mut all_inheritances = Vec::new();
         let mut all_imports = Vec::new();
@@ -174,7 +175,9 @@ impl TypeScriptWorkspaceAdapter {
             }
 
             for evidence in evidence_records {
-                sink.evidence(evidence)?;
+                if seen_evidence.insert(evidence.id.clone()) {
+                    sink.evidence(evidence)?;
+                }
             }
 
             // If file is directly under a package, emit containment relation

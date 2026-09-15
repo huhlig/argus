@@ -401,3 +401,63 @@ fn streams_large_multi_package_inventory_in_dependency_order() {
     assert_eq!(sink.relation_count, PACKAGE_COUNT * 3);
     assert_eq!(sink.partition_count, PACKAGE_COUNT + 2);
 }
+
+#[test]
+fn streams_workspace_inventory_with_overloaded_or_cfg_functions_without_evidence_collision() {
+    let mut source = source();
+    source.files.insert(
+        SourcePath::new("src/lib.rs").unwrap(),
+        br#"
+/// Compute single value
+pub fn compute(x: u32) -> u32 { x }
+/// Compute pair value
+pub fn compute(x: u32, y: u32) -> u32 { x + y }
+
+#[cfg(target_os = "windows")]
+/// Windows platform implementation
+pub fn platform() -> &'static str { "windows" }
+
+#[cfg(target_os = "linux")]
+/// Linux platform implementation
+pub fn platform() -> &'static str { "linux" }
+"#
+        .to_vec(),
+    );
+    source
+        .files
+        .remove(&SourcePath::new("src/model.rs").unwrap());
+    let adapter = RustWorkspaceAdapter::new(
+        METADATA.as_bytes().to_vec(),
+        ConfigurationId::derive([b"overload-test".as_slice()]),
+        RustEdition::Edition2024,
+    );
+
+    let inventory = adapter.inventory(&source).unwrap();
+    let compute_targets: Vec<_> = inventory
+        .targets
+        .iter()
+        .filter(|t| t.name == "compute")
+        .collect();
+    assert_eq!(compute_targets.len(), 2);
+    assert_ne!(compute_targets[0].id, compute_targets[1].id);
+
+    let platform_targets: Vec<_> = inventory
+        .targets
+        .iter()
+        .filter(|t| t.name == "platform")
+        .collect();
+    assert_eq!(platform_targets.len(), 2);
+    assert_ne!(platform_targets[0].id, platform_targets[1].id);
+
+    // Verify all evidence records have unique IDs and correspond to targets
+    let mut evidence_ids = BTreeSet::new();
+    for ev in &inventory.evidence {
+        assert!(
+            evidence_ids.insert(ev.id.clone()),
+            "duplicate evidence ID generated: {}",
+            ev.id
+        );
+    }
+    assert!(inventory.conflicts.is_empty());
+}
+

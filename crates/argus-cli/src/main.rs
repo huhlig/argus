@@ -1736,19 +1736,31 @@ impl InventorySink for JsonLinesInventorySink<'_> {
         evidence: argus_core::EvidenceRecord,
     ) -> Result<(), argus_core::ArgusError> {
         evidence.validate()?;
-        if !self.evidence_ids.insert(evidence.id.clone())
-            || evidence
-                .target
-                .as_ref()
-                .is_some_and(|target| !self.target_ids.contains(target))
-            || evidence
-                .location
-                .as_ref()
-                .is_some_and(|location| !self.source.contains(&location.path))
+        if !self.evidence_ids.insert(evidence.id.clone()) {
+            return Err(argus_core::ArgusError::invariant(format!(
+                "invalid or duplicate streamed evidence: duplicate evidence id {}",
+                evidence.id
+            )));
+        }
+        if evidence
+            .target
+            .as_ref()
+            .is_some_and(|target| !self.target_ids.contains(target))
         {
-            return Err(argus_core::ArgusError::invariant(
-                "invalid or duplicate streamed evidence",
-            ));
+            return Err(argus_core::ArgusError::invariant(format!(
+                "invalid or duplicate streamed evidence: target {} was not declared before evidence",
+                evidence.target.as_ref().map_or("", |t| t.as_str())
+            )));
+        }
+        if evidence
+            .location
+            .as_ref()
+            .is_some_and(|location| !self.source.contains(&location.path))
+        {
+            return Err(argus_core::ArgusError::invariant(format!(
+                "invalid or duplicate streamed evidence: source path {} is missing",
+                evidence.location.as_ref().map_or("", |l| l.path.as_str())
+            )));
         }
         self.evidence_count += 1;
         self.write_record(&serde_json::json!({"record":"evidence", "value":evidence}))

@@ -55,6 +55,7 @@ impl PythonWorkspaceAdapter {
 
         let mut seen_targets = BTreeSet::new();
         let mut seen_relations = BTreeSet::new();
+        let mut seen_evidence = BTreeSet::new();
         let mut all_targets = Vec::new();
         let mut all_inheritances = Vec::new();
         let mut all_imports = Vec::new();
@@ -174,7 +175,9 @@ impl PythonWorkspaceAdapter {
 
             let evidence = syntax_provider.review_evidence(source, &syntax_inv)?;
             for ev in evidence {
-                sink.evidence(ev)?;
+                if seen_evidence.insert(ev.id.clone()) {
+                    sink.evidence(ev)?;
+                }
             }
 
             if let Some(parent_id) = file_parent {

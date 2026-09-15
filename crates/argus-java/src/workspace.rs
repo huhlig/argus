@@ -54,6 +54,7 @@ impl JavaWorkspaceAdapter {
 
         let mut seen_targets = BTreeSet::new();
         let mut seen_relations = BTreeSet::new();
+        let mut seen_evidence = BTreeSet::new();
         let mut all_targets = Vec::new();
         let mut all_inheritances = Vec::new();
         let mut all_imports = Vec::new();
@@ -163,7 +164,9 @@ impl JavaWorkspaceAdapter {
             }
 
             for ev in syntax.evidence {
-                sink.evidence(ev)?;
+                if seen_evidence.insert(ev.id.clone()) {
+                    sink.evidence(ev)?;
+                }
             }
 
             all_inheritances.extend(syntax.inheritances);

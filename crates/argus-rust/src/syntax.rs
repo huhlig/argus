@@ -18,8 +18,8 @@ use argus_core::{
 };
 use argus_language::SourceAccess;
 use ra_ap_syntax::{
-    AstNode, Edition, SourceFile,
-    ast::{self, HasAttrs, HasModuleItem, HasName, HasVisibility},
+    AstNode, Edition, SourceFile, SyntaxKind,
+    ast::{self, HasAttrs, HasGenericParams, HasModuleItem, HasName, HasVisibility},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -82,7 +82,7 @@ impl RustSyntaxProvider {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let file = parse.tree();
-        let file_id = Self::target_id(path, "file", path.as_str());
+        let file_id = Self::target_id(path, "file", path.as_str(), "");
         let mut targets = vec![Target {
             id: file_id.clone(),
             kind: TargetKind::Portable {
@@ -184,7 +184,7 @@ impl RustSyntaxProvider {
             .filter_map(|item| match item {
                 ast::Item::Module(module) if module.item_list().is_none() => {
                     let name = module.name()?.text().to_string();
-                    let target = Self::target_id(path, "module", &name);
+                    let target = Self::target_id(path, "module", &name, "");
                     Some(ExternalModule {
                         name,
                         target,
@@ -213,7 +213,8 @@ impl RustSyntaxProvider {
             } else {
                 format!("{prefix}::{name}")
             };
-            let id = Self::target_id(path, kind_key(&kind), &qualified);
+            let discriminator = item_discriminator(&item);
+            let id = Self::target_id(path, kind_key(&kind), &qualified, &discriminator);
             targets.push(Target {
                 id: id.clone(),
                 kind,
@@ -311,7 +312,8 @@ impl RustSyntaxProvider {
         for item in items {
             let (kind, name) = associated_item_identity(&item, callable_kind);
             let qualified = format!("{prefix}::{name}");
-            let id = Self::target_id(path, kind_key(&kind), &qualified);
+            let discriminator = associated_item_discriminator(&item);
+            let id = Self::target_id(path, kind_key(&kind), &qualified, &discriminator);
             targets.push(Target {
                 id: id.clone(),
                 kind,
@@ -334,13 +336,23 @@ impl RustSyntaxProvider {
         Ok(())
     }
 
-    fn target_id(path: &SourcePath, kind: &str, name: &str) -> TargetId {
-        TargetId::derive([
-            b"rust-syntax".as_slice(),
-            path.as_str().as_bytes(),
-            kind.as_bytes(),
-            name.as_bytes(),
-        ])
+    fn target_id(path: &SourcePath, kind: &str, name: &str, discriminator: &str) -> TargetId {
+        if discriminator.is_empty() {
+            TargetId::derive([
+                b"rust-syntax".as_slice(),
+                path.as_str().as_bytes(),
+                kind.as_bytes(),
+                name.as_bytes(),
+            ])
+        } else {
+            TargetId::derive([
+                b"rust-syntax".as_slice(),
+                path.as_str().as_bytes(),
+                kind.as_bytes(),
+                name.as_bytes(),
+                discriminator.as_bytes(),
+            ])
+        }
     }
 }
 
@@ -546,6 +558,76 @@ fn configuration_predicates(item: &impl HasAttrs) -> Vec<String> {
         .filter(|attr| matches!(attr.simple_name().as_deref(), Some("cfg" | "cfg_attr")))
         .map(|attr| attr.syntax().text().to_string())
         .collect()
+}
+
+fn item_discriminator(item: &ast::Item) -> String {
+    match item {
+        ast::Item::Fn(fn_item) => fn_signature(fn_item),
+        other => {
+            let predicates = configuration_predicates(other);
+            if predicates.is_empty() {
+                String::new()
+            } else {
+                format!("#{}", predicates.join(","))
+            }
+        }
+    }
+}
+
+fn associated_item_discriminator(item: &ast::AssocItem) -> String {
+    match item {
+        ast::AssocItem::Fn(fn_item) => fn_signature(fn_item),
+        other => {
+            let predicates = configuration_predicates(other);
+            if predicates.is_empty() {
+                String::new()
+            } else {
+                format!("#{}", predicates.join(","))
+            }
+        }
+    }
+}
+
+fn fn_signature(item: &ast::Fn) -> String {
+    let mut sig = String::new();
+    if let Some(generics) = item.generic_param_list() {
+        sig.push_str(&node_tokens(generics.syntax()));
+    }
+    if let Some(params) = item.param_list() {
+        sig.push_str(&node_tokens(params.syntax()));
+    } else {
+        sig.push_str("()");
+    }
+    if let Some(ret) = item.ret_type() {
+        sig.push_str(&node_tokens(ret.syntax()));
+    }
+    let predicates = configuration_predicates(item);
+    if !predicates.is_empty() {
+        sig.push('#');
+        sig.push_str(&predicates.join(","));
+    }
+    sig
+}
+
+fn node_tokens(node: &ra_ap_syntax::SyntaxNode) -> String {
+    let mut result = String::new();
+    let mut prev_is_word = false;
+    for element in node.descendants_with_tokens() {
+        if let Some(token) = element.into_token() {
+            let kind = token.kind();
+            if kind == SyntaxKind::WHITESPACE || kind == SyntaxKind::COMMENT {
+                continue;
+            }
+            let text = token.text();
+            let curr_is_word = text.chars().all(|c| c.is_alphanumeric() || c == '_');
+            if prev_is_word && curr_is_word {
+                result.push(' ');
+            }
+            result.push_str(text);
+            prev_is_word = curr_is_word;
+        }
+    }
+    result
 }
 
 fn item_capabilities(item: &ast::Item) -> Vec<Capability> {

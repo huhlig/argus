@@ -352,3 +352,36 @@ make_generated_items!();
             && capability.status == argus_core::CapabilityStatus::Unavailable
     }));
 }
+
+#[test]
+fn differentiates_functions_of_same_name_with_different_signatures_or_cfgs() {
+    let text = r#"
+pub fn calculate(x: u32) -> u32 { x }
+pub fn calculate(x: u32, y: u32) -> u32 { x + y }
+
+#[cfg(target_os = "windows")]
+pub fn platform_specific() -> &'static str { "win" }
+
+#[cfg(target_os = "linux")]
+pub fn platform_specific() -> &'static str { "linux" }
+"#;
+    let (source, path) = source(text);
+    let inventory = provider().inventory_file(&source, &path, None).unwrap();
+
+    let calculates: Vec<_> = inventory
+        .targets
+        .iter()
+        .filter(|target| target.name == "calculate")
+        .collect();
+    assert_eq!(calculates.len(), 2);
+    assert_ne!(calculates[0].id, calculates[1].id);
+
+    let platforms: Vec<_> = inventory
+        .targets
+        .iter()
+        .filter(|target| target.name == "platform_specific")
+        .collect();
+    assert_eq!(platforms.len(), 2);
+    assert_ne!(platforms[0].id, platforms[1].id);
+}
+
