@@ -118,7 +118,10 @@ impl RustWorkspaceAdapter {
                 }
             }
             for relation in crate_relations {
-                if seen_relations.insert(relation.id.clone()) {
+                if seen_targets.contains(&relation.source)
+                    && seen_targets.contains(&relation.target)
+                    && seen_relations.insert(relation.id.clone())
+                {
                     sink.relation(relation)?;
                 }
             }
@@ -147,7 +150,10 @@ impl RustWorkspaceAdapter {
             }),
         })?;
         for relation in semantic.relations {
-            if seen_relations.insert(relation.id.clone()) {
+            if seen_targets.contains(&relation.source)
+                && seen_targets.contains(&relation.target)
+                && seen_relations.insert(relation.id.clone())
+            {
                 sink.relation(relation)?;
             }
         }

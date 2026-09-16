@@ -51,6 +51,7 @@ pub struct RustSyntaxInventory {
     pub diagnostics: Vec<String>,
     pub documentation: BTreeMap<TargetId, String>,
     pub conditions: BTreeMap<TargetId, Vec<String>>,
+    pub(crate) external_modules: Vec<ExternalModule>,
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +99,7 @@ impl RustSyntaxProvider {
         }];
         let mut documentation = BTreeMap::new();
         let mut conditions = BTreeMap::new();
+        let mut external_modules = Vec::new();
         Self::collect_items(
             path,
             file.items(),
@@ -106,12 +108,14 @@ impl RustSyntaxProvider {
             &mut targets,
             &mut documentation,
             &mut conditions,
+            &mut external_modules,
         )?;
         Ok(RustSyntaxInventory {
             targets,
             diagnostics,
             documentation,
             conditions,
+            external_modules,
         })
     }
 
@@ -126,6 +130,7 @@ impl RustSyntaxProvider {
             diagnostics: Vec::new(),
             documentation: BTreeMap::new(),
             conditions: BTreeMap::new(),
+            external_modules: Vec::new(),
         };
         let mut pending = vec![(entry.clone(), parent)];
         let mut visited = BTreeSet::new();
@@ -138,7 +143,7 @@ impl RustSyntaxProvider {
                 continue;
             }
             let mut inventory = self.inventory_file(source, &path, file_parent)?;
-            let modules = self.external_modules(source, &path)?;
+            let modules = std::mem::take(&mut inventory.external_modules);
             for module in modules {
                 match resolve_module_path(source, &path, &module) {
                     Ok(Some(module_path)) => {
@@ -168,34 +173,6 @@ impl RustSyntaxProvider {
         Ok(combined)
     }
 
-    fn external_modules(
-        &self,
-        source: &dyn SourceAccess,
-        path: &SourcePath,
-    ) -> Result<Vec<ExternalModule>, argus_core::ArgusError> {
-        let bytes = source.read(path)?;
-        let text = std::str::from_utf8(&bytes).map_err(|error| {
-            argus_core::ArgusError::invalid_input("Rust syntax provider requires UTF-8 source")
-                .with_source(error)
-        })?;
-        let file = SourceFile::parse(text, self.edition.into()).tree();
-        Ok(file
-            .items()
-            .filter_map(|item| match item {
-                ast::Item::Module(module) if module.item_list().is_none() => {
-                    let name = module.name()?.text().to_string();
-                    let target = Self::target_id(path, "module", &name, "");
-                    Some(ExternalModule {
-                        name,
-                        target,
-                        path_override: module.attrs().find_map(|attr| path_attribute(&attr)),
-                    })
-                }
-                _ => None,
-            })
-            .collect())
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn collect_items(
         path: &SourcePath,
@@ -205,6 +182,7 @@ impl RustSyntaxProvider {
         targets: &mut Vec<Target>,
         documentation: &mut BTreeMap<TargetId, String>,
         conditions: &mut BTreeMap<TargetId, Vec<String>>,
+        external_modules: &mut Vec<ExternalModule>,
     ) -> Result<(), argus_core::ArgusError> {
         for item in items {
             let (kind, name) = item_identity(&item);
@@ -219,7 +197,7 @@ impl RustSyntaxProvider {
                 id: id.clone(),
                 kind,
                 visibility: item_visibility(&item),
-                name,
+                name: name.clone(),
                 parent: Some(parent.clone()),
                 location: Some(location(path, item.syntax())?),
                 inventory: InventoryState::Represented,
@@ -252,18 +230,25 @@ impl RustSyntaxProvider {
             if !predicates.is_empty() {
                 conditions.insert(id.clone(), predicates);
             }
-            if let ast::Item::Module(module) = &item
-                && let Some(list) = module.item_list()
-            {
-                Self::collect_items(
-                    path,
-                    list.items(),
-                    &id,
-                    &qualified,
-                    targets,
-                    documentation,
-                    conditions,
-                )?;
+            if let ast::Item::Module(module) = &item {
+                if let Some(list) = module.item_list() {
+                    Self::collect_items(
+                        path,
+                        list.items(),
+                        &id,
+                        &qualified,
+                        targets,
+                        documentation,
+                        conditions,
+                        external_modules,
+                    )?;
+                } else {
+                    external_modules.push(ExternalModule {
+                        name: name.clone(),
+                        target: id.clone(),
+                        path_override: module.attrs().find_map(|attr| path_attribute(&attr)),
+                    });
+                }
             } else if let ast::Item::Impl(item) = &item
                 && let Some(list) = item.assoc_item_list()
             {
@@ -356,11 +341,11 @@ impl RustSyntaxProvider {
     }
 }
 
-#[derive(Clone, Debug)]
-struct ExternalModule {
-    name: String,
-    target: TargetId,
-    path_override: Option<String>,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExternalModule {
+    pub(crate) name: String,
+    pub(crate) target: TargetId,
+    pub(crate) path_override: Option<String>,
 }
 
 fn path_attribute(attr: &ast::Attr) -> Option<String> {

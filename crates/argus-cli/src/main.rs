@@ -1719,13 +1719,23 @@ impl InventorySink for JsonLinesInventorySink<'_> {
     }
 
     fn relation(&mut self, relation: argus_core::Relation) -> Result<(), argus_core::ArgusError> {
-        if !self.relation_ids.insert(relation.id.clone())
-            || !self.target_ids.contains(&relation.source)
-            || !self.target_ids.contains(&relation.target)
-        {
-            return Err(argus_core::ArgusError::invariant(
-                "invalid streamed relation",
-            ));
+        if !self.relation_ids.insert(relation.id.clone()) {
+            return Err(argus_core::ArgusError::invariant(format!(
+                "invalid or duplicate streamed relation: duplicate relation id {}",
+                relation.id
+            )));
+        }
+        if !self.target_ids.contains(&relation.source) {
+            return Err(argus_core::ArgusError::invariant(format!(
+                "invalid streamed relation: relation source target {} was not declared before relation (target: {}, kind: {})",
+                relation.source, relation.target, relation.kind
+            )));
+        }
+        if !self.target_ids.contains(&relation.target) {
+            return Err(argus_core::ArgusError::invariant(format!(
+                "invalid streamed relation: relation target target {} was not declared before relation (source: {}, kind: {})",
+                relation.target, relation.source, relation.kind
+            )));
         }
         self.relation_count += 1;
         self.write_record(&serde_json::json!({"record":"relation", "value":relation}))

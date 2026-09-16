@@ -461,3 +461,27 @@ pub fn platform() -> &'static str { "linux" }
     assert!(inventory.conflicts.is_empty());
 }
 
+#[test]
+fn streams_workspace_inventory_with_cfg_external_module() {
+    let mut source = source();
+    source.files.insert(
+        SourcePath::new("src/lib.rs").unwrap(),
+        br#"
+#[cfg(target_os = "windows")]
+pub mod platform;
+"#
+        .to_vec(),
+    );
+    source.files.insert(
+        SourcePath::new("src/platform.rs").unwrap(),
+        b"pub fn run() {}\n".to_vec(),
+    );
+    let adapter = RustWorkspaceAdapter::new(
+        METADATA.as_bytes().to_vec(),
+        ConfigurationId::derive([b"test".as_slice()]),
+        RustEdition::Edition2024,
+    );
+    let mut sink = CountingSink::default();
+    adapter.inventory_into(&source, &mut sink).unwrap();
+}
+
