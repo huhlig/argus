@@ -169,3 +169,6 @@ Update `load_inventory(root)` to:
 1. Allow filtering by `--adapter <name>`.
 2. Default to aggregating targets, evidence, and relations across all active adapter streams in the snapshot manifest when auditing a polyglot workspace.
 3. Eliminate false `snapshot inventory is not deterministic` errors caused by cross-adapter file collisions.
+
+### Improvement of Documentation Targets
+A Second internal documentation policy should be created to handle internal behavior notes to ensure that private items that are ignored by the more rigorous public documentation policy are still checked for critical behavioral aspects such as purpose, behavior, panics and side effects. This is a less rigerous documentation than is required for the public api. 
