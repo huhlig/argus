@@ -20,9 +20,9 @@ use argus_core::{
 use argus_language::SourceAccess;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BindingPatternKind, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Function,
+    BindingPattern, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Function,
     MethodDefinitionKind, PropertyKey, Statement, TSAccessibility, TSEnumDeclaration,
-    TSInterfaceDeclaration, TSModuleDeclaration, TSModuleDeclarationBody, TSModuleDeclarationName,
+    TSInterfaceDeclaration, TSNamespaceDeclaration, TSNamespaceDeclarationBody,
     TSTypeAliasDeclaration, VariableDeclaration, VariableDeclarationKind,
 };
 use oxc_parser::Parser;
@@ -30,7 +30,7 @@ use oxc_span::{GetSpan, SourceType, Span};
 use std::{collections::BTreeMap, path::Path};
 
 const PROVIDER: &str = "oxc-syntax";
-const PROVIDER_VERSION: &str = "0.75.1";
+const PROVIDER_VERSION: &str = "0.150.0";
 
 /// Dialect classification for TypeScript / JavaScript files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,7 +132,7 @@ impl TypeScriptSyntaxProvider {
         let ret = Parser::new(&allocator, text, source_type).parse();
 
         let diagnostics = ret
-            .errors
+            .diagnostics
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
@@ -342,16 +342,14 @@ impl TargetCollector<'_> {
             Statement::TSEnumDeclaration(enum_decl) => {
                 self.collect_enum(enum_decl, parent_id, prefix, exported, Some(outer_start))?;
             }
-            Statement::TSModuleDeclaration(module_decl) => {
+            Statement::TSNamespaceDeclaration(module_decl) => {
                 self.collect_module(module_decl, parent_id, prefix, exported, Some(outer_start))?;
             }
             Statement::VariableDeclaration(var_decl) => {
                 self.collect_variable(var_decl, parent_id, prefix, exported, Some(outer_start))?;
             }
-            Statement::ExportNamedDeclaration(export_decl) => {
-                if let Some(decl) = &export_decl.declaration {
-                    self.collect_declaration(decl, parent_id, prefix, true, Some(outer_start))?;
-                }
+            Statement::ExportDeclaration(export_decl) => {
+                self.collect_declaration(&export_decl.declaration, parent_id, prefix, true, Some(outer_start))?;
             }
             Statement::ExportDefaultDeclaration(export_default) => {
                 match &export_default.declaration {
@@ -423,7 +421,7 @@ impl TargetCollector<'_> {
             Declaration::TSEnumDeclaration(enum_decl) => {
                 self.collect_enum(enum_decl, parent_id, prefix, exported, outer_start)
             }
-            Declaration::TSModuleDeclaration(module_decl) => {
+            Declaration::TSNamespaceDeclaration(module_decl) => {
                 self.collect_module(module_decl, parent_id, prefix, exported, outer_start)
             }
             Declaration::VariableDeclaration(var_decl) => {
@@ -507,9 +505,9 @@ impl TargetCollector<'_> {
         self.attach_doc(&id, class.span.start, outer_start);
 
         // Record super class
-        if let Some(super_class) = &class.super_class {
-            let start = usize::try_from(super_class.span().start).unwrap_or(0);
-            let end = usize::try_from(super_class.span().end).unwrap_or(0);
+        if let Some(heritage) = &class.heritage {
+            let start = usize::try_from(heritage.expression.span().start).unwrap_or(0);
+            let end = usize::try_from(heritage.expression.span().end).unwrap_or(0);
             let super_name = self.text.get(start..end).unwrap_or("").to_owned();
             self.inheritances.push(DiscoveredInheritance {
                 sub_target_id: id.clone(),
@@ -630,8 +628,8 @@ impl TargetCollector<'_> {
         self.attach_doc(&id, interface.span.start, outer_start);
 
         for ext in &interface.extends {
-            let start = usize::try_from(ext.expression.span().start).unwrap_or(0);
-            let end = usize::try_from(ext.expression.span().end).unwrap_or(0);
+            let start = usize::try_from(ext.type_name.span().start).unwrap_or(0);
+            let end = usize::try_from(ext.type_name.span().end).unwrap_or(0);
             let super_name = self.text.get(start..end).unwrap_or("").to_owned();
             self.inheritances.push(DiscoveredInheritance {
                 sub_target_id: id.clone(),
@@ -733,16 +731,13 @@ impl TargetCollector<'_> {
 
     fn collect_module(
         &mut self,
-        module_decl: &TSModuleDeclaration<'_>,
+        module_decl: &TSNamespaceDeclaration<'_>,
         parent_id: &TargetId,
         prefix: &str,
         exported: bool,
         outer_start: Option<u32>,
     ) -> Result<(), argus_core::ArgusError> {
-        let name = match &module_decl.id {
-            TSModuleDeclarationName::Identifier(ident) => ident.name.as_str(),
-            TSModuleDeclarationName::StringLiteral(lit) => lit.value.as_str(),
-        };
+        let name = module_decl.id.name.as_str();
         let qualified = qualified_name(prefix, name);
         let id = target_id(self.path, "namespace", &qualified);
         let visibility = if exported {
@@ -765,14 +760,12 @@ impl TargetCollector<'_> {
         });
         self.attach_doc(&id, module_decl.span.start, outer_start);
 
-        if let Some(body) = &module_decl.body {
-            match body {
-                TSModuleDeclarationBody::TSModuleBlock(block) => {
-                    self.collect_statements(&block.body, &id, &qualified)?;
-                }
-                TSModuleDeclarationBody::TSModuleDeclaration(nested) => {
-                    self.collect_module(nested, &id, &qualified, false, None)?;
-                }
+        match &module_decl.body {
+            TSNamespaceDeclarationBody::TSModuleBlock(block) => {
+                self.collect_statements(&block.body, &id, &qualified)?;
+            }
+            TSNamespaceDeclarationBody::TSNamespaceDeclaration(nested) => {
+                self.collect_module(nested, &id, &qualified, false, None)?;
             }
         }
         Ok(())
@@ -787,7 +780,7 @@ impl TargetCollector<'_> {
         outer_start: Option<u32>,
     ) -> Result<(), argus_core::ArgusError> {
         for decl in &var_decl.declarations {
-            let BindingPatternKind::BindingIdentifier(ident) = &decl.id.kind else {
+            let BindingPattern::BindingIdentifier(ident) = &decl.id else {
                 continue;
             };
             let name = ident.name.as_str();
