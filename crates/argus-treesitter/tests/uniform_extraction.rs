@@ -103,7 +103,8 @@ fn test_all_13_languages_extracted_and_normalized() {
     source.add_file("Sample.hs", hs_code);
 
     // 11. Zig
-    let zig_code = b"pub const State = enum {\n    Idle,\n    Running,\n};\n\npub fn start() void {}\n";
+    let zig_code =
+        b"pub const State = enum {\n    Idle,\n    Running,\n};\n\npub fn start() void {}\n";
     source.add_file("sample.zig", zig_code);
 
     // 12. Swift
@@ -117,21 +118,23 @@ fn test_all_13_languages_extracted_and_normalized() {
     let candidate_paths: Vec<SourcePath> = source.files.keys().cloned().collect();
     let adapter = TreeSitterWorkspaceAdapter::new(cfg.clone(), candidate_paths, None);
 
-    let inventory = adapter.inventory(&source).expect("inventory extraction should succeed");
+    let inventory = adapter
+        .inventory(&source)
+        .expect("inventory extraction should succeed");
 
     // Verify inventory normalization passes strict invariants
-    let normalized = normalize_inventory(&source, inventory).expect("inventory must pass normalization");
+    let normalized =
+        normalize_inventory(&source, inventory).expect("inventory must pass normalization");
 
     assert!(!normalized.targets.is_empty());
     assert!(!normalized.relations.is_empty());
 
     // Verify that every language file produced targets
     for path in source.files.keys() {
-        let has_target = normalized.targets.iter().any(|t| {
-            t.location
-                .as_ref()
-                .is_some_and(|loc| loc.path == *path)
-        });
+        let has_target = normalized
+            .targets
+            .iter()
+            .any(|t| t.location.as_ref().is_some_and(|loc| loc.path == *path));
         assert!(has_target, "Expected target for {}", path.as_str());
     }
 
@@ -150,7 +153,10 @@ fn test_all_13_languages_extracted_and_normalized() {
 
     // Verify Go documentation evidence was attached
     assert!(
-        normalized.evidence.iter().any(|e| e.target.as_ref() == Some(&greet_target.id)),
+        normalized
+            .evidence
+            .iter()
+            .any(|e| e.target.as_ref() == Some(&greet_target.id)),
         "Expected doc evidence on Greet"
     );
 

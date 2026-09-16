@@ -177,7 +177,9 @@ impl EvidenceStore {
     ///
     /// # Errors
     /// Returns [`argus_core::ArgusError`] if directory scanning fails.
-    pub fn list_objects(&self) -> Result<Vec<(ContentHash, usize, PathBuf)>, argus_core::ArgusError> {
+    pub fn list_objects(
+        &self,
+    ) -> Result<Vec<(ContentHash, usize, PathBuf)>, argus_core::ArgusError> {
         let objects_dir = self.root.join("objects");
         if !objects_dir.exists() {
             return Ok(Vec::new());

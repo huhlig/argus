@@ -20,9 +20,9 @@ use argus_core::{ApplicabilityState, WorkItemId};
 use argus_evidence::ReviewContextFrame;
 use argus_policies::{
     ALL_OPTIMIZATION_DIMENSIONS, OptimizationAssessment, OptimizationAssessmentBinding,
-    OptimizationAssessmentDraft, OptimizationDimensionDraft,
-    OptimizationDimensionStatus, OptimizationEvidenceCitation,
-    OptimizationResult, OptimizationResultDraft, OptimizationTargetProfile,
+    OptimizationAssessmentDraft, OptimizationDimensionDraft, OptimizationDimensionStatus,
+    OptimizationEvidenceCitation, OptimizationResult, OptimizationResultDraft,
+    OptimizationTargetProfile,
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};

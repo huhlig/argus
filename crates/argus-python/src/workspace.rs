@@ -13,12 +13,11 @@
 // limitations under the License.
 
 use crate::{
-    PyprojectAdapter, PythonRelationshipProvider, PythonSyntaxInventory,
-    PythonSyntaxProvider,
+    PyprojectAdapter, PythonRelationshipProvider, PythonSyntaxInventory, PythonSyntaxProvider,
 };
 use argus_core::{
-    CapabilityStatus, ConfigurationId, PortableTargetKind, Relation, RelationId, RelationProvenance,
-    ResolutionQuality, SourcePath, TargetId, TargetKind,
+    CapabilityStatus, ConfigurationId, PortableTargetKind, Relation, RelationId,
+    RelationProvenance, ResolutionQuality, SourcePath, TargetId, TargetKind,
 };
 use argus_language::{
     AdapterIdentity, AdapterInventory, AdapterProvider, CollectingInventorySink,
@@ -140,7 +139,10 @@ impl PythonWorkspaceAdapter {
             let file_parent = package_targets
                 .iter()
                 .find(|(manifest_file, _)| {
-                    let dir = Path::new(manifest_file).parent().and_then(Path::to_str).unwrap_or("");
+                    let dir = Path::new(manifest_file)
+                        .parent()
+                        .and_then(Path::to_str)
+                        .unwrap_or("");
                     if dir.is_empty() {
                         true
                     } else {
@@ -219,8 +221,7 @@ impl PythonWorkspaceAdapter {
         }
 
         // 3. Infer semantic relations
-        let relationship_provider =
-            PythonRelationshipProvider::new(self.configuration.clone());
+        let relationship_provider = PythonRelationshipProvider::new(self.configuration.clone());
         let semantic = relationship_provider.infer(
             source,
             &all_targets,

@@ -125,11 +125,31 @@ fn java_workspace_adapter_end_to_end() {
 
     // Verify documentation evidence
     assert!(!normalized.evidence.is_empty());
-    assert!(normalized.evidence.iter().any(|e| e.detail.as_deref().unwrap_or("").contains("Base service class")));
-    assert!(normalized.evidence.iter().any(|e| e.detail.as_deref().unwrap_or("").contains("Main application service")));
+    assert!(normalized.evidence.iter().any(|e| {
+        e.detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("Base service class")
+    }));
+    assert!(normalized.evidence.iter().any(|e| {
+        e.detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("Main application service")
+    }));
 
     // Verify relationships
     assert!(!normalized.relations.is_empty());
-    assert!(normalized.relations.iter().any(|r| r.kind == "java:extends"));
-    assert!(normalized.relations.iter().any(|r| r.kind == "core:contains"));
+    assert!(
+        normalized
+            .relations
+            .iter()
+            .any(|r| r.kind == "java:extends")
+    );
+    assert!(
+        normalized
+            .relations
+            .iter()
+            .any(|r| r.kind == "core:contains")
+    );
 }

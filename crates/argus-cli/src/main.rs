@@ -21,6 +21,7 @@ use std::{
     process::ExitCode,
 };
 
+mod inventory;
 mod mcp;
 
 const HELP: &str = "Argus repository source intelligence
@@ -140,7 +141,8 @@ Description:
   durable redb working queue for the active run.
 
 Options:
-  --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, correctness, architecture, optimization, maintainability, conformance, full)
+  --adapter <name>        Select an adapter from this run (default: all primed adapters)
+  --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, internal-documentation, correctness, architecture, optimization, maintainability, conformance, full)
   --preset <preset>       Execution preset: local (default, developer interactive) or ci (strict budget, automated gating)
   --ci                    Non-interactive CI execution mode (equivalent to --preset ci)
   --ci-lite               Fast CI review restricting admitted work to changed and impacted targets
@@ -171,7 +173,7 @@ Examples:
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work [documentation|correctness|architecture|optimization|maintainability|conformance|all] [--preset <local|ci>] [--ci] [--incremental] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
+Usage: argus work [documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|all] [--preset <local|ci>] [--ci] [--incremental] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -494,7 +496,7 @@ Examples:
 const HELP_EVALUATE: &str = "Measure quality and calibration against a versioned corpus
 
 Usage:
-  argus evaluate <documentation|correctness|architecture|optimization|maintainability|conformance> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]
+  argus evaluate <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]
 
 Description:
   Evaluates one or more audit runs against a ground-truth defect corpus:
@@ -1368,7 +1370,10 @@ pub enum CliCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    Status,
+    Status {
+        #[arg(long)]
+        adapter: Option<String>,
+    },
     Errorlog {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -1494,7 +1499,7 @@ fn run(
         CliCommand::Audit { args } => audit_command(root, append_config(args).into_iter()),
         CliCommand::Work { args } => work_command(root, append_config(args).into_iter()),
         CliCommand::Targets { args } => targets_command(root, append_config(args).into_iter()),
-        CliCommand::Status => status_command(root),
+        CliCommand::Status { adapter } => status_command_with_adapter(root, adapter.as_deref()),
         CliCommand::Errorlog { args } => errorlog_command(root, append_config(args).into_iter()),
         CliCommand::Coverage { args } => coverage_command(root, append_config(args).into_iter()),
         CliCommand::Resume { args } => resume_command(root, args.into_iter()),
@@ -1510,9 +1515,7 @@ fn run(
             }
             report_command(root, backlog_args.into_iter())
         }
-        CliCommand::Publish { args } => {
-            publish_command(root, append_config(args).into_iter())
-        }
+        CliCommand::Publish { args } => publish_command(root, append_config(args).into_iter()),
         CliCommand::Adjudicate { args } => {
             adjudicate_command(root, append_config(args).into_iter())
         }
@@ -1590,7 +1593,6 @@ struct JsonLinesInventorySink<'a> {
     writer: Option<std::io::BufWriter<std::fs::File>>,
     temporary: std::path::PathBuf,
     destination: std::path::PathBuf,
-    current: std::path::PathBuf,
     snapshot: Option<argus_core::SnapshotId>,
     target_ids: BTreeSet<argus_core::TargetId>,
     evidence_ids: BTreeSet<argus_core::EvidenceId>,
@@ -1603,7 +1605,7 @@ struct JsonLinesInventorySink<'a> {
     started: std::time::Instant,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct InventoryMetrics {
     targets: usize,
     evidence: usize,
@@ -1619,12 +1621,13 @@ impl<'a> JsonLinesInventorySink<'a> {
     fn new(
         root: &std::path::Path,
         source: &'a dyn SourceAccess,
+        key: &str,
     ) -> Result<Self, argus_core::ArgusError> {
         let inventory_root = root.join(".argus/state/inventory");
         let directory = inventory_root.join(source.snapshot_id().as_str());
         std::fs::create_dir_all(&directory)
             .map_err(io_error("cannot create inventory directory"))?;
-        let temporary = directory.join("rust.jsonl.tmp");
+        let temporary = directory.join(format!("{key}.jsonl.tmp"));
         let writer = std::io::BufWriter::new(
             std::fs::File::create(&temporary)
                 .map_err(io_error("cannot create inventory stream"))?,
@@ -1633,8 +1636,7 @@ impl<'a> JsonLinesInventorySink<'a> {
             source,
             writer: Some(writer),
             temporary,
-            destination: directory.join("rust.jsonl"),
-            current: inventory_root.join("current-rust"),
+            destination: directory.join(format!("{key}.jsonl")),
             snapshot: None,
             target_ids: BTreeSet::new(),
             evidence_ids: BTreeSet::new(),
@@ -1660,10 +1662,6 @@ impl<'a> JsonLinesInventorySink<'a> {
         writer
             .write_all(b"\n")
             .map_err(io_error("cannot write inventory record"))
-    }
-
-    const fn target_count(&self) -> usize {
-        self.target_count
     }
 }
 
@@ -1791,6 +1789,10 @@ impl InventorySink for JsonLinesInventorySink<'_> {
         writer
             .flush()
             .map_err(io_error("cannot flush inventory stream"))?;
+        writer
+            .get_ref()
+            .sync_all()
+            .map_err(io_error("cannot sync inventory stream"))?;
         drop(writer);
         if self.destination.exists() {
             if !files_equal(&self.temporary, &self.destination)? {
@@ -1804,7 +1806,7 @@ impl InventorySink for JsonLinesInventorySink<'_> {
             std::fs::rename(&self.temporary, &self.destination)
                 .map_err(io_error("cannot commit inventory stream"))?;
         }
-        let snapshot = self
+        let _snapshot = self
             .snapshot
             .as_ref()
             .ok_or_else(|| argus_core::ArgusError::invariant("inventory stream has no header"))?;
@@ -1826,14 +1828,16 @@ impl InventorySink for JsonLinesInventorySink<'_> {
             .destination
             .parent()
             .expect("inventory destination has a parent")
-            .join("rust-metrics.json");
+            .join(format!(
+                "{}-metrics.json",
+                self.destination.file_stem().unwrap().to_string_lossy()
+            ));
         let bytes = serde_json::to_vec_pretty(&metrics).map_err(|error| {
             argus_core::ArgusError::invariant("cannot serialize inventory metrics")
                 .with_source(error)
         })?;
         std::fs::write(metrics_path, bytes).map_err(io_error("cannot write inventory metrics"))?;
-        std::fs::write(&self.current, snapshot.as_str())
-            .map_err(io_error("cannot update current inventory pointer"))
+        Ok(())
     }
 }
 
@@ -1867,13 +1871,14 @@ fn files_equal(
 
 fn load_inventory(
     root: &std::path::Path,
+) -> Result<inventory::WorkspaceInventory, argus_core::ArgusError> {
+    inventory::load(root, None)
+}
+
+fn read_inventory_stream(
+    path: &std::path::Path,
 ) -> Result<argus_language::AdapterInventory, argus_core::ArgusError> {
-    let inventory_root = root.join(".argus/state/inventory");
-    let snapshot = std::fs::read_to_string(inventory_root.join("current-rust")).map_err(
-        io_error("cannot read current Rust inventory; run `argus prime --adapter rust`"),
-    )?;
-    let file = std::fs::File::open(inventory_root.join(snapshot.trim()).join("rust.jsonl"))
-        .map_err(io_error("cannot open current Rust inventory stream"))?;
+    let file = std::fs::File::open(path).map_err(io_error("cannot open inventory stream"))?;
     let mut adapter = None;
     let mut snapshot_id = None;
     let mut partitions = Vec::new();
@@ -1882,14 +1887,25 @@ fn load_inventory(
     let mut relations = Vec::new();
     let mut conflicts = Vec::new();
     for line in std::io::BufReader::new(file).lines() {
-        let line = line.map_err(io_error("cannot read Rust inventory record"))?;
+        let line = line.map_err(io_error("cannot read inventory record"))?;
         let value: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
-            argus_core::ArgusError::invalid_input("invalid persisted Rust inventory record")
+            argus_core::ArgusError::invalid_input("invalid persisted inventory record")
                 .with_source(error)
         })?;
         let record = value.get("record").and_then(serde_json::Value::as_str);
         match record {
             Some("header") => {
+                if adapter.is_some()
+                    || !targets.is_empty()
+                    || !partitions.is_empty()
+                    || !evidence.is_empty()
+                    || !relations.is_empty()
+                    || !conflicts.is_empty()
+                {
+                    return Err(argus_core::ArgusError::invariant(
+                        "inventory header must appear exactly once, first",
+                    ));
+                }
                 adapter = Some(decode_record(&value, "adapter")?);
                 snapshot_id = Some(decode_record(&value, "snapshot")?);
             }
@@ -1900,7 +1916,7 @@ fn load_inventory(
             Some("conflict") => conflicts.push(decode_record(&value, "value")?),
             _ => {
                 return Err(argus_core::ArgusError::invalid_input(
-                    "unknown persisted Rust inventory record",
+                    "unknown persisted inventory record",
                 ));
             }
         }
@@ -1931,44 +1947,39 @@ fn decode_record<T: serde::de::DeserializeOwned>(
     })
 }
 
-fn load_inventory_metrics(
-    root: &std::path::Path,
-) -> Result<InventoryMetrics, argus_core::ArgusError> {
-    let inventory_root = root.join(".argus/state/inventory");
-    let snapshot = std::fs::read_to_string(inventory_root.join("current-rust"))
-        .map_err(io_error("cannot read current Rust inventory pointer"))?;
-    let bytes = std::fs::read(
-        inventory_root
-            .join(snapshot.trim())
-            .join("rust-metrics.json"),
-    )
-    .map_err(io_error("cannot read Rust inventory metrics"))?;
-    serde_json::from_slice(&bytes).map_err(|error| {
-        argus_core::ArgusError::invalid_input("invalid Rust inventory metrics").with_source(error)
-    })
-}
-
 fn targets_command(
     root: &std::path::Path,
     args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    let args: Vec<String> = args.collect();
+    let mut args: Vec<String> = args.collect();
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_TARGETS.to_owned());
     }
+    let filter = if let Some(index) = args.iter().position(|a| a == "--adapter") {
+        args.remove(index);
+        if index == args.len() {
+            return Err(argus_core::ArgusError::invalid_input(
+                "--adapter requires a name",
+            ));
+        }
+        Some(args.remove(index))
+    } else {
+        None
+    };
     let mut iter = args.into_iter();
-    let inventory = load_inventory(root)?;
+    let inventory = inventory::load(root, filter.as_deref())?;
     match iter.next().as_deref() {
         Some("list") if iter.next().is_none() => {
-            let mut output = String::from("id\tkind\tname\tinventory\n");
+            let mut output = String::from("id\tkind\tname\tinventory\tadapters\n");
             for target in inventory.targets {
                 writeln!(
                     output,
-                    "{}\t{}\t{}\t{:?}",
+                    "{}\t{}\t{}\t{:?}\t{}",
                     target.id,
                     target_kind_label(&target.kind),
                     target.name,
-                    target.inventory
+                    target.inventory,
+                    inventory.owners[&target.id].join(",")
                 )
                 .expect("writing to a String cannot fail");
             }
@@ -2011,31 +2022,7 @@ fn target_kind_label(kind: &argus_core::TargetKind) -> String {
 }
 
 fn adapter_coverage(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
-    let inventory = load_inventory(root)?;
-    let metrics = load_inventory_metrics(root)?;
-    let mut output = format!(
-        "Adapter: {}\nSnapshot: {}\nTargets: {}\nEvidence: {}\nRelations: {}\nConflicts: {}\nStream bytes: {}\nElapsed millis: {}\nRetained identifiers: {}\n",
-        inventory.adapter.name,
-        inventory.snapshot,
-        metrics.targets,
-        metrics.evidence,
-        metrics.relations,
-        metrics.conflicts,
-        metrics.stream_bytes,
-        metrics.elapsed_millis,
-        metrics.retained_identifiers
-    );
-    for partition in inventory.partitions {
-        writeln!(
-            output,
-            "{}\t{:?}\t{}",
-            partition.name,
-            partition.status,
-            partition.diagnostic.as_deref().unwrap_or("")
-        )
-        .expect("writing to a String cannot fail");
-    }
-    Ok(output.trim_end().to_owned())
+    Ok(inventory::describe(&load_inventory(root)?))
 }
 
 fn now_millis() -> Result<u64, argus_core::ArgusError> {
@@ -2048,7 +2035,9 @@ fn now_millis() -> Result<u64, argus_core::ArgusError> {
     Ok(u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
 }
 
-pub(crate) fn current_run(root: &std::path::Path) -> Result<argus_core::RunId, argus_core::ArgusError> {
+pub(crate) fn current_run(
+    root: &std::path::Path,
+) -> Result<argus_core::RunId, argus_core::ArgusError> {
     std::fs::read_to_string(root.join(".argus/state/current-run"))
         .map_err(io_error(
             "cannot read current run; run `argus prime --adapter rust`",
@@ -2172,9 +2161,10 @@ fn audit_command(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_AUDIT.to_owned());
     }
-    let usage = "usage: argus audit --pipeline <documentation|correctness|architecture|optimization|maintainability|conformance|full> [--preset <local|ci>] [--ci] [--ci-lite] [--baseline <ref|run-id>] [--incremental] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
+    let usage = "usage: argus audit --pipeline <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|full> [--preset <local|ci>] [--ci] [--ci-lite] [--baseline <ref|run-id>] [--incremental] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
     let mut iter = args.into_iter().peekable();
     let mut pipeline = None;
+    let mut adapter_filter = None;
     let mut preset = PipelinePreset::Local;
     let mut base_ref = None;
     let mut changed_only = false;
@@ -2183,13 +2173,26 @@ fn audit_command(
 
     while let Some(flag) = iter.next() {
         match flag.as_str() {
+            "--adapter" => {
+                adapter_filter = Some(iter.next().ok_or_else(|| {
+                    argus_core::ArgusError::invalid_input("--adapter requires a name")
+                })?);
+            }
             "--pipeline" => {
                 let val = iter
                     .next()
                     .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
                 if !matches!(
                     val.as_str(),
-                    "documentation" | "correctness" | "architecture" | "optimization" | "performance" | "maintainability" | "conformance" | "full"
+                    "documentation"
+                        | "internal-documentation"
+                        | "correctness"
+                        | "architecture"
+                        | "optimization"
+                        | "performance"
+                        | "maintainability"
+                        | "conformance"
+                        | "full"
                 ) {
                     return Err(argus_core::ArgusError::invalid_input(usage));
                 }
@@ -2231,7 +2234,8 @@ fn audit_command(
     }
 
     let pipeline = pipeline.ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
-    let inventory = load_inventory(root)?;
+    let _selection_lock = inventory::lock(root)?;
+    let inventory = inventory::load(root, adapter_filter.as_deref())?;
     let queue = working_queue(root)?;
     let run_id = current_run(root)?;
     let run = queue
@@ -2246,14 +2250,12 @@ fn audit_command(
         )));
     }
     if run.snapshot != inventory.snapshot {
-        return Err(argus_core::ArgusError::invariant(format!(
-            "current run {} was primed for snapshot {}, but the persisted Rust inventory is for \
-             snapshot {}; the run was likely primed without `--adapter rust` after a prior \
-             `--adapter rust` prime, so the run's snapshot and the inventory on disk diverged. \
-             Run `argus prime --adapter rust` to re-align them",
-            run.id, run.snapshot, inventory.snapshot
-        )));
+        return Err(argus_core::ArgusError::invariant(
+            "run snapshot does not match its pinned inventory",
+        ));
     }
+
+    inventory::pin_selection(root, &inventory)?;
 
     // Determine target subset if change examination is requested
     let change_filter_active = base_ref.is_some() || changed_only || ci_lite || incremental;
@@ -2305,7 +2307,8 @@ fn audit_command(
         .collect();
 
     // Budget configurations per preset
-    let (doc_budget, corr_budget, arch_budget, opt_budget, maint_budget, conf_budget) = match preset {
+    let (doc_budget, corr_budget, arch_budget, opt_budget, maint_budget, conf_budget) = match preset
+    {
         PipelinePreset::Local => (
             argus_evidence::EvidenceBudget {
                 max_bytes: 400_000,
@@ -2386,12 +2389,25 @@ fn audit_command(
 
     let evidence_store = argus_evidence::EvidenceStore::open(root.join(".argus/state/evidence"))?;
 
-    let plan_documentation = || -> Result<String, argus_core::ArgusError> {
-        let policy = argus_policies::DocumentationApplicabilityPolicy::public_api()?;
+    let plan_documentation = |internal: bool| -> Result<String, argus_core::ArgusError> {
+        let policy = if internal {
+            argus_policies::DocumentationApplicabilityPolicy::internal_behavior()?
+        } else {
+            argus_policies::DocumentationApplicabilityPolicy::public_api()?
+        };
+        let version = if internal {
+            "documentation-internal@1"
+        } else {
+            "documentation-public-api@1"
+        };
         let planner = argus_workflow::DocumentationReviewPlanner::new(
             &policy,
-            argus_core::PolicyId::derive([b"documentation-public-api-v1".as_slice()]),
-            "documentation-public-api@1",
+            if internal {
+                argus_core::PolicyId::derive([b"documentation-internal-v1".as_slice()])
+            } else {
+                argus_core::PolicyId::derive([b"documentation-public-api-v1".as_slice()])
+            },
+            version,
         )?;
         let plan = planner.plan(
             &run.snapshot,
@@ -2431,12 +2447,21 @@ fn audit_command(
             &run.id,
             &run.snapshot,
             &run.configuration,
-            "rust",
+            "workspace",
             now_millis()?,
         )?;
         Ok(format!(
-            "Documentation plan for run {}: {} applicable, {} not applicable, {} pending; {} newly admitted",
-            run.id, applicable, not_applicable, pending, admitted
+            "{} plan for run {}: {} applicable, {} not applicable, {} pending; {} newly admitted",
+            if internal {
+                "Internal documentation"
+            } else {
+                "Documentation"
+            },
+            run.id,
+            applicable,
+            not_applicable,
+            pending,
+            admitted
         ))
     };
 
@@ -2485,7 +2510,7 @@ fn audit_command(
             &run.id,
             &run.snapshot,
             &run.configuration,
-            "rust",
+            "workspace",
             now_millis()?,
         )?;
         Ok(format!(
@@ -2541,7 +2566,7 @@ fn audit_command(
             &run.id,
             &run.snapshot,
             &run.configuration,
-            "rust",
+            "workspace",
             now_millis()?,
         )?;
         Ok(format!(
@@ -2595,7 +2620,7 @@ fn audit_command(
             &run.id,
             &run.snapshot,
             &run.configuration,
-            "rust",
+            "workspace",
             now_millis()?,
         )?;
         Ok(format!(
@@ -2649,7 +2674,7 @@ fn audit_command(
             &run.id,
             &run.snapshot,
             &run.configuration,
-            "rust",
+            "workspace",
             now_millis()?,
         )?;
         Ok(format!(
@@ -2660,7 +2685,8 @@ fn audit_command(
 
     let plan_conformance = || -> Result<String, argus_core::ArgusError> {
         let design_artifacts = load_design_artifacts(root)?;
-        let design_linkage = argus_evidence::DesignLinkageEngine::new().link(&design_artifacts, &targets_to_plan)?;
+        let design_linkage =
+            argus_evidence::DesignLinkageEngine::new().link(&design_artifacts, &targets_to_plan)?;
         let policy = argus_policies::ConformanceApplicabilityPolicy::all_targets()?;
         let planner = argus_workflow::ConformanceReviewPlanner::new(
             &policy,
@@ -2707,7 +2733,7 @@ fn audit_command(
             &run.snapshot,
             &run.configuration,
             &run.id,
-            "rust",
+            "workspace",
             now_millis()?,
         )?;
         Ok(format!(
@@ -2724,24 +2750,37 @@ fn audit_command(
             "\nNext step: Run 'argus work --preset ci' to process admitted review items under CI limits."
         }
     };
-    let preset_note = format!("[Preset: {preset:?}]{change_diagnostic}\n");
+    let preset_note = format!(
+        "[Preset: {preset:?}]{change_diagnostic}\n{}\n",
+        inventory::describe(&inventory)
+    );
 
     match pipeline.as_str() {
-        "documentation" => plan_documentation().map(|msg| format!("{preset_note}{msg}{next_step}")),
+        "internal-documentation" => {
+            plan_documentation(true).map(|msg| format!("{preset_note}{msg}{next_step}"))
+        }
+        "documentation" => {
+            plan_documentation(false).map(|msg| format!("{preset_note}{msg}{next_step}"))
+        }
         "correctness" => plan_correctness().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "architecture" => plan_architecture().map(|msg| format!("{preset_note}{msg}{next_step}")),
-        "optimization" | "performance" => plan_optimization().map(|msg| format!("{preset_note}{msg}{next_step}")),
-        "maintainability" => plan_maintainability().map(|msg| format!("{preset_note}{msg}{next_step}")),
+        "optimization" | "performance" => {
+            plan_optimization().map(|msg| format!("{preset_note}{msg}{next_step}"))
+        }
+        "maintainability" => {
+            plan_maintainability().map(|msg| format!("{preset_note}{msg}{next_step}"))
+        }
         "conformance" => plan_conformance().map(|msg| format!("{preset_note}{msg}{next_step}")),
         "full" => {
-            let doc_msg = plan_documentation()?;
+            let doc_msg = plan_documentation(false)?;
+            let internal_doc_msg = plan_documentation(true)?;
             let corr_msg = plan_correctness()?;
             let arch_msg = plan_architecture()?;
             let opt_msg = plan_optimization()?;
             let maint_msg = plan_maintainability()?;
             let conf_msg = plan_conformance()?;
             Ok(format!(
-                "{preset_note}{doc_msg}\n{corr_msg}\n{arch_msg}\n{opt_msg}\n{maint_msg}\n{conf_msg}{next_step}"
+                "{preset_note}{doc_msg}\n{internal_doc_msg}\n{corr_msg}\n{arch_msg}\n{opt_msg}\n{maint_msg}\n{conf_msg}{next_step}"
             ))
         }
         _ => unreachable!(),
@@ -2765,7 +2804,7 @@ fn work_command_with_env(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
     }
-    let usage = "usage: argus work [documentation|correctness|architecture|optimization|maintainability|conformance|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
+    let usage = "usage: argus work [documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
     let mut iter = args.into_iter().peekable();
     let policy_arg = if iter.peek().is_some_and(|a| !a.starts_with('-')) {
         iter.next().map(|arg| arg.to_lowercase())
@@ -2775,6 +2814,7 @@ fn work_command_with_env(
 
     let policy_name = match policy_arg.as_deref() {
         Some("documentation") => "documentation",
+        Some("internal-documentation") => "internal-documentation",
         Some("correctness") => "correctness",
         Some("architecture") => "architecture",
         Some("optimization") | Some("performance") => "optimization",
@@ -2907,7 +2947,8 @@ fn work_command_with_env(
             if let Ok(run_id) = current_run(root) {
                 if let Ok(Some(run)) = queue.get_run(&run_id) {
                     let queue_arc = std::sync::Arc::new(queue);
-                    let resolver = std::sync::Arc::new(argus_workflow::MapFingerprintResolver::new());
+                    let resolver =
+                        std::sync::Arc::new(argus_workflow::MapFingerprintResolver::new());
                     let worker = argus_workflow::ShortCircuitCacheWorker::new(
                         queue_arc,
                         None,
@@ -2916,7 +2957,11 @@ fn work_command_with_env(
                             audit_run: run_id,
                             audit_snapshot: run.snapshot,
                             adapter: None,
-                            policy: if policy_name == "all" { None } else { Some(policy_name.to_owned()) },
+                            policy: if policy_name == "all" {
+                                None
+                            } else {
+                                Some(policy_name.to_owned())
+                            },
                             lease_duration_millis: 60_000,
                         },
                     );
@@ -2924,9 +2969,14 @@ fn work_command_with_env(
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as u64;
-                    if let Ok(sweep) = runtime.block_on(worker.run_sweep(now_millis, limit.unwrap_or(0))) {
+                    if let Ok(sweep) =
+                        runtime.block_on(worker.run_sweep(now_millis, limit.unwrap_or(0)))
+                    {
                         if sweep.hits > 0 {
-                            cache_prefix = format!("Cache short-circuit: {} assessment hit(s), {} miss(es)\n", sweep.hits, sweep.misses);
+                            cache_prefix = format!(
+                                "Cache short-circuit: {} assessment hit(s), {} miss(es)\n",
+                                sweep.hits, sweep.misses
+                            );
                         }
                     }
                 }
@@ -2935,6 +2985,14 @@ fn work_command_with_env(
     }
 
     let work_result = match policy_name {
+        "internal-documentation" => runtime.block_on(execute_documentation_policy_work(
+            root,
+            profile,
+            limit,
+            concurrency,
+            fail_fast,
+            true,
+        ))?,
         "documentation" => runtime.block_on(execute_documentation_work(
             root,
             profile,
@@ -3026,6 +3084,7 @@ impl TargetCatalog {
 
         if let Some(snap) = snapshot {
             catalog.load_snapshot_dir(&inv_dir.join(snap));
+            return catalog;
         }
 
         if catalog.targets.is_empty() {
@@ -3068,20 +3127,19 @@ impl TargetCatalog {
     }
 
     fn load_snapshot_dir(&mut self, dir: &std::path::Path) {
-        if !dir.is_dir() {
-            return;
-        }
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let Ok(bytes) = std::fs::read(dir.join("manifest.json")) else {
             return;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                let default_adapter = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(ToOwned::to_owned);
-                self.load_jsonl_file(&path, default_adapter.as_deref());
+        let Ok(manifest) = serde_json::from_slice::<inventory::Manifest>(&bytes) else {
+            return;
+        };
+        for (name, entry) in manifest.adapters {
+            if entry.stream == format!("{name}.jsonl")
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
+                self.load_jsonl_file(&dir.join(entry.stream), Some(&name));
             }
         }
     }
@@ -3153,7 +3211,11 @@ impl TargetCatalog {
         }
     }
 
-    pub fn describe(&self, target_id: &str, coverage: Option<&argus_storage::CoverageKey>) -> String {
+    pub fn describe(
+        &self,
+        target_id: &str,
+        coverage: Option<&argus_storage::CoverageKey>,
+    ) -> String {
         if let Some(entry) = self.targets.get(target_id) {
             let lang = entry
                 .language
@@ -3166,7 +3228,11 @@ impl TargetCatalog {
             } else {
                 format!("{lang} ")
             };
-            let kind = if entry.kind.is_empty() { "target" } else { &entry.kind };
+            let kind = if entry.kind.is_empty() {
+                "target"
+            } else {
+                &entry.kind
+            };
             let path_suffix = entry
                 .path
                 .as_deref()
@@ -3241,33 +3307,31 @@ where
     let ticker_item_label = item_label.clone();
     let ticker_queue_pending = remaining_in_queue.unwrap_or(0);
 
-    let ticker_handle = tokio::spawn(
-        async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-            interval.tick().await;
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let elapsed = start.elapsed().as_secs();
-                        tracing::info!(
-                            policy = %ticker_category,
-                            worker = ticker_worker,
-                            step = index + 1,
-                            limit = limit.unwrap_or(0),
-                            elapsed_secs = elapsed,
-                            provider = %ticker_provider,
-                            model = %ticker_model,
-                            queue_pending = ticker_queue_pending,
-                            "[{ticker_category}] [worker {ticker_worker}] Item {ticker_item_label}{ticker_queue_note} in progress... ({elapsed}s elapsed, provider: {ticker_provider}, model: {ticker_model})"
-                        );
-                    }
-                    _ = &mut stop_rx => {
-                        break;
-                    }
+    let ticker_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let elapsed = start.elapsed().as_secs();
+                    tracing::info!(
+                        policy = %ticker_category,
+                        worker = ticker_worker,
+                        step = index + 1,
+                        limit = limit.unwrap_or(0),
+                        elapsed_secs = elapsed,
+                        provider = %ticker_provider,
+                        model = %ticker_model,
+                        queue_pending = ticker_queue_pending,
+                        "[{ticker_category}] [worker {ticker_worker}] Item {ticker_item_label}{ticker_queue_note} in progress... ({elapsed}s elapsed, provider: {ticker_provider}, model: {ticker_model})"
+                    );
+                }
+                _ = &mut stop_rx => {
+                    break;
                 }
             }
-        },
-    );
+        }
+    });
 
     let step_task = tokio::spawn(step_fn());
     let result = match tokio::time::timeout(WORK_ITEM_WATCHDOG, step_task).await {
@@ -3326,7 +3390,10 @@ fn work_item_target(
                 .map(ToOwned::to_owned)
                 .or_else(|| {
                     val.get("target")
-                        .and_then(|t| t.as_str().or_else(|| t.get("target").and_then(|x| x.as_str())))
+                        .and_then(|t| {
+                            t.as_str()
+                                .or_else(|| t.get("target").and_then(|x| x.as_str()))
+                        })
                         .map(ToOwned::to_owned)
                 })
         });
@@ -3698,6 +3765,15 @@ async fn execute_all_work(
 ) -> Result<String, argus_core::ArgusError> {
     let doc_res =
         execute_documentation_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
+    let internal_res = execute_documentation_policy_work(
+        root,
+        profile.clone(),
+        limit,
+        concurrency,
+        fail_fast,
+        true,
+    )
+    .await?;
     let corr_res =
         execute_correctness_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
     let arch_res =
@@ -3706,9 +3782,10 @@ async fn execute_all_work(
         execute_optimization_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
     let maint_res =
         execute_maintainability_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
-    let conf_res =
-        execute_conformance_work(root, profile, limit, concurrency, fail_fast).await?;
-    Ok(format!("{doc_res}\n{corr_res}\n{arch_res}\n{opt_res}\n{maint_res}\n{conf_res}"))
+    let conf_res = execute_conformance_work(root, profile, limit, concurrency, fail_fast).await?;
+    Ok(format!(
+        "{doc_res}\n{internal_res}\n{corr_res}\n{arch_res}\n{opt_res}\n{maint_res}\n{conf_res}"
+    ))
 }
 
 fn check_unadmitted_run_warning(
@@ -3721,7 +3798,7 @@ fn check_unadmitted_run_warning(
         tracing::warn!(
             run_id = %run_id,
             policy = policy_name,
-            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|correctness|architecture|optimization|maintainability|conformance|full>'?"
+            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|full>'?"
         );
     }
     Ok(())
@@ -3734,6 +3811,17 @@ async fn execute_documentation_work(
     limit: Option<usize>,
     concurrency: usize,
     fail_fast: bool,
+) -> Result<String, argus_core::ArgusError> {
+    execute_documentation_policy_work(root, profile, limit, concurrency, fail_fast, false).await
+}
+
+async fn execute_documentation_policy_work(
+    root: &std::path::Path,
+    profile: argus_provider::ProviderRuntimeProfile,
+    limit: Option<usize>,
+    concurrency: usize,
+    fail_fast: bool,
+    internal: bool,
 ) -> Result<String, argus_core::ArgusError> {
     let queue = std::sync::Arc::new(working_queue(root)?);
     let run_id = current_run(root)?;
@@ -3786,7 +3874,12 @@ async fn execute_documentation_work(
                 audit_snapshot: run.snapshot.clone(),
                 audit_run: run.id,
                 provenance: argus_workflow::OutcomeProvenance {
-                    prompt_version: "documentation-review@4".to_owned(),
+                    prompt_version: if internal {
+                        "internal-documentation-review@1"
+                    } else {
+                        "documentation-review@4"
+                    }
+                    .to_owned(),
                     actor_id: "argus.review".to_owned(),
                     actor_version: "1.0.0".to_owned(),
                     workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),
@@ -3795,8 +3888,13 @@ async fn execute_documentation_work(
                 },
                 max_output_tokens,
             },
-            adapter: "rust".to_owned(),
-            policy: "documentation-public-api@1".to_owned(),
+            adapter: "workspace".to_owned(),
+            policy: if internal {
+                "documentation-internal@1"
+            } else {
+                "documentation-public-api@1"
+            }
+            .to_owned(),
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
         },
@@ -3804,8 +3902,16 @@ async fn execute_documentation_work(
 
     let catalog = std::sync::Arc::new(TargetCatalog::load(root, Some(&run.snapshot.to_string())));
     execute_concurrent_worker_pool(
-        "documentation",
-        "Documentation",
+        if internal {
+            "internal-documentation"
+        } else {
+            "documentation"
+        },
+        if internal {
+            "Internal documentation"
+        } else {
+            "Documentation"
+        },
         concurrency,
         limit,
         &provider_identity.provider,
@@ -3901,7 +4007,7 @@ async fn execute_correctness_work(
                 },
                 max_output_tokens,
             },
-            adapter: "rust".to_owned(),
+            adapter: "workspace".to_owned(),
             policy: "correctness-conservative@1".to_owned(),
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
@@ -4007,7 +4113,7 @@ async fn execute_architecture_work(
                 },
                 max_output_tokens,
             },
-            adapter: "rust".to_owned(),
+            adapter: "workspace".to_owned(),
             policy: "architecture-code-derived@1".to_owned(),
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
@@ -4113,7 +4219,7 @@ async fn execute_optimization_work(
                 },
                 max_output_tokens,
             },
-            adapter: "rust".to_owned(),
+            adapter: "workspace".to_owned(),
             policy: "optimization-conservative@1".to_owned(),
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
@@ -4219,7 +4325,7 @@ async fn execute_maintainability_work(
                 },
                 max_output_tokens,
             },
-            adapter: "rust".to_owned(),
+            adapter: "workspace".to_owned(),
             policy: "maintainability-conservative@1".to_owned(),
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
@@ -4325,7 +4431,7 @@ async fn execute_conformance_work(
                 },
                 max_output_tokens,
             },
-            adapter: "rust".to_owned(),
+            adapter: "workspace".to_owned(),
             policy: "conformance-design-aligned@1".to_owned(),
             lease_duration_millis: 120_000,
             maximum_attempts: 3,
@@ -4601,12 +4707,8 @@ fn run_command(
     let explicit_config = config_arg.as_deref().map(std::path::Path::new);
     let project_config = load_project_config(root, explicit_config)?;
     let pipe_name = "full";
-    let resolved_thresholds = resolve_thresholds_path(
-        root,
-        pipe_name,
-        thresholds_arg.as_deref(),
-        &project_config,
-    );
+    let resolved_thresholds =
+        resolve_thresholds_path(root, pipe_name, thresholds_arg.as_deref(), &project_config);
 
     if let Some(ref _t_path) = resolved_thresholds {
         let queue = working_queue(root)?;
@@ -4719,7 +4821,8 @@ fn prime_command(
         ));
     }
     initialize(root)?;
-    if adapter.as_deref() == Some("rust") && relationships.is_none() {
+    let _inventory_lock = inventory::lock(root)?;
+    if matches!(adapter.as_deref(), Some("rust" | "all")) && relationships.is_none() {
         let discovered = root.join(".argus/input/rust-relations.jsonl");
         if discovered.is_file() {
             relationships = Some(discovered);
@@ -4728,8 +4831,7 @@ fn prime_command(
 
     let is_treesitter_req = match adapter.as_deref() {
         Some(
-            "treesitter" | "go" | "c" | "cpp" | "c_sharp" | "haskell" | "zig" | "swift"
-            | "kotlin",
+            "treesitter" | "go" | "c" | "cpp" | "c_sharp" | "haskell" | "zig" | "swift" | "kotlin",
         ) => true,
         Some(s) if s.starts_with("treesitter:") => true,
         _ => false,
@@ -4741,6 +4843,14 @@ fn prime_command(
         )));
     }
 
+    // Cargo may create Cargo.lock. Resolve metadata before capturing immutable source bytes.
+    let captured_metadata = if matches!(adapter.as_deref(), Some("rust" | "all"))
+        && root.join("Cargo.toml").is_file()
+    {
+        Some(cargo_metadata(root)?)
+    } else {
+        None
+    };
     let snapshot = argus_snapshot::capture_snapshot(
         root,
         &root.join(".argus/state/sources"),
@@ -4797,8 +4907,7 @@ fn prime_command(
     #[cfg(feature = "treesitter")]
     let should_run_treesitter = match adapter.as_deref() {
         Some(
-            "treesitter" | "go" | "c" | "cpp" | "c_sharp" | "haskell" | "zig" | "swift"
-            | "kotlin",
+            "treesitter" | "go" | "c" | "cpp" | "c_sharp" | "haskell" | "zig" | "swift" | "kotlin",
         ) => true,
         Some(s) if s.starts_with("treesitter:") => true,
         Some("all") => {
@@ -4826,37 +4935,27 @@ fn prime_command(
     #[cfg(not(feature = "treesitter"))]
     let should_run_treesitter = false;
 
-    let metadata = if should_run_rust && root.join("Cargo.toml").is_file() {
-        cargo_metadata(root).ok()
+    let metadata = if should_run_rust {
+        Some(captured_metadata.ok_or_else(|| {
+            argus_core::ArgusError::invalid_input(
+                "Rust discovery requires a Cargo.toml workspace; cannot silently omit Rust",
+            )
+        })?)
     } else {
         None
     };
 
-    let inventory_count = if should_run_rust || should_run_ts || should_run_python || should_run_java || should_run_treesitter {
+    let inventory_count = if should_run_rust
+        || should_run_ts
+        || should_run_python
+        || should_run_java
+        || should_run_treesitter
+    {
         let repository =
             argus_snapshot::SnapshotRepository::open(root.join(".argus/state/sources"))?;
         let source = SnapshotSource(repository.reader(snapshot.clone()));
-        let mut sink = JsonLinesInventorySink::new(root, &source)?;
-
-        let adapter_identity = if adapter.as_deref() == Some("all") {
-            argus_language::AdapterIdentity {
-                name: "all".to_owned(),
-                version: "1.0.0".to_owned(),
-            }
-        } else if let Some(ref ad) = adapter {
-            argus_language::AdapterIdentity {
-                name: ad.clone(),
-                version: "1.0.0".to_owned(),
-            }
-        } else {
-            argus_language::AdapterIdentity {
-                name: "discovered".to_owned(),
-                version: "1.0.0".to_owned(),
-            }
-        };
-
-        sink.begin(adapter_identity, snapshot.id.clone())?;
-
+        let mut publication =
+            inventory::Publication::new(root, &source, snapshot.configuration.id.clone())?;
         if let Some(metadata) = metadata {
             let rust = argus_rust::RustWorkspaceAdapter::new(
                 metadata,
@@ -4889,7 +4988,17 @@ fn prime_command(
                     .relations
                     .dedup_by(|left, right| left.id == right.id);
             }
-            append_inventory_items(&mut sink, inventory)?;
+            publication.add(
+                inventory,
+                relationships
+                    .as_deref()
+                    .map(std::fs::read)
+                    .transpose()
+                    .map_err(io_error("cannot read semantic input"))?
+                    .as_deref()
+                    .unwrap_or_default(),
+                "default",
+            )?;
         }
 
         if should_run_ts {
@@ -4899,7 +5008,7 @@ fn prime_command(
                 candidate_files,
             );
             let inventory = ts.inventory(&source)?;
-            append_inventory_items(&mut sink, inventory)?;
+            publication.add(inventory, &[], "default")?;
         }
 
         if should_run_python {
@@ -4909,7 +5018,7 @@ fn prime_command(
                 candidate_files,
             );
             let inventory = py.inventory(&source)?;
-            append_inventory_items(&mut sink, inventory)?;
+            publication.add(inventory, &[], "default")?;
         }
 
         if should_run_java {
@@ -4919,7 +5028,7 @@ fn prime_command(
                 candidate_files,
             );
             let inventory = java.inventory(&source)?;
-            append_inventory_items(&mut sink, inventory)?;
+            publication.add(inventory, &[], "default")?;
         }
 
         #[cfg(feature = "treesitter")]
@@ -4957,17 +5066,20 @@ fn prime_command(
                 Some(other) => Some(other.to_owned()),
                 None => None,
             };
+            let selection = serde_json::to_string(&candidate_files).map_err(|e| {
+                argus_core::ArgusError::invariant("cannot identify Tree-sitter selection")
+                    .with_source(e)
+            })?;
             let ts_adapter = argus_treesitter::TreeSitterWorkspaceAdapter::new(
                 snapshot.configuration.id.clone(),
                 candidate_files,
                 ts_lang,
             );
             let inventory = ts_adapter.inventory(&source)?;
-            append_inventory_items(&mut sink, inventory)?;
+            publication.add(inventory, &[], &selection)?;
         }
 
-        sink.finish()?;
-        sink.target_count()
+        publication.finish()?
     } else {
         0
     };
@@ -4984,6 +5096,7 @@ fn prime_command(
         updated_at_millis: timestamp,
         finalized_at_millis: None,
     };
+    inventory::pin_prime(root, &run)?;
     working_queue(root)?.create_run(&run)?;
     std::fs::write(root.join(".argus/state/current-run"), run.id.as_str())
         .map_err(io_error("cannot update current run pointer"))?;
@@ -5154,7 +5267,11 @@ fn finalize_command(
     let is_documentation = records
         .work
         .iter()
-        .any(|w| w.coverage.policy.starts_with("documentation"));
+        .any(|w| w.coverage.policy == "documentation-public-api@1");
+    let is_internal_documentation = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy == "documentation-internal@1");
     let is_optimization = records
         .work
         .iter()
@@ -5168,8 +5285,42 @@ fn finalize_command(
         .iter()
         .any(|w| w.coverage.policy.starts_with("conformance"));
 
+    if inventory::has_run(root, &id) {
+        let selected = inventory::for_run(root, &id, None)?;
+        std::fs::write(
+            destination.join("inventory.json"),
+            serde_json::to_vec_pretty(&selected.manifest).map_err(|e| {
+                argus_core::ArgusError::invariant("cannot serialize report inventory")
+                    .with_source(e)
+            })?,
+        )
+        .map_err(io_error("cannot write report inventory"))?;
+        std::fs::write(
+            destination.join("inventory.txt"),
+            inventory::describe(&selected),
+        )
+        .map_err(io_error("cannot write inventory coverage"))?;
+    }
     let mut report_summaries = Vec::new();
-    if is_documentation || (!is_architecture && !is_correctness && !is_optimization && !is_maintainability && !is_conformance) {
+    if is_internal_documentation {
+        let report = argus_report::write_documentation_bundle_reports(
+            &destination,
+            id.clone(),
+            "documentation-internal@1",
+        )?;
+        report_summaries.push(format!(
+            "{} internal documentation assessments",
+            report.assessments.len()
+        ));
+    }
+    if is_documentation
+        || (!is_internal_documentation
+            && !is_architecture
+            && !is_correctness
+            && !is_optimization
+            && !is_maintainability
+            && !is_conformance)
+    {
         let report = argus_report::write_documentation_bundle_reports(
             &destination,
             id.clone(),
@@ -5640,6 +5791,47 @@ fn clean_command(
 #[allow(clippy::too_many_lines)]
 pub(crate) fn report_command(
     root: &std::path::Path,
+    args: impl Iterator<Item = String>,
+) -> Result<String, argus_core::ArgusError> {
+    let args: Vec<String> = args.collect();
+    let output = report_command_inner(root, args.clone().into_iter())?;
+    if args.iter().any(|a| is_help_flag(Some(a))) {
+        return Ok(output);
+    }
+    let run = match args.first().filter(|a| !a.starts_with('-')) {
+        Some(id) => id.parse()?,
+        None => current_run(root)?,
+    };
+    if !inventory::has_run(root, &run) {
+        return Ok(output);
+    }
+    let inventory = inventory::for_run(root, &run, None)?;
+    let format = args
+        .windows(2)
+        .find(|pair| pair[0] == "--format")
+        .map_or("markdown", |pair| pair[1].as_str());
+    match format {
+        "json" => {
+            let mut value: serde_json::Value = serde_json::from_str(&output).map_err(|e| {
+                argus_core::ArgusError::invariant("invalid generated JSON report").with_source(e)
+            })?;
+            value["inventory"] = serde_json::to_value(&inventory.manifest).map_err(|e| {
+                argus_core::ArgusError::invariant("cannot serialize inventory scope").with_source(e)
+            })?;
+            serde_json::to_string_pretty(&value).map_err(|e| {
+                argus_core::ArgusError::invariant("cannot serialize report scope").with_source(e)
+            })
+        }
+        "markdown" => Ok(format!(
+            "Inventory scope:\n\n```text\n{}\n```\n\n{output}",
+            inventory::describe(&inventory)
+        )),
+        _ => Ok(output),
+    }
+}
+
+fn report_command_inner(
+    root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
     let usage = "usage: argus report [run-id] [--baseline <run-id>] [--format <markdown|html|sarif|json|jsonl|backlog|beads>] [--html <path>] [--sarif <path>] [--dimension <dimension>] [--severity <severity>] [--gaps-only]";
@@ -5769,10 +5961,11 @@ pub(crate) fn report_command(
     let queue = working_queue(root)?;
 
     if format == "html" || html_output_path.is_some() {
-        let findings = argus_report::extract_all_findings_from_queue(&queue, &id).or_else(|_| {
-            let bundle_dir = root.join(".argus/reviews").join(id.as_str());
-            argus_report::extract_all_findings_from_bundle(&bundle_dir, &id)
-        })?;
+        let findings =
+            argus_report::extract_all_findings_from_queue(&queue, &id).or_else(|_| {
+                let bundle_dir = root.join(".argus/reviews").join(id.as_str());
+                argus_report::extract_all_findings_from_bundle(&bundle_dir, &id)
+            })?;
         let mut filtered = findings;
         if let Some(sev) = severity_filter {
             filtered.retain(|f| f.severity == sev);
@@ -5805,10 +5998,11 @@ pub(crate) fn report_command(
     }
 
     if format == "sarif" || sarif_output_path.is_some() {
-        let findings = argus_report::extract_all_findings_from_queue(&queue, &id).or_else(|_| {
-            let bundle_dir = root.join(".argus/reviews").join(id.as_str());
-            argus_report::extract_all_findings_from_bundle(&bundle_dir, &id)
-        })?;
+        let findings =
+            argus_report::extract_all_findings_from_queue(&queue, &id).or_else(|_| {
+                let bundle_dir = root.join(".argus/reviews").join(id.as_str());
+                argus_report::extract_all_findings_from_bundle(&bundle_dir, &id)
+            })?;
         let mut filtered = findings;
         if let Some(sev) = severity_filter {
             filtered.retain(|f| f.severity == sev);
@@ -5847,7 +6041,11 @@ pub(crate) fn report_command(
     let is_documentation = records
         .work
         .iter()
-        .any(|w| w.coverage.policy.starts_with("documentation"));
+        .any(|w| w.coverage.policy == "documentation-public-api@1");
+    let is_internal_documentation = records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy == "documentation-internal@1");
     let is_optimization = records
         .work
         .iter()
@@ -5860,9 +6058,19 @@ pub(crate) fn report_command(
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("conformance"));
+    let internal_documentation = is_internal_documentation
+        .then(|| {
+            argus_report::documentation_report_from_queue(
+                &queue,
+                id.clone(),
+                "documentation-internal@1",
+            )
+        })
+        .transpose()?;
     let policy_count = usize::from(is_architecture)
         + usize::from(is_correctness)
         + usize::from(is_documentation)
+        + usize::from(is_internal_documentation)
         + usize::from(is_optimization)
         + usize::from(is_maintainability)
         + usize::from(is_conformance);
@@ -5924,7 +6132,7 @@ pub(crate) fn report_command(
             .transpose()?;
 
         let mut backlog = argus_report::extract_backlog_report(
-            id,
+            id.clone(),
             documentation.as_ref(),
             correctness.as_ref(),
             architecture.as_ref(),
@@ -5933,6 +6141,21 @@ pub(crate) fn report_command(
             conformance.as_ref(),
         );
 
+        if let Some(report) = &internal_documentation {
+            let mut internal = argus_report::extract_backlog_report(
+                id.clone(),
+                Some(report),
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
+            for item in &mut internal.items {
+                item.policy = "internal-documentation".to_owned();
+            }
+            backlog.items.extend(internal.items);
+        }
         if let Some(sev) = severity_filter {
             backlog.items.retain(|item| item.severity == sev);
         }
@@ -6031,6 +6254,7 @@ pub(crate) fn report_command(
             "json" => serde_json::to_string_pretty(&serde_json::json!({
                 "run_id": id,
                 "documentation": documentation,
+                "internal_documentation": internal_documentation,
                 "correctness": correctness,
                 "architecture": architecture,
                 "optimization": optimization,
@@ -6043,6 +6267,9 @@ pub(crate) fn report_command(
             }),
             "jsonl" => {
                 let mut lines = Vec::new();
+                if let Some(report) = &internal_documentation {
+                    lines.extend(report.finding_clusters.iter().map(|finding| serde_json::json!({"policy": "internal-documentation", "finding": finding})));
+                }
                 if let Some(report) = &documentation {
                     lines.extend(report.finding_clusters.iter().map(|finding| {
                         serde_json::json!({"policy": "documentation", "finding": finding})
@@ -6085,6 +6312,7 @@ pub(crate) fn report_command(
             }
             _ => Ok([
                 documentation.map(|report| report.to_markdown()),
+                internal_documentation.map(|report| report.to_markdown()),
                 correctness.map(|report| report.to_markdown()),
                 architecture.map(|report| report.to_markdown()),
                 optimization.map(|report| report.to_markdown()),
@@ -6200,8 +6428,11 @@ pub(crate) fn report_command(
             _ => Ok(report.to_markdown()),
         }
     } else if is_optimization {
-        let mut report =
-            argus_report::optimization_report_from_queue(&queue, id, "optimization-conservative@1")?;
+        let mut report = argus_report::optimization_report_from_queue(
+            &queue,
+            id,
+            "optimization-conservative@1",
+        )?;
 
         if let Some(dim_name) = dimension_str {
             let dim: argus_policies::OptimizationDimension = serde_json::from_value(
@@ -6249,8 +6480,11 @@ pub(crate) fn report_command(
             _ => Ok(report.to_markdown()),
         }
     } else if is_maintainability {
-        let mut report =
-            argus_report::maintainability_report_from_queue(&queue, id, "maintainability-conservative@1")?;
+        let mut report = argus_report::maintainability_report_from_queue(
+            &queue,
+            id,
+            "maintainability-conservative@1",
+        )?;
 
         if let Some(dim_name) = dimension_str {
             let dim: argus_policies::MaintainabilityDimension = serde_json::from_value(
@@ -6298,8 +6532,11 @@ pub(crate) fn report_command(
             _ => Ok(report.to_markdown()),
         }
     } else if is_conformance {
-        let mut report =
-            argus_report::conformance_report_from_queue(&queue, id, "conformance-design-aligned@1")?;
+        let mut report = argus_report::conformance_report_from_queue(
+            &queue,
+            id,
+            "conformance-design-aligned@1",
+        )?;
 
         if let Some(dim_name) = dimension_str {
             let dim: argus_policies::ConformanceDimension = serde_json::from_value(
@@ -6350,7 +6587,11 @@ pub(crate) fn report_command(
         let mut report = argus_report::documentation_report_from_queue(
             &queue,
             id,
-            "documentation-public-api@1",
+            if is_internal_documentation {
+                "documentation-internal@1"
+            } else {
+                "documentation-public-api@1"
+            },
         )?;
 
         if let Some(dim_name) = dimension_str {
@@ -6543,18 +6784,14 @@ pub(crate) fn publish_command(
             .count();
         let mut out = format!(
             "[Dry Run] Publication preview for run {id} to {target}\nTotal findings evaluated: {}\nItems to publish: {}\nSkipped duplicates: {}\nReceipt digest: {}\n\n",
-            receipt.total_findings,
-            dry_run_count,
-            receipt.skipped_count,
-            receipt.receipt_digest
+            receipt.total_findings, dry_run_count, receipt.skipped_count, receipt.receipt_digest
         );
         out.push_str(&script);
         return Ok(out);
     }
 
-    let receipt_path = custom_receipt_path.unwrap_or_else(|| {
-        pub_dir.join(format!("{}-{}.json", id, target))
-    });
+    let receipt_path =
+        custom_receipt_path.unwrap_or_else(|| pub_dir.join(format!("{}-{}.json", id, target)));
 
     if let Some(parent) = receipt_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -6721,6 +6958,15 @@ pub(crate) fn adjudicate_command(
             .any(|cluster| cluster.id == finding)
     };
 
+    let finding_exists = finding_exists
+        || argus_report::documentation_report_from_queue(
+            &queue,
+            run_id.clone(),
+            "documentation-internal@1",
+        )?
+        .finding_clusters
+        .iter()
+        .any(|cluster| cluster.id == finding);
     if !finding_exists {
         return Err(argus_core::ArgusError::invalid_input(
             "finding is not present in the audit report for this run",
@@ -6753,13 +6999,14 @@ fn evaluate_command(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    let usage = "usage: argus evaluate <documentation|correctness|architecture|optimization|maintainability|conformance> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]";
+    let usage = "usage: argus evaluate <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]";
     let first = args.next();
     if is_help_flag(first.as_deref()) {
         return Ok(HELP_EVALUATE.to_owned());
     }
     let pipeline = match first.as_deref() {
         Some("documentation") => "documentation",
+        Some("internal-documentation") => "internal-documentation",
         Some("correctness") => "correctness",
         Some("architecture") => "architecture",
         Some("optimization") | Some("performance") => "optimization",
@@ -6846,12 +7093,8 @@ fn evaluate_command(
 
     let explicit_config = config_path.as_deref().map(std::path::Path::new);
     let project_config = load_project_config(root, explicit_config)?;
-    let resolved_thresholds = resolve_thresholds_path(
-        root,
-        pipeline,
-        thresholds_path.as_deref(),
-        &project_config,
-    );
+    let resolved_thresholds =
+        resolve_thresholds_path(root, pipeline, thresholds_path.as_deref(), &project_config);
 
     if ci_mode && resolved_thresholds.is_none() {
         return Err(argus_core::ArgusError::invalid_input(format!(
@@ -6861,7 +7104,7 @@ fn evaluate_command(
 
     let queue = working_queue(root)?;
 
-    if pipeline == "documentation" {
+    if matches!(pipeline, "documentation" | "internal-documentation") {
         let corpus: argus_report::DocumentationEvaluationCorpus = serde_json::from_slice(
             &std::fs::read(path)
                 .map_err(io_error("cannot read documentation evaluation corpus"))?,
@@ -6980,13 +7223,15 @@ fn evaluate_command(
         let evaluation = argus_report::evaluate_optimization(&corpus, &reports, &adjudications)?;
 
         if let Some(ref t_path) = resolved_thresholds {
-            let thresholds: argus_report::OptimizationEvaluationThresholds = serde_json::from_slice(
-                &std::fs::read(t_path).map_err(io_error("cannot read evaluation thresholds"))?,
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
-                    .with_source(error)
-            })?;
+            let thresholds: argus_report::OptimizationEvaluationThresholds =
+                serde_json::from_slice(
+                    &std::fs::read(t_path)
+                        .map_err(io_error("cannot read evaluation thresholds"))?,
+                )
+                .map_err(|error| {
+                    argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
+                        .with_source(error)
+                })?;
             if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
                 return Err(argus_core::ArgusError::invalid_input(format!(
                     "Optimization evaluation quality thresholds unmet:\n  - {}",
@@ -7007,7 +7252,8 @@ fn evaluate_command(
         }
     } else if pipeline == "maintainability" {
         let corpus: argus_report::MaintainabilityEvaluationCorpus = serde_json::from_slice(
-            &std::fs::read(path).map_err(io_error("cannot read maintainability evaluation corpus"))?,
+            &std::fs::read(path)
+                .map_err(io_error("cannot read maintainability evaluation corpus"))?,
         )
         .map_err(|error| {
             argus_core::ArgusError::invalid_input("maintainability evaluation corpus is invalid")
@@ -7027,13 +7273,15 @@ fn evaluate_command(
         let evaluation = argus_report::evaluate_maintainability(&corpus, &reports, &adjudications)?;
 
         if let Some(ref t_path) = resolved_thresholds {
-            let thresholds: argus_report::MaintainabilityEvaluationThresholds = serde_json::from_slice(
-                &std::fs::read(t_path).map_err(io_error("cannot read evaluation thresholds"))?,
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
-                    .with_source(error)
-            })?;
+            let thresholds: argus_report::MaintainabilityEvaluationThresholds =
+                serde_json::from_slice(
+                    &std::fs::read(t_path)
+                        .map_err(io_error("cannot read evaluation thresholds"))?,
+                )
+                .map_err(|error| {
+                    argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
+                        .with_source(error)
+                })?;
             if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
                 return Err(argus_core::ArgusError::invalid_input(format!(
                     "Maintainability evaluation quality thresholds unmet:\n  - {}",
@@ -7156,7 +7404,8 @@ fn design_command(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    let usage = "usage: argus design <index|health|drift> [--format <markdown|json>] [--registry <path>]";
+    let usage =
+        "usage: argus design <index|health|drift> [--format <markdown|json>] [--registry <path>]";
     let first = args.next();
     if is_help_flag(first.as_deref()) {
         return Ok(HELP_DESIGN.to_owned());
@@ -7217,7 +7466,10 @@ fn design_command(
             } else {
                 let mut out = String::new();
                 out.push_str("# Design Artifacts Index\n\n");
-                out.push_str(&format!("Found {} design document(s):\n\n", artifacts.len()));
+                out.push_str(&format!(
+                    "Found {} design document(s):\n\n",
+                    artifacts.len()
+                ));
                 if artifacts.is_empty() {
                     out.push_str("No design artifacts found in workspace.\n");
                 } else {
@@ -7226,7 +7478,11 @@ fn design_command(
                     for a in &artifacts {
                         out.push_str(&format!(
                             "| {} | {} | {:?} | {:?} | {} |\n",
-                            a.id, a.title, a.kind, a.status, a.path.as_str()
+                            a.id,
+                            a.title,
+                            a.kind,
+                            a.status,
+                            a.path.as_str()
                         ));
                     }
                 }
@@ -7260,10 +7516,7 @@ fn design_command(
                     out.push_str("| Severity | Kind | Artifact | Message |\n");
                     out.push_str("|---|---|---|---|\n");
                     for issue in &issues {
-                        let artifact = issue
-                            .artifact_id
-                            .as_ref()
-                            .map_or("-", |id| id.as_str());
+                        let artifact = issue.artifact_id.as_ref().map_or("-", |id| id.as_str());
                         out.push_str(&format!(
                             "| {:?} | {:?} | {} | {} |\n",
                             issue.severity, issue.kind, artifact, issue.message
@@ -7278,11 +7531,7 @@ fn design_command(
                 || root.join(".argus/config/accepted-drift.json"),
                 |p| {
                     let pb = std::path::PathBuf::from(p);
-                    if pb.is_absolute() {
-                        pb
-                    } else {
-                        root.join(pb)
-                    }
+                    if pb.is_absolute() { pb } else { root.join(pb) }
                 },
             );
             let registry: argus_policies::AcceptedDriftRegistry = if reg_file.is_file() {
@@ -7345,6 +7594,13 @@ fn parse_run_id(
 }
 
 pub(crate) fn status_command(root: &std::path::Path) -> Result<String, argus_core::ArgusError> {
+    status_command_with_adapter(root, None)
+}
+
+fn status_command_with_adapter(
+    root: &std::path::Path,
+    adapter: Option<&str>,
+) -> Result<String, argus_core::ArgusError> {
     let queue = working_queue(root)?;
     let now = now_millis()?;
     let telemetry = queue.telemetry(now)?;
@@ -7494,6 +7750,13 @@ pub(crate) fn status_command(root: &std::path::Path) -> Result<String, argus_cor
     append_review_workflows_status(root, &queue, &mut output)?;
     append_architecture_status(root, &queue, &mut output)?;
     append_work_errors_summary(root, &queue, &mut output)?;
+    if current_run(root).is_ok() {
+        match inventory::load(root, adapter) {
+            Ok(inventory) => output.push_str(&format!("\n{}\n", inventory::describe(&inventory))),
+            Err(error) if adapter.is_some() => return Err(error),
+            Err(error) => output.push_str(&format!("\nInventory unavailable: {error}\n")),
+        }
+    }
     Ok(output.trim_end().to_owned())
 }
 
@@ -7591,8 +7854,7 @@ fn append_review_workflows_status(
         }
     }
 
-    writeln!(output, "\nReview workflows:")
-        .expect("writing to a String cannot fail");
+    writeln!(output, "\nReview workflows:").expect("writing to a String cannot fail");
 
     for (policy, counts) in &counts_by_policy {
         let label = if policy.starts_with("documentation") {
@@ -8900,6 +9162,13 @@ fn provider_test_command(
     let mut target_items: Vec<ProviderTestTargetItem> = Vec::new();
 
     if let Some(ref prov_spec) = provider_arg {
+        if let (Some((_, colon_m)), Some(m)) = (prov_spec.split_once(':'), model_arg.as_deref()) {
+            if !colon_m.trim().eq_ignore_ascii_case(m.trim()) {
+                return Err(argus_core::ArgusError::invalid_input(format!(
+                    "conflicting model specified in provider spec `{prov_spec}` and --model `{m}`"
+                )));
+            }
+        }
         let (path, config_opt, profile_opt) =
             load_provider_spec(root, prov_spec, &search_dirs, env_config_dir)?;
         if let Some(config) = config_opt {
@@ -10788,8 +11057,15 @@ mod tests {
             temporary.path(),
         )
         .unwrap_err();
-        assert_eq!(ci_missing_thresholds.code(), argus_core::ErrorCode::InvalidInput);
-        assert!(ci_missing_thresholds.to_string().contains("CI gate failure: no quality thresholds configured"));
+        assert_eq!(
+            ci_missing_thresholds.code(),
+            argus_core::ErrorCode::InvalidInput
+        );
+        assert!(
+            ci_missing_thresholds
+                .to_string()
+                .contains("CI gate failure: no quality thresholds configured")
+        );
 
         // 2. Configure default thresholds in .argus/config/documentation-thresholds.json
         let config_dir = temporary.path().join(".argus/config");
@@ -10814,14 +11090,21 @@ mod tests {
                 "--corpus".to_owned(),
                 corpus_path.display().to_string(),
                 "--thresholds".to_owned(),
-                config_dir.join("documentation-thresholds.json").display().to_string(),
+                config_dir
+                    .join("documentation-thresholds.json")
+                    .display()
+                    .to_string(),
                 run_id.clone(),
             ]
             .into_iter(),
             temporary.path(),
         )
         .unwrap_err();
-        assert!(non_ci_failure.to_string().contains("precision was unmeasured"));
+        assert!(
+            non_ci_failure
+                .to_string()
+                .contains("precision was unmeasured")
+        );
 
         // CI evaluation with auto-discovered thresholds passes without blocking on human adjudication
         let ci_success = run(
@@ -10866,7 +11149,11 @@ mod tests {
             temporary.path(),
         )
         .unwrap_err();
-        assert!(ci_failure.to_string().contains("recall 0.00% is below threshold 90.00%"));
+        assert!(
+            ci_failure
+                .to_string()
+                .contains("recall 0.00% is below threshold 90.00%")
+        );
     }
 
     #[test]
@@ -10878,9 +11165,22 @@ mod tests {
         )
         .unwrap();
         std::fs::create_dir_all(temporary.path().join("src")).unwrap();
-        std::fs::write(temporary.path().join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        std::fs::write(
+            temporary.path().join("src/lib.rs"),
+            b"pub fn fixture() {}\n",
+        )
+        .unwrap();
 
-        run(["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(), temporary.path()).unwrap();
+        run(
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "rust".to_owned(),
+            ]
+            .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
 
         // Test `audit --ci`
         let audit_out = run(
@@ -11784,7 +12084,11 @@ mod tests {
             temporary.path(),
         )
         .unwrap_err();
-        assert!(err_unavail.to_string().contains("not found for provider `bedrock`"));
+        assert!(
+            err_unavail
+                .to_string()
+                .contains("not found for provider `bedrock`")
+        );
     }
 
     #[test]
@@ -12187,10 +12491,18 @@ mod tests {
     #[test]
     fn clean_command_dry_run_and_help() {
         let temporary = tempfile::tempdir().unwrap();
-        let help = run(["clean".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        let help = run(
+            ["clean".to_owned(), "--help".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
         assert!(help.contains("Safely prune intermediate state"));
 
-        let help_topic = run(["help".to_owned(), "clean".to_owned()].into_iter(), temporary.path()).unwrap();
+        let help_topic = run(
+            ["help".to_owned(), "clean".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
         assert_eq!(help, help_topic);
 
         let err = run(["clean".to_owned()].into_iter(), temporary.path()).unwrap_err();
@@ -12201,7 +12513,11 @@ mod tests {
             temporary.path(),
         )
         .unwrap_err();
-        assert!(err_reviews.to_string().contains("--reviews requires an explicit --retention"));
+        assert!(
+            err_reviews
+                .to_string()
+                .contains("--reviews requires an explicit --retention")
+        );
     }
 
     #[test]
@@ -12241,7 +12557,12 @@ mod tests {
 
         // Dry-run preview
         let dry_output = run(
-            ["clean".to_owned(), "--state".to_owned(), "--dry-run".to_owned()].into_iter(),
+            [
+                "clean".to_owned(),
+                "--state".to_owned(),
+                "--dry-run".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -12307,13 +12628,21 @@ mod tests {
         queue.record_adjudication(&adj, None).unwrap();
 
         // Also add an unreferenced transcript artifact
-        let artifact = queue.store_artifact("model-transcript.v1", b"prompt transcript").unwrap();
+        let artifact = queue
+            .store_artifact("model-transcript.v1", b"prompt transcript")
+            .unwrap();
         assert!(queue.artifact(&artifact.reference).unwrap().is_some());
         drop(queue);
 
         // Run standard `argus clean --all` (must preserve reviews and adjudications)
         let output = run(
-            ["clean".to_owned(), "--all".to_owned(), "--format".to_owned(), "json".to_owned()].into_iter(),
+            [
+                "clean".to_owned(),
+                "--all".to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -12325,13 +12654,19 @@ mod tests {
         assert!(reviews_dir.join("report.md").exists());
 
         // Adjudication in working.redb must STILL exist!
-        let reopened_queue = argus_storage::DurableQueue::open(&state_dir.join("working.redb")).unwrap();
+        let reopened_queue =
+            argus_storage::DurableQueue::open(&state_dir.join("working.redb")).unwrap();
         let adjs = reopened_queue.adjudications(&run_id).unwrap();
         assert_eq!(adjs.len(), 1);
         assert_eq!(adjs[0].reviewer, "test-reviewer");
 
         // The unreferenced artifact was pruned
-        assert!(reopened_queue.artifact(&artifact.reference).unwrap().is_none());
+        assert!(
+            reopened_queue
+                .artifact(&artifact.reference)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -12350,7 +12685,12 @@ mod tests {
         .unwrap();
 
         let output = run(
-            ["prime".to_owned(), "--adapter".to_owned(), "typescript".to_owned()].into_iter(),
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "typescript".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -12359,14 +12699,16 @@ mod tests {
         assert!(temporary.path().join(".argus/state/sources").exists());
         assert!(temporary.path().join(".argus/state/current-run").exists());
 
-        let run_id = std::fs::read_to_string(temporary.path().join(".argus/state/current-run")).unwrap();
+        let run_id =
+            std::fs::read_to_string(temporary.path().join(".argus/state/current-run")).unwrap();
         assert!(!run_id.trim().is_empty());
 
-        let snapshot_dir = std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
+        let snapshot_dir =
+            std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
         let mut found_inventory = false;
         for entry in snapshot_dir {
             let entry = entry.unwrap();
-            let stream_file = entry.path().join("rust.jsonl");
+            let stream_file = entry.path().join("typescript.jsonl");
             if stream_file.exists() {
                 let content = std::fs::read_to_string(stream_file).unwrap();
                 if content.contains("ts-test-app") && content.contains("hello") {
@@ -12375,7 +12717,10 @@ mod tests {
                 }
             }
         }
-        assert!(found_inventory, "TypeScript inventory targets found in stream");
+        assert!(
+            found_inventory,
+            "TypeScript inventory targets found in stream"
+        );
     }
 
     #[test]
@@ -12394,7 +12739,12 @@ mod tests {
         .unwrap();
 
         let output = run(
-            ["prime".to_owned(), "--adapter".to_owned(), "python".to_owned()].into_iter(),
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "python".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -12403,14 +12753,16 @@ mod tests {
         assert!(temporary.path().join(".argus/state/sources").exists());
         assert!(temporary.path().join(".argus/state/current-run").exists());
 
-        let run_id = std::fs::read_to_string(temporary.path().join(".argus/state/current-run")).unwrap();
+        let run_id =
+            std::fs::read_to_string(temporary.path().join(".argus/state/current-run")).unwrap();
         assert!(!run_id.trim().is_empty());
 
-        let snapshot_dir = std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
+        let snapshot_dir =
+            std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
         let mut found_inventory = false;
         for entry in snapshot_dir {
             let entry = entry.unwrap();
-            let stream_file = entry.path().join("rust.jsonl");
+            let stream_file = entry.path().join("python.jsonl");
             if stream_file.exists() {
                 let content = std::fs::read_to_string(stream_file).unwrap();
                 if content.contains("py-test-app") && content.contains("hello") {
@@ -12450,7 +12802,12 @@ public class App {
         .unwrap();
 
         let output = run(
-            ["prime".to_owned(), "--adapter".to_owned(), "java".to_owned()].into_iter(),
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "java".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -12459,14 +12816,16 @@ public class App {
         assert!(temporary.path().join(".argus/state/sources").exists());
         assert!(temporary.path().join(".argus/state/current-run").exists());
 
-        let run_id = std::fs::read_to_string(temporary.path().join(".argus/state/current-run")).unwrap();
+        let run_id =
+            std::fs::read_to_string(temporary.path().join(".argus/state/current-run")).unwrap();
         assert!(!run_id.trim().is_empty());
 
-        let snapshot_dir = std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
+        let snapshot_dir =
+            std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
         let mut found_inventory = false;
         for entry in snapshot_dir {
             let entry = entry.unwrap();
-            let stream_file = entry.path().join("rust.jsonl");
+            let stream_file = entry.path().join("java.jsonl");
             if stream_file.exists() {
                 let content = std::fs::read_to_string(stream_file).unwrap();
                 if content.contains("test-service") && content.contains("App") {
@@ -12592,29 +12951,15 @@ public class App {
         assert!(temporary.path().join(".argus/state/sources").exists());
         assert!(temporary.path().join(".argus/state/current-run").exists());
 
-        let snapshot_dir = std::fs::read_dir(temporary.path().join(".argus/state/inventory")).unwrap();
-        let mut found_ts = false;
-        let mut found_py = false;
+        let inventory = load_inventory(temporary.path()).unwrap();
+        let found_ts = inventory.targets.iter().any(|t| t.name == "greet");
+        let found_py = inventory.targets.iter().any(|t| t.name == "process");
         #[cfg(feature = "treesitter")]
-        let mut found_go = false;
-
-        for entry in snapshot_dir {
-            let entry = entry.unwrap();
-            let stream_file = entry.path().join("rust.jsonl");
-            if stream_file.exists() {
-                let content = std::fs::read_to_string(stream_file).unwrap();
-                if content.contains("greet") {
-                    found_ts = true;
-                }
-                if content.contains("process") {
-                    found_py = true;
-                }
-                #[cfg(feature = "treesitter")]
-                if content.contains("main.go") {
-                    found_go = true;
-                }
-            }
-        }
+        let found_go = inventory.targets.iter().any(|t| {
+            t.location
+                .as_ref()
+                .is_some_and(|l| l.path.as_str() == "main.go")
+        });
         assert!(found_ts, "TypeScript targets must be in stream");
         assert!(found_py, "Python targets must be in stream");
         #[cfg(feature = "treesitter")]
@@ -12630,9 +12975,18 @@ public class App {
         )
         .unwrap();
         std::fs::create_dir_all(temporary.path().join("src")).unwrap();
-        std::fs::write(temporary.path().join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        std::fs::write(
+            temporary.path().join("src/lib.rs"),
+            b"pub fn fixture() {}\n",
+        )
+        .unwrap();
         let primed = run(
-            ["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(),
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "rust".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -12725,9 +13079,18 @@ public class App {
         )
         .unwrap();
         std::fs::create_dir_all(temporary.path().join("src")).unwrap();
-        std::fs::write(temporary.path().join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        std::fs::write(
+            temporary.path().join("src/lib.rs"),
+            b"pub fn fixture() {}\n",
+        )
+        .unwrap();
         let primed = run(
-            ["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(),
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "rust".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -12807,7 +13170,11 @@ public class App {
         )
         .unwrap();
         std::fs::create_dir_all(temporary.path().join("src")).unwrap();
-        std::fs::write(temporary.path().join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        std::fs::write(
+            temporary.path().join("src/lib.rs"),
+            b"pub fn fixture() {}\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(temporary.path().join("docs")).unwrap();
         std::fs::write(
             temporary.path().join("docs/adr-0001.md"),
@@ -12816,7 +13183,12 @@ public class App {
         .unwrap();
 
         let primed = run(
-            ["prime".to_owned(), "--adapter".to_owned(), "rust".to_owned()].into_iter(),
+            [
+                "prime".to_owned(),
+                "--adapter".to_owned(),
+                "rust".to_owned(),
+            ]
+            .into_iter(),
             temporary.path(),
         )
         .unwrap();
@@ -12960,7 +13332,10 @@ public class App {
         let mut registry = argus_policies::AcceptedDriftRegistry::new();
         let record = argus_policies::AcceptedDriftRecord {
             id: "drift-001".to_owned(),
-            target_id: argus_core::TargetId::derive([b"rust".as_slice(), b"storage::buffer".as_slice()]),
+            target_id: argus_core::TargetId::derive([
+                b"rust".as_slice(),
+                b"storage::buffer".as_slice(),
+            ]),
             artifact_id: argus_core::DesignArtifactId::derive([b"ADR-0001".as_slice()]),
             owner: "architect@example.com".to_owned(),
             rationale: "Temporary memory buffer bypass for batch sync".to_owned(),
@@ -13005,23 +13380,39 @@ public class App {
         let temporary = tempfile::tempdir().unwrap();
 
         // 1. Audit help
-        let audit_help = run(["audit".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        let audit_help = run(
+            ["audit".to_owned(), "--help".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
         assert!(audit_help.contains("--ci-lite"));
         assert!(audit_help.contains("--baseline"));
         assert!(audit_help.contains("--incremental"));
 
         // 2. Work help
-        let work_help = run(["work".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        let work_help = run(
+            ["work".to_owned(), "--help".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
         assert!(work_help.contains("--incremental"));
 
         // 3. Run help
-        let run_help = run(["run".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        let run_help = run(
+            ["run".to_owned(), "--help".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
         assert!(run_help.contains("--ci-lite"));
         assert!(run_help.contains("--baseline"));
         assert!(run_help.contains("--incremental"));
 
         // 4. Report help
-        let report_help = run(["report".to_owned(), "--help".to_owned()].into_iter(), temporary.path()).unwrap();
+        let report_help = run(
+            ["report".to_owned(), "--help".to_owned()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
         assert!(report_help.contains("--baseline"));
     }
 
@@ -13045,29 +13436,25 @@ public class App {
             run_id: base_run_id.clone(),
             policy_version: "documentation-public-api@1".to_owned(),
             summary: argus_report::DocumentationReportSummary::default(),
-            finding_clusters: vec![
-                argus_report::DocumentationFindingCluster {
-                    id: argus_core::FindingId::derive([b"cluster-1".as_slice()]),
-                    representative: argus_policies::DocumentationCandidate {
-                        title: "Missing documentation for public function".to_owned(),
-                        description: "Public function lacks doc comment".to_owned(),
-                        severity: argus_core::Severity::High,
-                        confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
-                        dimensions: std::collections::BTreeSet::new(),
-                        citations: Vec::new(),
-                    },
-                    occurrences: vec![
-                        argus_report::DocumentationFindingOccurrence {
-                            work_item: argus_core::WorkItemId::derive([b"work-1".as_slice()]),
-                            target: argus_core::TargetId::derive([b"target-1".as_slice()]),
-                            finding_index: 0,
-                            severity: argus_core::Severity::High,
-                            confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
-                        },
-                    ],
-                    adjudication: argus_core::AdjudicationState::Unreviewed,
+            finding_clusters: vec![argus_report::DocumentationFindingCluster {
+                id: argus_core::FindingId::derive([b"cluster-1".as_slice()]),
+                representative: argus_policies::DocumentationCandidate {
+                    title: "Missing documentation for public function".to_owned(),
+                    description: "Public function lacks doc comment".to_owned(),
+                    severity: argus_core::Severity::High,
+                    confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
+                    dimensions: std::collections::BTreeSet::new(),
+                    citations: Vec::new(),
                 },
-            ],
+                occurrences: vec![argus_report::DocumentationFindingOccurrence {
+                    work_item: argus_core::WorkItemId::derive([b"work-1".as_slice()]),
+                    target: argus_core::TargetId::derive([b"target-1".as_slice()]),
+                    finding_index: 0,
+                    severity: argus_core::Severity::High,
+                    confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
+                }],
+                adjudication: argus_core::AdjudicationState::Unreviewed,
+            }],
             assessments: Vec::new(),
         };
 
@@ -13087,15 +13474,13 @@ public class App {
                         dimensions: std::collections::BTreeSet::new(),
                         citations: Vec::new(),
                     },
-                    occurrences: vec![
-                        argus_report::DocumentationFindingOccurrence {
-                            work_item: argus_core::WorkItemId::derive([b"work-2".as_slice()]),
-                            target: argus_core::TargetId::derive([b"target-1".as_slice()]),
-                            finding_index: 0,
-                            severity: argus_core::Severity::High,
-                            confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
-                        },
-                    ],
+                    occurrences: vec![argus_report::DocumentationFindingOccurrence {
+                        work_item: argus_core::WorkItemId::derive([b"work-2".as_slice()]),
+                        target: argus_core::TargetId::derive([b"target-1".as_slice()]),
+                        finding_index: 0,
+                        severity: argus_core::Severity::High,
+                        confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
+                    }],
                     adjudication: argus_core::AdjudicationState::Unreviewed,
                 },
                 argus_report::DocumentationFindingCluster {
@@ -13108,15 +13493,13 @@ public class App {
                         dimensions: std::collections::BTreeSet::new(),
                         citations: Vec::new(),
                     },
-                    occurrences: vec![
-                        argus_report::DocumentationFindingOccurrence {
-                            work_item: argus_core::WorkItemId::derive([b"work-3".as_slice()]),
-                            target: argus_core::TargetId::derive([b"target-2".as_slice()]),
-                            finding_index: 0,
-                            severity: argus_core::Severity::Critical,
-                            confidence: argus_core::Confidence::from_basis_points(9500).unwrap(),
-                        },
-                    ],
+                    occurrences: vec![argus_report::DocumentationFindingOccurrence {
+                        work_item: argus_core::WorkItemId::derive([b"work-3".as_slice()]),
+                        target: argus_core::TargetId::derive([b"target-2".as_slice()]),
+                        finding_index: 0,
+                        severity: argus_core::Severity::Critical,
+                        confidence: argus_core::Confidence::from_basis_points(9500).unwrap(),
+                    }],
                     adjudication: argus_core::AdjudicationState::Unreviewed,
                 },
             ],
@@ -13267,29 +13650,25 @@ public class App {
             run_id: run_id.clone(),
             policy_version: "documentation-public-api@1".to_owned(),
             summary: argus_report::DocumentationReportSummary::default(),
-            finding_clusters: vec![
-                argus_report::DocumentationFindingCluster {
-                    id: cluster_id,
-                    representative: argus_policies::DocumentationCandidate {
-                        title: "Undocumented public API".to_owned(),
-                        description: "Function `publish_test` missing documentation".to_owned(),
-                        severity: argus_core::Severity::High,
-                        confidence: argus_core::Confidence::from_basis_points(9500).unwrap(),
-                        dimensions: std::collections::BTreeSet::new(),
-                        citations: Vec::new(),
-                    },
-                    occurrences: vec![
-                        argus_report::DocumentationFindingOccurrence {
-                            work_item: argus_core::WorkItemId::derive([b"work-1".as_slice()]),
-                            target: target_id,
-                            finding_index: 0,
-                            severity: argus_core::Severity::High,
-                            confidence: argus_core::Confidence::from_basis_points(9500).unwrap(),
-                        },
-                    ],
-                    adjudication: argus_core::AdjudicationState::Unreviewed,
+            finding_clusters: vec![argus_report::DocumentationFindingCluster {
+                id: cluster_id,
+                representative: argus_policies::DocumentationCandidate {
+                    title: "Undocumented public API".to_owned(),
+                    description: "Function `publish_test` missing documentation".to_owned(),
+                    severity: argus_core::Severity::High,
+                    confidence: argus_core::Confidence::from_basis_points(9500).unwrap(),
+                    dimensions: std::collections::BTreeSet::new(),
+                    citations: Vec::new(),
                 },
-            ],
+                occurrences: vec![argus_report::DocumentationFindingOccurrence {
+                    work_item: argus_core::WorkItemId::derive([b"work-1".as_slice()]),
+                    target: target_id,
+                    finding_index: 0,
+                    severity: argus_core::Severity::High,
+                    confidence: argus_core::Confidence::from_basis_points(9500).unwrap(),
+                }],
+                adjudication: argus_core::AdjudicationState::Unreviewed,
+            }],
             assessments: Vec::new(),
         };
 
@@ -13481,4 +13860,3 @@ public class App {
         );
     }
 }
-

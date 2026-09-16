@@ -14,21 +14,21 @@
 
 use argus_core::{DesignArtifactId, TargetId, TargetVisibility};
 use argus_policies::{
-    AcceptedDriftRecord, AcceptedDriftRegistry, ArchitecturalDriftAnalyzer,
-    ConformanceDisposition, EvolutionClassifier, EvolutionKind, TargetRevisionDelta,
+    AcceptedDriftRecord, AcceptedDriftRegistry, ArchitecturalDriftAnalyzer, ConformanceDisposition,
+    EvolutionClassifier, EvolutionKind, TargetRevisionDelta,
 };
 
 #[test]
 fn evolution_classification_distinguishes_defects_from_evolution() {
     // 1. Defect
-    let defect = EvolutionClassifier::classify(
-        "Memory leak in buffer pool breaks invariant",
-        None,
-        false,
-    )
-    .expect("classification succeeded");
+    let defect =
+        EvolutionClassifier::classify("Memory leak in buffer pool breaks invariant", None, false)
+            .expect("classification succeeded");
     assert_eq!(defect.kind, EvolutionKind::Defect);
-    assert_eq!(defect.disposition, ConformanceDisposition::FixImplementation);
+    assert_eq!(
+        defect.disposition,
+        ConformanceDisposition::FixImplementation
+    );
 
     // 2. Accidental Divergence
     let divergence = EvolutionClassifier::classify(
@@ -110,20 +110,26 @@ fn accepted_drift_registry_lifecycle_and_expiration() {
     assert_eq!(registry.len(), 1);
 
     // Before expiration: accepted
-    assert!(registry
-        .is_accepted(&target_id, &artifact_id, "2026-05-01")
-        .is_some());
+    assert!(
+        registry
+            .is_accepted(&target_id, &artifact_id, "2026-05-01")
+            .is_some()
+    );
 
     // After expiration: not accepted
-    assert!(registry
-        .is_accepted(&target_id, &artifact_id, "2026-07-01")
-        .is_none());
+    assert!(
+        registry
+            .is_accepted(&target_id, &artifact_id, "2026-07-01")
+            .is_none()
+    );
 
     // Target mismatch
     let other_target = TargetId::derive([b"crate".as_slice(), b"other".as_slice()]);
-    assert!(registry
-        .is_accepted(&other_target, &artifact_id, "2026-05-01")
-        .is_none());
+    assert!(
+        registry
+            .is_accepted(&other_target, &artifact_id, "2026-05-01")
+            .is_none()
+    );
 }
 
 #[test]
@@ -197,6 +203,7 @@ fn derived_finding_id_is_stable_and_deterministic() {
     assert_eq!(id1, id2);
 
     let other_dimension = "constraint-conformance";
-    let id3 = ArchitecturalDriftAnalyzer::derive_stable_finding_id(&target, &artifact, other_dimension);
+    let id3 =
+        ArchitecturalDriftAnalyzer::derive_stable_finding_id(&target, &artifact, other_dimension);
     assert_ne!(id1, id3);
 }

@@ -18,8 +18,8 @@ use argus_core::{
     WorkItemId,
 };
 use argus_policies::{
-    ConformanceAssessment, ConformanceCandidate, ConformanceDimension,
-    ConformanceDisposition, ConformanceEvidenceCitation, ConformanceResult,
+    ConformanceAssessment, ConformanceCandidate, ConformanceDimension, ConformanceDisposition,
+    ConformanceEvidenceCitation, ConformanceResult,
 };
 use argus_storage::{OutcomeRecord, QueueState, QueueWork, StoredArtifact};
 use argus_workflow::EffectiveOutcome;
@@ -194,8 +194,12 @@ impl ConformanceReport {
                                 summary.candidate_findings += 1;
                                 for (index, candidate) in findings.iter().enumerate() {
                                     summary.finding_occurrences += 1;
-                                    let disp_key = disposition_label(&candidate.suggested_disposition);
-                                    *summary.disposition_breakdown.entry(disp_key.to_string()).or_default() += 1;
+                                    let disp_key =
+                                        disposition_label(&candidate.suggested_disposition);
+                                    *summary
+                                        .disposition_breakdown
+                                        .entry(disp_key.to_string())
+                                        .or_default() += 1;
 
                                     let key = canonical_finding_key(candidate)?;
                                     let cluster = clusters_by_key.entry(key).or_insert_with(|| {
@@ -322,10 +326,26 @@ impl ConformanceReport {
         let _ = writeln!(out, "- **Policy Version**: `{}`", self.policy_version);
         let _ = writeln!(out, "- **Total Targets**: {}", self.summary.total);
         let _ = writeln!(out, "- **Passed**: {}", self.summary.passed);
-        let _ = writeln!(out, "- **Candidate Findings**: {}", self.summary.candidate_findings);
-        let _ = writeln!(out, "- **Unable to Verify**: {}", self.summary.unable_to_verify);
-        let _ = writeln!(out, "- **Finding Clusters**: {}", self.summary.finding_clusters);
-        let _ = writeln!(out, "- **Duplicate Findings**: {}", self.summary.duplicate_findings);
+        let _ = writeln!(
+            out,
+            "- **Candidate Findings**: {}",
+            self.summary.candidate_findings
+        );
+        let _ = writeln!(
+            out,
+            "- **Unable to Verify**: {}",
+            self.summary.unable_to_verify
+        );
+        let _ = writeln!(
+            out,
+            "- **Finding Clusters**: {}",
+            self.summary.finding_clusters
+        );
+        let _ = writeln!(
+            out,
+            "- **Duplicate Findings**: {}",
+            self.summary.duplicate_findings
+        );
         let _ = writeln!(out);
 
         if !self.summary.disposition_breakdown.is_empty() {
@@ -340,7 +360,10 @@ impl ConformanceReport {
         }
 
         if !self.finding_clusters.is_empty() {
-            let _ = writeln!(out, "## Conformance Discrepancies and Evolution Recommendations");
+            let _ = writeln!(
+                out,
+                "## Conformance Discrepancies and Evolution Recommendations"
+            );
             let _ = writeln!(out);
 
             for cluster in &self.finding_clusters {
@@ -348,11 +371,24 @@ impl ConformanceReport {
                 let _ = writeln!(out, "### [{:?}] {}", rep.severity, rep.title);
                 let _ = writeln!(out);
                 let _ = writeln!(out, "- **Finding ID**: `{}`", cluster.id);
-                let _ = writeln!(out, "- **Confidence**: {:.2}%", rep.confidence.basis_points() as f64 / 100.0);
-                let _ = writeln!(out, "- **Suggested Disposition**: `{}`", disposition_label(&rep.suggested_disposition));
+                let _ = writeln!(
+                    out,
+                    "- **Confidence**: {:.2}%",
+                    rep.confidence.basis_points() as f64 / 100.0
+                );
+                let _ = writeln!(
+                    out,
+                    "- **Suggested Disposition**: `{}`",
+                    disposition_label(&rep.suggested_disposition)
+                );
 
                 if !rep.governing_artifacts.is_empty() {
-                    let arts = rep.governing_artifacts.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
+                    let arts = rep
+                        .governing_artifacts
+                        .iter()
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     let _ = writeln!(out, "- **Governing Artifacts**: {arts}");
                 }
 
@@ -371,7 +407,11 @@ impl ConformanceReport {
                 let _ = writeln!(out);
 
                 if !rep.citations.is_empty() {
-                    let _ = writeln!(out, "- **Citations**: {}", conformance_citations(&rep.citations));
+                    let _ = writeln!(
+                        out,
+                        "- **Citations**: {}",
+                        conformance_citations(&rep.citations)
+                    );
                 }
                 let _ = writeln!(out);
             }
@@ -490,10 +530,7 @@ pub fn write_conformance_bundle_reports(
         &adjudications,
     )?;
 
-    write_reconciled(
-        &bundle.join("conformance-report.json"),
-        &report.to_json()?,
-    )?;
+    write_reconciled(&bundle.join("conformance-report.json"), &report.to_json()?)?;
     write_reconciled(
         &bundle.join("conformance-report.jsonl"),
         &report.to_jsonl()?,
@@ -529,11 +566,15 @@ mod tests {
     #[test]
     fn build_empty_conformance_report() {
         let run_id = RunId::derive([b"run-conf-1".as_slice()]);
-        let report = ConformanceReport::build(run_id, "conformance-design-aligned@1", &[], &[], &[])
-            .unwrap();
+        let report =
+            ConformanceReport::build(run_id, "conformance-design-aligned@1", &[], &[], &[])
+                .unwrap();
         assert_eq!(report.summary.total, 0);
         assert_eq!(report.summary.finding_clusters, 0);
-        assert!(report.to_markdown().contains("Design Document Conformance Report"));
+        assert!(
+            report
+                .to_markdown()
+                .contains("Design Document Conformance Report")
+        );
     }
 }
-

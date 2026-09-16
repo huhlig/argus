@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use argus_core::{ConfigurationId, EvidenceKind, PortableTargetKind, SnapshotId, SourcePath, TargetKind};
+use argus_core::{
+    ConfigurationId, EvidenceKind, PortableTargetKind, SnapshotId, SourcePath, TargetKind,
+};
 use argus_language::{LanguageAdapter, SourceAccess, normalize_inventory};
 use argus_typescript::TypeScriptWorkspaceAdapter;
 use std::collections::BTreeMap;
@@ -94,10 +96,7 @@ export class Logger {
     };
 
     let cfg = ConfigurationId::derive([b"default".as_slice()]);
-    let adapter = TypeScriptWorkspaceAdapter::new(
-        cfg,
-        vec![pkg_path, index_path, logger_path],
-    );
+    let adapter = TypeScriptWorkspaceAdapter::new(cfg, vec![pkg_path, index_path, logger_path]);
 
     let first = normalize_inventory(&source, adapter.inventory(&source).unwrap()).unwrap();
     let second = normalize_inventory(&source, adapter.inventory(&source).unwrap()).unwrap();
@@ -107,21 +106,44 @@ export class Logger {
     assert!(first.conflicts.is_empty());
 
     // Verify workspace target, package target, file targets, classes, methods
-    assert!(first.targets.iter().any(|t| matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::Workspace })));
-    assert!(first.targets.iter().any(|t| matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::Package })));
+    assert!(first.targets.iter().any(|t| matches!(
+        t.kind,
+        TargetKind::Portable {
+            kind: PortableTargetKind::Workspace
+        }
+    )));
+    assert!(first.targets.iter().any(|t| matches!(
+        t.kind,
+        TargetKind::Portable {
+            kind: PortableTargetKind::Package
+        }
+    )));
     assert!(first.targets.iter().any(|t| t.name == "AppService"));
     assert!(first.targets.iter().any(|t| t.name == "Logger"));
     assert!(first.targets.iter().any(|t| t.name == "start"));
     assert!(first.targets.iter().any(|t| t.name == "log"));
 
     // Verify documentation evidence exists
-    let app_service_target = first.targets.iter().find(|t| t.name == "AppService").unwrap();
+    let app_service_target = first
+        .targets
+        .iter()
+        .find(|t| t.name == "AppService")
+        .unwrap();
     let doc_evidence = first
         .evidence
         .iter()
-        .find(|e| e.target.as_ref() == Some(&app_service_target.id) && e.kind == EvidenceKind::Documentation)
+        .find(|e| {
+            e.target.as_ref() == Some(&app_service_target.id)
+                && e.kind == EvidenceKind::Documentation
+        })
         .expect("doc evidence exists");
-    assert!(doc_evidence.detail.as_deref().unwrap().contains("Service orchestrator."));
+    assert!(
+        doc_evidence
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("Service orchestrator.")
+    );
 
     // Verify relations:
     // - AppService contains start
@@ -129,12 +151,9 @@ export class Logger {
     // - src/index.ts imports src/logger.ts
     let start_target = first.targets.iter().find(|t| t.name == "start").unwrap();
     assert!(
-        first
-            .relations
-            .iter()
-            .any(|r| r.kind == "core:contains"
-                && r.source == app_service_target.id
-                && r.target == start_target.id),
+        first.relations.iter().any(|r| r.kind == "core:contains"
+            && r.source == app_service_target.id
+            && r.target == start_target.id),
         "AppService contains start relation exists"
     );
 
@@ -143,8 +162,16 @@ export class Logger {
         .iter()
         .find(|r| r.kind == "core:imports")
         .expect("import relation exists");
-    let index_file = first.targets.iter().find(|t| t.name == "src/index.ts").unwrap();
-    let logger_file = first.targets.iter().find(|t| t.name == "src/logger.ts").unwrap();
+    let index_file = first
+        .targets
+        .iter()
+        .find(|t| t.name == "src/index.ts")
+        .unwrap();
+    let logger_file = first
+        .targets
+        .iter()
+        .find(|t| t.name == "src/logger.ts")
+        .unwrap();
     assert_eq!(import_rel.source, index_file.id);
     assert_eq!(import_rel.target, logger_file.id);
 }

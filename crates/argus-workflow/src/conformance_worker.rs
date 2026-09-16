@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::{
-    DocumentationWorkerRuntime, ConformanceReviewAdmission, ConformanceReviewMaterialization,
-    ConformanceRuntimeIdentity, RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryError, RecoveryManifest,
-    RecoveryStore, WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, open_checkpoint_store,
-    conformance_actor_registry,
+    ConformanceReviewAdmission, ConformanceReviewMaterialization, ConformanceRuntimeIdentity,
+    DocumentationWorkerRuntime, RECOVERY_MANIFEST_SCHEMA_VERSION, RecoveryError, RecoveryManifest,
+    RecoveryStore, WORKFLOW_DATA_SCHEMA_VERSION, WorkflowDataStore, conformance_actor_registry,
+    open_checkpoint_store,
 };
 use argus_core::{ArgusError, RunId as AuditRunId, WorkItemId};
 use argus_storage::{DurableQueue, LeasedWork, QueueEventKind, QueueState};
@@ -25,7 +25,9 @@ use langchart_adapters::{
     checkpoint::CheckpointStore,
     context::{ContextError, ContextItem, ContextResolver, ContextView},
 };
-use langchart_model::{id::RunId, id::StateId, policy::ContextPolicy, validation::CompiledWorkflow};
+use langchart_model::{
+    id::RunId, id::StateId, policy::ContextPolicy, validation::CompiledWorkflow,
+};
 use langchart_runtime::{AgentActor, InstanceCheckpoint, RunStatus, WorkflowInstance};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::time::{Duration, Instant};
@@ -119,9 +121,7 @@ impl ConformanceWorker {
         };
 
         match self.execute_with_heartbeats(&leased, now_millis).await {
-            Ok(()) => Ok(ConformanceWorkerResult::Succeeded {
-                work_id: leased.id,
-            }),
+            Ok(()) => Ok(ConformanceWorkerResult::Succeeded { work_id: leased.id }),
             Err(error) => {
                 let message = error.to_string();
                 let queue = self.queue.clone();

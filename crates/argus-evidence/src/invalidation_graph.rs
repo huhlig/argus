@@ -88,7 +88,10 @@ impl DocumentedContract {
             let trimmed = line.trim().trim_start_matches("///").trim();
             let lower = trimmed.to_ascii_lowercase();
 
-            if lower.starts_with("# safety") || lower.starts_with("safety:") || lower.starts_with("# preconditions") {
+            if lower.starts_with("# safety")
+                || lower.starts_with("safety:")
+                || lower.starts_with("# preconditions")
+            {
                 current_section = "safety";
                 continue;
             } else if lower.starts_with("# panics") || lower.starts_with("panics:") {
@@ -97,7 +100,10 @@ impl DocumentedContract {
             } else if lower.starts_with("# errors") || lower.starts_with("errors:") {
                 current_section = "errors";
                 continue;
-            } else if lower.starts_with("# lock") || lower.starts_with("# synchronization") || lower.starts_with("concurrency:") {
+            } else if lower.starts_with("# lock")
+                || lower.starts_with("# synchronization")
+                || lower.starts_with("concurrency:")
+            {
                 current_section = "sync";
                 continue;
             } else if lower.starts_with("# lifecycle") {
@@ -151,7 +157,11 @@ impl CallEdge {
         hasher.update(b"\0");
         hasher.update(self.callee.as_str().as_bytes());
         hasher.update(b"\0");
-        hasher.update(if self.is_direct { b"direct\0" } else { b"indirect\0" });
+        hasher.update(if self.is_direct {
+            b"direct\0"
+        } else {
+            b"indirect\0"
+        });
         if let Some(loc) = &self.location {
             hasher.update(loc.path.as_str().as_bytes());
             hasher.update(b":");
@@ -213,10 +223,7 @@ pub enum CallTreeBehaviorDifference {
         current_digest: ContentHash,
     },
     /// Call site location or dispatch mechanism altered.
-    CallSiteTopologyAltered {
-        caller: TargetId,
-        callee: TargetId,
-    },
+    CallSiteTopologyAltered { caller: TargetId, callee: TargetId },
 }
 
 /// In-memory multi-directional target dependency and call tree graph.
@@ -315,7 +322,11 @@ impl ReviewDependencyGraph {
 
     /// Records a call edge with call site and optional caller/callee contracts.
     pub fn add_call_edge(&mut self, edge: CallEdge) {
-        self.add_dependency(edge.caller.clone(), edge.callee.clone(), DependencyKind::Calls);
+        self.add_dependency(
+            edge.caller.clone(),
+            edge.callee.clone(),
+            DependencyKind::Calls,
+        );
         self.call_edges.push(edge);
     }
 
@@ -510,8 +521,10 @@ impl ReviewDependencyGraph {
         for common_caller in current_callers.intersection(&baseline_callers) {
             let base_contract = baseline.target_contracts.get(*common_caller);
             let cur_contract = self.target_contracts.get(*common_caller);
-            let base_digest = base_contract.map_or_else(|| ContentHash::digest(b"none"), DocumentedContract::digest);
-            let cur_digest = cur_contract.map_or_else(|| ContentHash::digest(b"none"), DocumentedContract::digest);
+            let base_digest = base_contract
+                .map_or_else(|| ContentHash::digest(b"none"), DocumentedContract::digest);
+            let cur_digest = cur_contract
+                .map_or_else(|| ContentHash::digest(b"none"), DocumentedContract::digest);
             if base_digest != cur_digest {
                 diffs.push(CallTreeBehaviorDifference::UpstreamCallerContractChanged {
                     caller: (*common_caller).clone(),
@@ -553,14 +566,18 @@ impl ReviewDependencyGraph {
         for common_callee in current_callees.intersection(&baseline_callees) {
             let base_contract = baseline.target_contracts.get(*common_callee);
             let cur_contract = self.target_contracts.get(*common_callee);
-            let base_digest = base_contract.map_or_else(|| ContentHash::digest(b"none"), DocumentedContract::digest);
-            let cur_digest = cur_contract.map_or_else(|| ContentHash::digest(b"none"), DocumentedContract::digest);
+            let base_digest = base_contract
+                .map_or_else(|| ContentHash::digest(b"none"), DocumentedContract::digest);
+            let cur_digest = cur_contract
+                .map_or_else(|| ContentHash::digest(b"none"), DocumentedContract::digest);
             if base_digest != cur_digest {
-                diffs.push(CallTreeBehaviorDifference::DownstreamCalleeContractChanged {
-                    callee: (*common_callee).clone(),
-                    baseline_digest: base_digest,
-                    current_digest: cur_digest,
-                });
+                diffs.push(
+                    CallTreeBehaviorDifference::DownstreamCalleeContractChanged {
+                        callee: (*common_callee).clone(),
+                        baseline_digest: base_digest,
+                        current_digest: cur_digest,
+                    },
+                );
             }
         }
 
@@ -683,7 +700,12 @@ impl InvalidationEngine {
         Self::mark_directly_modified(&mut report, directly_modified);
         Self::invalidate_design_artifacts(&mut report, graph, modified_design_artifacts);
         Self::propagate_forward_callee_changes(&mut report, graph, directly_modified);
-        Self::propagate_backward_call_changes(&mut report, graph, directly_modified, baseline_graph);
+        Self::propagate_backward_call_changes(
+            &mut report,
+            graph,
+            directly_modified,
+            baseline_graph,
+        );
         Self::propagate_containment(&mut report, graph);
 
         if conservative {
@@ -694,7 +716,10 @@ impl InvalidationEngine {
         report
     }
 
-    fn mark_directly_modified(report: &mut InvalidationReport, directly_modified: &BTreeSet<TargetId>) {
+    fn mark_directly_modified(
+        report: &mut InvalidationReport,
+        directly_modified: &BTreeSet<TargetId>,
+    ) {
         for target in directly_modified {
             report
                 .invalidated_targets
@@ -746,7 +771,10 @@ impl InvalidationEngine {
                         let reason = InvalidationReason::DownstreamDependencyModified {
                             dependency: current.clone(),
                         };
-                        let list = report.invalidated_targets.entry(upstream.clone()).or_default();
+                        let list = report
+                            .invalidated_targets
+                            .entry(upstream.clone())
+                            .or_default();
                         if !list.contains(&reason) {
                             list.push(reason);
                             frontier.push(upstream.clone());
@@ -774,7 +802,10 @@ impl InvalidationEngine {
                                     related_target: modified_caller.clone(),
                                     differences: diffs,
                                 };
-                                let list = report.invalidated_targets.entry(callee.clone()).or_default();
+                                let list = report
+                                    .invalidated_targets
+                                    .entry(callee.clone())
+                                    .or_default();
                                 if !list.contains(&reason) {
                                     list.push(reason);
                                 }
@@ -785,7 +816,10 @@ impl InvalidationEngine {
                         let reason = InvalidationReason::UpstreamCallStructureModified {
                             caller: modified_caller.clone(),
                         };
-                        let list = report.invalidated_targets.entry(callee.clone()).or_default();
+                        let list = report
+                            .invalidated_targets
+                            .entry(callee.clone())
+                            .or_default();
                         if !list.contains(&reason) {
                             list.push(reason);
                         }
@@ -796,13 +830,17 @@ impl InvalidationEngine {
     }
 
     fn propagate_containment(report: &mut InvalidationReport, graph: &ReviewDependencyGraph) {
-        let mut containment_frontier: Vec<TargetId> = report.invalidated_targets.keys().cloned().collect();
+        let mut containment_frontier: Vec<TargetId> =
+            report.invalidated_targets.keys().cloned().collect();
         while let Some(child) = containment_frontier.pop() {
             if let Some(parent) = graph.parent_map.get(&child) {
                 let reason = InvalidationReason::ContainedChildModified {
                     child: child.clone(),
                 };
-                let list = report.invalidated_targets.entry(parent.clone()).or_default();
+                let list = report
+                    .invalidated_targets
+                    .entry(parent.clone())
+                    .or_default();
                 if !list.contains(&reason) {
                     list.push(reason);
                     containment_frontier.push(parent.clone());

@@ -149,11 +149,9 @@ impl DesignLinkageIndex {
     /// Retrieves all links associated with a specific code target.
     #[must_use]
     pub fn links_for_target(&self, target_id: &TargetId) -> Vec<&DesignLink> {
-        self.by_target
-            .get(target_id)
-            .map_or_else(Vec::new, |ids| {
-                ids.iter().filter_map(|id| self.links.get(id)).collect()
-            })
+        self.by_target.get(target_id).map_or_else(Vec::new, |ids| {
+            ids.iter().filter_map(|id| self.links.get(id)).collect()
+        })
     }
 
     /// Retrieves all links associated with a specific design artifact.
@@ -351,7 +349,9 @@ impl DesignLinkageEngine {
                             matched_keywords.join(", "),
                             artifact.title
                         );
-                    } else if matched_keywords.len() == 1 && artifact.kind == crate::design::DesignArtifactKind::Adr {
+                    } else if matched_keywords.len() == 1
+                        && artifact.kind == crate::design::DesignArtifactKind::Adr
+                    {
                         best_confidence_bps = 5_500;
                         match_rationale = format!(
                             "Target matches key architectural concept keyword '{}' from '{}'",
@@ -402,7 +402,10 @@ fn extract_distinctive_terms(artifact: &DesignArtifact) -> DistinctiveTokens<'_>
     let mut keywords = Vec::new();
 
     // Extract title words
-    for word in artifact.title.split(|c: char| !c.is_alphanumeric() && c != '_') {
+    for word in artifact
+        .title
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+    {
         let trimmed = word.trim();
         if trimmed.len() >= 4 && is_code_identifier(trimmed) {
             symbols.insert(trimmed);
@@ -411,7 +414,10 @@ fn extract_distinctive_terms(artifact: &DesignArtifact) -> DistinctiveTokens<'_>
 
     // Extract words from sections (Decision, Consequences, etc.)
     for section in &artifact.sections {
-        for word in section.content.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        for word in section
+            .content
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+        {
             let trimmed = word.trim();
             if trimmed.len() >= 4 && is_code_identifier(trimmed) {
                 symbols.insert(trimmed);
@@ -451,5 +457,9 @@ fn is_code_identifier(text: &str) -> bool {
 }
 
 fn extract_leaf_symbol(target_name: &str) -> &str {
-    target_name.rsplit("::").next().unwrap_or(target_name).trim()
+    target_name
+        .rsplit("::")
+        .next()
+        .unwrap_or(target_name)
+        .trim()
 }

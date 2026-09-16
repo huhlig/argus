@@ -482,7 +482,9 @@ impl OptimizationReport {
                         }
                         let _ = writeln!(out);
                     }
-                    argus_policies::ProfilingEvidenceStatus::Unavailable { suggested_benchmarks } => {
+                    argus_policies::ProfilingEvidenceStatus::Unavailable {
+                        suggested_benchmarks,
+                    } => {
                         let _ = writeln!(out, "### Target `{target}`");
                         let _ = writeln!(out, "- **Status**: Unavailable");
                         if !suggested_benchmarks.is_empty() {
@@ -609,10 +611,7 @@ pub fn write_optimization_bundle_reports(
         &artifacts,
         &adjudications,
     )?;
-    write_reconciled(
-        &bundle.join("optimization-report.json"),
-        &report.to_json()?,
-    )?;
+    write_reconciled(&bundle.join("optimization-report.json"), &report.to_json()?)?;
     write_reconciled(
         &bundle.join("optimization-report.jsonl"),
         &report.to_jsonl()?,
@@ -647,10 +646,15 @@ mod tests {
     #[test]
     fn build_empty_optimization_report() {
         let run_id = RunId::derive([b"run-1".as_slice()]);
-        let report = OptimizationReport::build(run_id, "optimization-conservative@1", &[], &[], &[])
-            .unwrap();
+        let report =
+            OptimizationReport::build(run_id, "optimization-conservative@1", &[], &[], &[])
+                .unwrap();
         assert_eq!(report.summary.total, 0);
         assert_eq!(report.summary.finding_clusters, 0);
-        assert!(report.to_markdown().contains("No optimization opportunities"));
+        assert!(
+            report
+                .to_markdown()
+                .contains("No optimization opportunities")
+        );
     }
 }

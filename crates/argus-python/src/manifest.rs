@@ -87,7 +87,9 @@ impl PyprojectAdapter {
 
     /// Parse a `pyproject.toml` file into package name, version, and dependencies.
     #[allow(clippy::too_many_lines)]
-    pub fn parse_pyproject(bytes: &[u8]) -> Option<(String, Option<String>, Vec<PythonPackageDependency>)> {
+    pub fn parse_pyproject(
+        bytes: &[u8],
+    ) -> Option<(String, Option<String>, Vec<PythonPackageDependency>)> {
         let text = std::str::from_utf8(bytes).ok()?;
         let value: toml::Value = toml::from_str(text).ok()?;
 
@@ -106,18 +108,25 @@ impl PyprojectAdapter {
             if let Some(deps) = project.get("dependencies").and_then(toml::Value::as_array) {
                 for dep in deps {
                     if let Some(dep_str) = dep.as_str() {
-                        if let Some(parsed) = parse_pep508_dependency(dep_str, PythonDependencyKind::Runtime) {
+                        if let Some(parsed) =
+                            parse_pep508_dependency(dep_str, PythonDependencyKind::Runtime)
+                        {
                             dependencies.push(parsed);
                         }
                     }
                 }
             }
-            if let Some(opt_deps) = project.get("optional-dependencies").and_then(toml::Value::as_table) {
+            if let Some(opt_deps) = project
+                .get("optional-dependencies")
+                .and_then(toml::Value::as_table)
+            {
                 for (_group, deps_val) in opt_deps {
                     if let Some(deps_arr) = deps_val.as_array() {
                         for dep in deps_arr {
                             if let Some(dep_str) = dep.as_str() {
-                                if let Some(parsed) = parse_pep508_dependency(dep_str, PythonDependencyKind::Optional) {
+                                if let Some(parsed) =
+                                    parse_pep508_dependency(dep_str, PythonDependencyKind::Optional)
+                                {
                                     dependencies.push(parsed);
                                 }
                             }
@@ -147,7 +156,10 @@ impl PyprojectAdapter {
                         }
                         let spec = match dep_val {
                             toml::Value::String(s) => Some(s.clone()),
-                            toml::Value::Table(t) => t.get("version").and_then(toml::Value::as_str).map(ToOwned::to_owned),
+                            toml::Value::Table(t) => t
+                                .get("version")
+                                .and_then(toml::Value::as_str)
+                                .map(ToOwned::to_owned),
                             _ => None,
                         };
                         dependencies.push(PythonPackageDependency {
@@ -157,11 +169,17 @@ impl PyprojectAdapter {
                         });
                     }
                 }
-                if let Some(dev_deps) = poetry.get("dev-dependencies").and_then(toml::Value::as_table) {
+                if let Some(dev_deps) = poetry
+                    .get("dev-dependencies")
+                    .and_then(toml::Value::as_table)
+                {
                     for (dep_name, dep_val) in dev_deps {
                         let spec = match dep_val {
                             toml::Value::String(s) => Some(s.clone()),
-                            toml::Value::Table(t) => t.get("version").and_then(toml::Value::as_str).map(ToOwned::to_owned),
+                            toml::Value::Table(t) => t
+                                .get("version")
+                                .and_then(toml::Value::as_str)
+                                .map(ToOwned::to_owned),
                             _ => None,
                         };
                         dependencies.push(PythonPackageDependency {
@@ -174,11 +192,17 @@ impl PyprojectAdapter {
                 if let Some(group) = poetry.get("group").and_then(toml::Value::as_table) {
                     for (_grp_name, grp_val) in group {
                         if let Some(grp_table) = grp_val.as_table() {
-                            if let Some(grp_deps) = grp_table.get("dependencies").and_then(toml::Value::as_table) {
+                            if let Some(grp_deps) = grp_table
+                                .get("dependencies")
+                                .and_then(toml::Value::as_table)
+                            {
                                 for (dep_name, dep_val) in grp_deps {
                                     let spec = match dep_val {
                                         toml::Value::String(s) => Some(s.clone()),
-                                        toml::Value::Table(t) => t.get("version").and_then(toml::Value::as_str).map(ToOwned::to_owned),
+                                        toml::Value::Table(t) => t
+                                            .get("version")
+                                            .and_then(toml::Value::as_str)
+                                            .map(ToOwned::to_owned),
                                         _ => None,
                                     };
                                     dependencies.push(PythonPackageDependency {
@@ -201,7 +225,9 @@ impl PyprojectAdapter {
     }
 
     /// Parse a `setup.cfg` file.
-    pub fn parse_setup_cfg(bytes: &[u8]) -> Option<(String, Option<String>, Vec<PythonPackageDependency>)> {
+    pub fn parse_setup_cfg(
+        bytes: &[u8],
+    ) -> Option<(String, Option<String>, Vec<PythonPackageDependency>)> {
         let text = std::str::from_utf8(bytes).ok()?;
         let mut name = None;
         let mut version = None;
@@ -239,7 +265,9 @@ impl PyprojectAdapter {
                         in_install_requires = true;
                         let v = v.trim();
                         if !v.is_empty() {
-                            if let Some(dep) = parse_pep508_dependency(v, PythonDependencyKind::Runtime) {
+                            if let Some(dep) =
+                                parse_pep508_dependency(v, PythonDependencyKind::Runtime)
+                            {
                                 dependencies.push(dep);
                             }
                         }
@@ -247,7 +275,9 @@ impl PyprojectAdapter {
                         in_install_requires = false;
                     }
                 } else if in_install_requires && line.starts_with(char::is_whitespace) {
-                    if let Some(dep) = parse_pep508_dependency(trimmed, PythonDependencyKind::Runtime) {
+                    if let Some(dep) =
+                        parse_pep508_dependency(trimmed, PythonDependencyKind::Runtime)
+                    {
                         dependencies.push(dep);
                     }
                 }
@@ -260,7 +290,10 @@ impl PyprojectAdapter {
 
     /// Parse basic `requirements.txt` lines.
     #[must_use]
-    pub fn parse_requirements(bytes: &[u8], default_name: &str) -> Option<(String, Option<String>, Vec<PythonPackageDependency>)> {
+    pub fn parse_requirements(
+        bytes: &[u8],
+        default_name: &str,
+    ) -> Option<(String, Option<String>, Vec<PythonPackageDependency>)> {
         let text = std::str::from_utf8(bytes).ok()?;
         let mut dependencies = Vec::new();
 
@@ -312,9 +345,7 @@ impl LanguageAdapter for PyprojectAdapter {
         let mut conflicts = Vec::new();
 
         let mut sorted_paths = self.manifest_paths.clone();
-        sorted_paths.sort_by(|a, b| {
-            manifest_priority(a).cmp(&manifest_priority(b))
-        });
+        sorted_paths.sort_by(|a, b| manifest_priority(a).cmp(&manifest_priority(b)));
 
         let mut seen_dirs = BTreeSet::new();
 
@@ -506,7 +537,8 @@ impl LanguageAdapter for PyprojectAdapter {
 
             // 3. Package dependencies linking
             for dep in &pkg.dependencies {
-                if let Some(dep_target_id) = package_name_to_id.get(&dep.name.to_ascii_lowercase()) {
+                if let Some(dep_target_id) = package_name_to_id.get(&dep.name.to_ascii_lowercase())
+                {
                     let rel_id = RelationId::derive([
                         pkg.target_id.as_str().as_bytes(),
                         dep_target_id.as_str().as_bytes(),
@@ -571,7 +603,10 @@ fn fallback_package_name(path: &SourcePath) -> String {
         .to_owned()
 }
 
-fn parse_pep508_dependency(spec: &str, kind: PythonDependencyKind) -> Option<PythonPackageDependency> {
+fn parse_pep508_dependency(
+    spec: &str,
+    kind: PythonDependencyKind,
+) -> Option<PythonPackageDependency> {
     let before_marker = spec.split(';').next()?.trim();
     if before_marker.is_empty() {
         return None;

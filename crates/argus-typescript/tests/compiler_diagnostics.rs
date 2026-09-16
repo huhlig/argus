@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use argus_core::{ByteSpan, ConfigurationId, EvidenceKind, InventoryState, PortableTargetKind, SnapshotId, SourceLocation, SourcePath, Target, TargetId, TargetKind, TargetVisibility};
+use argus_core::{
+    ByteSpan, ConfigurationId, EvidenceKind, InventoryState, PortableTargetKind, SnapshotId,
+    SourceLocation, SourcePath, Target, TargetId, TargetKind, TargetVisibility,
+};
 use argus_language::SourceAccess;
 use argus_typescript::TypeScriptDiagnosticProvider;
 use std::collections::BTreeMap;
@@ -59,7 +62,9 @@ src/service.ts(42,5): error TS2554: Expected 2 arguments, but got 1.
 
     let target1 = Target {
         id: TargetId::derive([b"index".as_slice()]),
-        kind: TargetKind::Portable { kind: PortableTargetKind::File },
+        kind: TargetKind::Portable {
+            kind: PortableTargetKind::File,
+        },
         visibility: TargetVisibility::Public,
         name: "src/index.ts".to_owned(),
         parent: None,
@@ -76,7 +81,9 @@ src/service.ts(42,5): error TS2554: Expected 2 arguments, but got 1.
 
     let target2 = Target {
         id: TargetId::derive([b"service".as_slice()]),
-        kind: TargetKind::Portable { kind: PortableTargetKind::File },
+        kind: TargetKind::Portable {
+            kind: PortableTargetKind::File,
+        },
         visibility: TargetVisibility::Public,
         name: "src/service.ts".to_owned(),
         parent: None,

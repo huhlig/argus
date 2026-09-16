@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{
-    CachedAssessmentRecord, CachedAssessmentStats, REVIEW_ASSESSMENT_CACHE,
-};
+use crate::cache::{CachedAssessmentRecord, CachedAssessmentStats, REVIEW_ASSESSMENT_CACHE};
 use argus_core::{
     ConfigurationId, ContentHash, HumanAdjudication, PolicyId, ReviewFingerprint, RunId,
     SnapshotId, TargetId, WorkItemId,
@@ -688,7 +686,9 @@ impl DurableQueue {
                 .map_err(database_error("cannot create adjudication table"))?;
             write
                 .open_table(REVIEW_ASSESSMENT_CACHE)
-                .map_err(database_error("cannot create review assessment cache table"))?;
+                .map_err(database_error(
+                    "cannot create review assessment cache table",
+                ))?;
         }
         write
             .commit()
@@ -2626,8 +2626,10 @@ impl DurableQueue {
                     }
                 }
 
-                let work_ids_set: BTreeSet<WorkItemId> =
-                    work_ids_to_remove.iter().map(|(id, _)| id.clone()).collect();
+                let work_ids_set: BTreeSet<WorkItemId> = work_ids_to_remove
+                    .iter()
+                    .map(|(id, _)| id.clone())
+                    .collect();
 
                 // 2. Remove outcomes belonging to those work items
                 let mut outcomes_table = write

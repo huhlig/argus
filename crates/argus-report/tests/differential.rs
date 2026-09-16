@@ -12,12 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use argus_core::{
-    AdjudicationState, Confidence, FindingId, RunId, Severity, TargetId,
-};
+use argus_core::{AdjudicationState, Confidence, FindingId, RunId, Severity, TargetId};
 use argus_report::{
-    compare_findings, DifferentialFinding, DifferentialReport, DifferentialThresholds,
-    FindingCategory,
+    DifferentialFinding, DifferentialReport, DifferentialThresholds, FindingCategory,
+    compare_findings,
 };
 
 fn make_finding(
@@ -70,7 +68,10 @@ fn test_exact_match_persistence() {
     assert_eq!(report.summary.persistent_count, 1);
 
     assert_eq!(report.persistent_findings.len(), 1);
-    assert_eq!(report.persistent_findings[0].category, FindingCategory::Persistent);
+    assert_eq!(
+        report.persistent_findings[0].category,
+        FindingCategory::Persistent
+    );
     assert_eq!(report.persistent_findings[0].id, finding1.id);
     assert_eq!(report.persistent_findings[0].baseline_id, Some(finding1.id));
 }
@@ -112,7 +113,10 @@ fn test_semantic_fallback_when_location_and_id_shift() {
 
     assert_eq!(report.persistent_findings.len(), 1);
     assert_eq!(report.persistent_findings[0].id, cur_finding.id);
-    assert_eq!(report.persistent_findings[0].baseline_id, Some(base_finding.id));
+    assert_eq!(
+        report.persistent_findings[0].baseline_id,
+        Some(base_finding.id)
+    );
 }
 
 #[test]
@@ -162,7 +166,10 @@ fn test_new_and_resolved_classification() {
     assert_eq!(report.new_findings[0].category, FindingCategory::New);
 
     assert_eq!(report.resolved_findings[0].id, resolved.id);
-    assert_eq!(report.resolved_findings[0].category, FindingCategory::Resolved);
+    assert_eq!(
+        report.resolved_findings[0].category,
+        FindingCategory::Resolved
+    );
 
     assert_eq!(report.persistent_findings[0].id, persistent.id);
 }

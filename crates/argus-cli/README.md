@@ -59,6 +59,26 @@ cargo run -p argus-cli -- --help
 
 ## Example Audit Workflow
 
+### Polyglot inventories and internal documentation
+
+With fresh Argus state, prime every detected adapter and inspect the declared scope before auditing:
+
+```bash
+argus prime --adapter all
+argus coverage --dimension adapter
+argus targets list --adapter typescript
+argus audit --pipeline full
+argus status
+```
+
+Each adapter writes its own stream and metrics under the source snapshot directory. A manifest publishes the complete selection only after the requested adapters succeed. Repeating an identical prime verifies deterministic stream content; changing adapter versions or semantic inputs requires fresh state. Rust metadata errors now fail priming instead of silently omitting Rust. Cargo metadata runs before source capture because it may create `Cargo.lock`.
+
+An audit uses the adapters committed when its run was primed. `audit --adapter <name>` narrows that selection and pins it before admission. `targets` and `status` accept the same filter. Later priming cannot change an existing run's scope, and adapters from different snapshots are never combined. Status and reports identify adapters, counts, discovery limitations, and detected source languages outside the selection. These are inventory counts, not a guarantee of whole-workspace coverage.
+
+`full` also includes `internal-documentation`; run it alone with `argus audit --pipeline internal-documentation` and `argus work internal-documentation`. The policy reviews private/restricted behavioral contracts (purpose, behavior, panics/errors, side effects, safety, and invariants). It accepts concise comments and does not demand public API examples or comments that restate obvious code. Its findings and coverage use `documentation-internal@1`, separately from public API documentation. Full audits can therefore admit more work and incur more model cost. Finalized bundles contain separate `internal-documentation-report.*` files and inventory provenance.
+
+The new inventory format assumes fresh pre-release state. No migration or legacy reader is provided.
+
 ```bash
 # 1. Initialize project
 argus init

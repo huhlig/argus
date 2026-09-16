@@ -155,9 +155,9 @@ impl TreeSitterWorkspaceAdapter {
                 .unwrap_or("");
 
             let matching_spec = if let Some(ref target_lang) = self.target_language {
-                specs
-                    .iter()
-                    .find(|s| s.language_id.eq_ignore_ascii_case(target_lang) && s.matches_extension(ext))
+                specs.iter().find(|s| {
+                    s.language_id.eq_ignore_ascii_case(target_lang) && s.matches_extension(ext)
+                })
             } else {
                 specs.iter().find(|s| s.matches_extension(ext))
             };
@@ -171,7 +171,10 @@ impl TreeSitterWorkspaceAdapter {
             let norm_path = path.as_str().replace('\\', "/");
             let parent_pkg_id = package_targets
                 .iter()
-                .find(|(dir, _)| norm_path.starts_with(dir) && (dir.is_empty() || norm_path[dir.len()..].starts_with('/')))
+                .find(|(dir, _)| {
+                    norm_path.starts_with(dir)
+                        && (dir.is_empty() || norm_path[dir.len()..].starts_with('/'))
+                })
                 .map(|(_, id)| id);
 
             let file_inv = engine.parse_source(spec, path, &bytes, parent_pkg_id)?;

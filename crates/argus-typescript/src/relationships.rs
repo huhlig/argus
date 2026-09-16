@@ -168,7 +168,9 @@ impl TypeScriptRelationshipProvider {
 
             let start = usize::try_from(location.bytes.start).unwrap_or(0);
             let end = usize::try_from(location.bytes.end).unwrap_or(0);
-            let Some(fragment) = bytes.get(start..end).and_then(|s| std::str::from_utf8(s).ok())
+            let Some(fragment) = bytes
+                .get(start..end)
+                .and_then(|s| std::str::from_utf8(s).ok())
             else {
                 continue;
             };
@@ -220,7 +222,9 @@ fn extract_identifiers(fragment: &str) -> Vec<ExtractedIdentifier> {
 
     while i < bytes.len() {
         let b = bytes[i];
-        if (b.is_ascii_alphabetic() || b == b'_' || b == b'$') && (i == 0 || !is_id_continue(bytes[i - 1])) {
+        if (b.is_ascii_alphabetic() || b == b'_' || b == b'$')
+            && (i == 0 || !is_id_continue(bytes[i - 1]))
+        {
             let start = i;
             while i < bytes.len() && is_id_continue(bytes[i]) {
                 i += 1;
@@ -228,7 +232,9 @@ fn extract_identifiers(fragment: &str) -> Vec<ExtractedIdentifier> {
             let name = &fragment[start..i];
             // Check if followed by '(' (ignoring whitespace)
             let mut j = i;
-            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\r' || bytes[j] == b'\n') {
+            while j < bytes.len()
+                && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\r' || bytes[j] == b'\n')
+            {
                 j += 1;
             }
             let followed_by_call = j < bytes.len() && bytes[j] == b'(';

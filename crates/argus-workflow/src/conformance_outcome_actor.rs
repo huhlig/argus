@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    EffectiveOutcome, LogicalOutcomeKey, ConformanceAssessmentContract, OutcomeDisposition,
+    ConformanceAssessmentContract, EffectiveOutcome, LogicalOutcomeKey, OutcomeDisposition,
     OutcomeKind, OutcomeProvenance, OutcomeReceipt, OutcomeRecorder, PrimaryReviewDecision,
     WorkflowDataStore,
 };

@@ -14,9 +14,7 @@
 
 #![allow(clippy::similar_names)]
 
-use argus_core::{
-    ContentHash, DesignArtifactId, PolicyId, SnapshotId, TargetId,
-};
+use argus_core::{ContentHash, DesignArtifactId, PolicyId, SnapshotId, TargetId};
 use argus_evidence::{
     CallEdge, CallTreeBehaviorDifference, DependencyKind, DocumentedContract, InvalidationEngine,
     InvalidationReason, ReviewDependencyGraph, TargetReviewInputs,
@@ -171,12 +169,16 @@ fn test_containment_invalidation() {
     assert!(report.invalidated_targets.contains_key(&module));
     assert!(report.invalidated_targets.contains_key(&package));
 
-    assert!(report.invalidated_targets[&module].contains(&InvalidationReason::ContainedChildModified {
-        child: function.clone(),
-    }));
-    assert!(report.invalidated_targets[&package].contains(&InvalidationReason::ContainedChildModified {
-        child: module.clone(),
-    }));
+    assert!(report.invalidated_targets[&module].contains(
+        &InvalidationReason::ContainedChildModified {
+            child: function.clone(),
+        }
+    ));
+    assert!(report.invalidated_targets[&package].contains(
+        &InvalidationReason::ContainedChildModified {
+            child: module.clone(),
+        }
+    ));
 }
 
 #[test]
@@ -228,7 +230,11 @@ fn test_conservative_invalidation_for_incomplete_targets() {
         None,
         false,
     );
-    assert!(!normal_report.invalidated_targets.contains_key(&sibling_target));
+    assert!(
+        !normal_report
+            .invalidated_targets
+            .contains_key(&sibling_target)
+    );
 
     // Conservative mode: sibling is invalidated because incomplete target in partition changed
     let conservative_report = InvalidationEngine::compute_invalidation(
@@ -238,12 +244,18 @@ fn test_conservative_invalidation_for_incomplete_targets() {
         None,
         true,
     );
-    assert!(conservative_report.invalidated_targets.contains_key(&sibling_target));
-    assert!(conservative_report.invalidated_targets[&sibling_target].contains(
-        &InvalidationReason::ConservativeIncompleteResolution {
-            partition: parent_module.clone(),
-        }
-    ));
+    assert!(
+        conservative_report
+            .invalidated_targets
+            .contains_key(&sibling_target)
+    );
+    assert!(
+        conservative_report.invalidated_targets[&sibling_target].contains(
+            &InvalidationReason::ConservativeIncompleteResolution {
+                partition: parent_module.clone(),
+            }
+        )
+    );
 }
 
 #[test]

@@ -110,7 +110,9 @@ impl EvolutionClassifier {
         governing_adr_is_historical: bool,
     ) -> Result<EvolutionClassification, ArgusError> {
         if discrepancy.trim().is_empty() {
-            return Err(ArgusError::invalid_input("discrepancy description cannot be empty"));
+            return Err(ArgusError::invalid_input(
+                "discrepancy description cannot be empty",
+            ));
         }
 
         let disc_lower = discrepancy.to_ascii_lowercase();
@@ -207,13 +209,19 @@ impl AcceptedDriftRecord {
     /// Validates required fields.
     pub fn validate(&self) -> Result<(), ArgusError> {
         if self.owner.trim().is_empty() {
-            return Err(ArgusError::invalid_input("accepted drift owner cannot be empty"));
+            return Err(ArgusError::invalid_input(
+                "accepted drift owner cannot be empty",
+            ));
         }
         if self.rationale.trim().is_empty() {
-            return Err(ArgusError::invalid_input("accepted drift rationale cannot be empty"));
+            return Err(ArgusError::invalid_input(
+                "accepted drift rationale cannot be empty",
+            ));
         }
         if self.accepted_at.trim().is_empty() {
-            return Err(ArgusError::invalid_input("accepted drift acceptance date cannot be empty"));
+            return Err(ArgusError::invalid_input(
+                "accepted drift acceptance date cannot be empty",
+            ));
         }
         Ok(())
     }
@@ -276,7 +284,9 @@ impl AcceptedDriftRegistry {
         current_date: &str,
     ) -> Option<&AcceptedDriftRecord> {
         self.records.values().find(|r| {
-            &r.target_id == target_id && &r.artifact_id == artifact_id && !r.is_expired(current_date)
+            &r.target_id == target_id
+                && &r.artifact_id == artifact_id
+                && !r.is_expired(current_date)
         })
     }
 

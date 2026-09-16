@@ -130,8 +130,10 @@ fn assessment_draft_binding_and_validation() {
                     confidence_basis_points: 9_000,
                     dimensions: BTreeSet::from([ConformanceDimension::ConstraintConformance]),
                     governing_artifacts: vec![artifact_id.clone()],
-                    declared_intent: "All persistent data must be committed through redb transactions".to_owned(),
-                    observed_implementation: "Direct std::fs::write call found in storage path".to_owned(),
+                    declared_intent:
+                        "All persistent data must be committed through redb transactions".to_owned(),
+                    observed_implementation: "Direct std::fs::write call found in storage path"
+                        .to_owned(),
                     discrepancy: "Implementation bypasses transactional safety boundary".to_owned(),
                     impact: "Potential uncommitted partial writes on crash".to_owned(),
                     suggested_disposition: ConformanceDisposition::FixImplementation,
@@ -144,10 +146,13 @@ fn assessment_draft_binding_and_validation() {
                     confidence_basis_points: 8_500,
                     dimensions: BTreeSet::from([ConformanceDimension::ArchitecturalDrift]),
                     governing_artifacts: vec![artifact_id],
-                    declared_intent: "All wire transports use Langchart adapter contract".to_owned(),
-                    observed_implementation: "Telemetry uses custom gRPC channel for throughput".to_owned(),
+                    declared_intent: "All wire transports use Langchart adapter contract"
+                        .to_owned(),
+                    observed_implementation: "Telemetry uses custom gRPC channel for throughput"
+                        .to_owned(),
                     discrepancy: "Telemetry channel is not wrapped in LlmAdapter".to_owned(),
-                    impact: "Telemetry traffic bypasses Langchart budget and quota tracking".to_owned(),
+                    impact: "Telemetry traffic bypasses Langchart budget and quota tracking"
+                        .to_owned(),
                     suggested_disposition: ConformanceDisposition::CreateSupersedingAdr,
                     evidence: vec![eid_2.clone()],
                 },
@@ -177,7 +182,10 @@ fn assessment_draft_binding_and_validation() {
         ConformanceResult::CandidateFindings { findings } => {
             assert_eq!(findings.len(), 2);
             assert_eq!(findings[0].severity, Severity::High);
-            assert_eq!(findings[0].confidence, Confidence::from_basis_points(9_000).unwrap());
+            assert_eq!(
+                findings[0].confidence,
+                Confidence::from_basis_points(9_000).unwrap()
+            );
             assert_eq!(
                 findings[0].suggested_disposition,
                 ConformanceDisposition::FixImplementation

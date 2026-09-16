@@ -96,27 +96,71 @@ fn syntax_provider_extracts_all_java_symbols() {
     assert!(target_names.contains(&"SUSPENDED"));
 
     // Check TargetKinds
-    let account_cls = inv.targets.iter().find(|t| t.name == "AccountService" && matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::Type })).unwrap();
+    let account_cls = inv
+        .targets
+        .iter()
+        .find(|t| {
+            t.name == "AccountService"
+                && matches!(
+                    t.kind,
+                    TargetKind::Portable {
+                        kind: PortableTargetKind::Type
+                    }
+                )
+        })
+        .unwrap();
     assert!(account_cls.location.is_some());
 
     let deposit_m = inv.targets.iter().find(|t| t.name == "deposit").unwrap();
-    assert!(matches!(deposit_m.kind, TargetKind::Portable { kind: PortableTargetKind::Callable }));
+    assert!(matches!(
+        deposit_m.kind,
+        TargetKind::Portable {
+            kind: PortableTargetKind::Callable
+        }
+    ));
 
     // Check Documentation Evidence
-    let doc_evidence: Vec<_> = inv.evidence.iter().filter(|e| e.kind == EvidenceKind::Documentation).collect();
+    let doc_evidence: Vec<_> = inv
+        .evidence
+        .iter()
+        .filter(|e| e.kind == EvidenceKind::Documentation)
+        .collect();
     assert!(!doc_evidence.is_empty());
 
     // AccountService has doc
-    assert!(doc_evidence.iter().any(|e| e.detail.as_deref().unwrap_or("").contains("Account service managing transactions")));
+    assert!(doc_evidence.iter().any(|e| {
+        e.detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("Account service managing transactions")
+    }));
     // deposit has doc
-    assert!(doc_evidence.iter().any(|e| e.detail.as_deref().unwrap_or("").contains("Deposits amount into account")));
+    assert!(doc_evidence.iter().any(|e| {
+        e.detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("Deposits amount into account")
+    }));
     // Transaction has doc
-    assert!(doc_evidence.iter().any(|e| e.detail.as_deref().unwrap_or("").contains("Immutable transaction record")));
+    assert!(doc_evidence.iter().any(|e| {
+        e.detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("Immutable transaction record")
+    }));
 
     // Check Inheritances
     assert_eq!(inv.inheritances.len(), 3); // AccountService extends BaseService, implements Serializable; Transaction implements Serializable
-    assert!(inv.inheritances.iter().any(|i| i.base_name == "BaseService" && !i.is_interface));
-    assert!(inv.inheritances.iter().any(|i| i.base_name == "Serializable" && i.is_interface));
+    assert!(
+        inv.inheritances
+            .iter()
+            .any(|i| i.base_name == "BaseService" && !i.is_interface)
+    );
+    assert!(
+        inv.inheritances
+            .iter()
+            .any(|i| i.base_name == "Serializable" && i.is_interface)
+    );
 
     // Check Imports
     assert_eq!(inv.imports.len(), 2);

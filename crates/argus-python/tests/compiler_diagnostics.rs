@@ -85,11 +85,8 @@ fn ingests_ruff_json_diagnostics() {
         diagnostic: None,
     };
 
-    let provider = PythonDiagnosticProvider::new(
-        ConfigurationId::derive([b"cfg".as_slice()]),
-        None,
-        None,
-    );
+    let provider =
+        PythonDiagnosticProvider::new(ConfigurationId::derive([b"cfg".as_slice()]), None, None);
 
     let inventory = provider
         .ingest_ruff_json(ruff_json, &source, &[target])
@@ -132,11 +129,8 @@ fn ingests_text_diagnostics() {
         diagnostic: None,
     };
 
-    let provider = PythonDiagnosticProvider::new(
-        ConfigurationId::derive([b"cfg".as_slice()]),
-        None,
-        None,
-    );
+    let provider =
+        PythonDiagnosticProvider::new(ConfigurationId::derive([b"cfg".as_slice()]), None, None);
 
     let inventory = provider
         .ingest_text(flake8_text, &source, &[target])

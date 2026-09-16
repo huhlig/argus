@@ -986,8 +986,12 @@ fn prune_unreferenced_artifacts_removes_only_unreferenced() {
     let path = temporary.path().join("state.redb");
     let mut queue = DurableQueue::open(&path).unwrap();
 
-    let art1 = queue.store_artifact("model-transcript.v1", b"prompt 1").unwrap();
-    let art2 = queue.store_artifact("model-transcript.v1", b"prompt 2 (unreferenced)").unwrap();
+    let art1 = queue
+        .store_artifact("model-transcript.v1", b"prompt 1")
+        .unwrap();
+    let art2 = queue
+        .store_artifact("model-transcript.v1", b"prompt 2 (unreferenced)")
+        .unwrap();
 
     let item = work("item-1");
     queue.admit(&item).unwrap();
@@ -1058,4 +1062,3 @@ fn prune_terminal_runs_removes_old_work_and_preserves_adjudications() {
     assert_eq!(adjs.len(), 1);
     assert_eq!(adjs[0].finding, adj.finding);
 }
-

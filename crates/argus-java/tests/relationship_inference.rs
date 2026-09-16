@@ -89,10 +89,14 @@ fn relationship_inference_detects_extends_implements_and_calls() {
         )
         .unwrap();
 
-    let kinds: BTreeMap<String, usize> = rel_inv.relations.iter().fold(BTreeMap::new(), |mut acc, r| {
-        *acc.entry(r.kind.clone()).or_insert(0) += 1;
-        acc
-    });
+    let kinds: BTreeMap<String, usize> =
+        rel_inv
+            .relations
+            .iter()
+            .fold(BTreeMap::new(), |mut acc, r| {
+                *acc.entry(r.kind.clone()).or_insert(0) += 1;
+                acc
+            });
 
     // Contains: file -> ParentClass, ChildClass; ParentClass -> execute; ChildClass -> run
     assert!(kinds.get("core:contains").copied().unwrap_or(0) >= 4);

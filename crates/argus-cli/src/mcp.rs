@@ -68,8 +68,9 @@ pub fn run_mcp_stdio_server(root: &Path) -> Result<(), ArgusError> {
         let trimmed = line.trim();
         if !trimmed.is_empty() {
             if let Some(resp) = handle_json_rpc(root, trimmed) {
-                writeln!(writer, "{resp}")
-                    .map_err(|e| ArgusError::invariant("failed to write to stdout").with_source(e))?;
+                writeln!(writer, "{resp}").map_err(|e| {
+                    ArgusError::invariant("failed to write to stdout").with_source(e)
+                })?;
                 writer
                     .flush()
                     .map_err(|e| ArgusError::invariant("failed to flush stdout").with_source(e))?;
@@ -303,7 +304,10 @@ pub fn handle_json_rpc(root: &Path, request_json: &str) -> Option<String> {
 
         "resources/read" => {
             let params = req.params.unwrap_or(serde_json::Value::Null);
-            let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or_default();
+            let uri = params
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
 
             match uri {
                 "argus://status" => {
@@ -432,10 +436,11 @@ fn execute_tool(root: &Path, tool_name: &str, arguments: &serde_json::Value) -> 
 
             let queue_res = crate::working_queue(root);
             let findings = match queue_res {
-                Ok(queue) => argus_report::extract_all_findings_from_queue(&queue, &run_id).or_else(|_| {
-                    let bundle_dir = root.join(".argus/reviews").join(run_id.as_str());
-                    argus_report::extract_all_findings_from_bundle(&bundle_dir, &run_id)
-                }),
+                Ok(queue) => argus_report::extract_all_findings_from_queue(&queue, &run_id)
+                    .or_else(|_| {
+                        let bundle_dir = root.join(".argus/reviews").join(run_id.as_str());
+                        argus_report::extract_all_findings_from_bundle(&bundle_dir, &run_id)
+                    }),
                 Err(_) => {
                     let bundle_dir = root.join(".argus/reviews").join(run_id.as_str());
                     argus_report::extract_all_findings_from_bundle(&bundle_dir, &run_id)
@@ -448,17 +453,18 @@ fn execute_tool(root: &Path, tool_name: &str, arguments: &serde_json::Value) -> 
             };
 
             let policy_filter = arguments.get("policy").and_then(|v| v.as_str());
-            let severity_filter = arguments
-                .get("severity")
-                .and_then(|v| v.as_str())
-                .and_then(|s| match s.to_lowercase().as_str() {
-                    "critical" => Some(Severity::Critical),
-                    "high" => Some(Severity::High),
-                    "medium" => Some(Severity::Medium),
-                    "low" => Some(Severity::Low),
-                    "note" => Some(Severity::Note),
-                    _ => None,
-                });
+            let severity_filter =
+                arguments
+                    .get("severity")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| match s.to_lowercase().as_str() {
+                        "critical" => Some(Severity::Critical),
+                        "high" => Some(Severity::High),
+                        "medium" => Some(Severity::Medium),
+                        "low" => Some(Severity::Low),
+                        "note" => Some(Severity::Note),
+                        _ => None,
+                    });
             let category_filter = arguments.get("category").and_then(|v| v.as_str());
             let search_query = arguments
                 .get("query")
@@ -511,11 +517,7 @@ fn execute_tool(root: &Path, tool_name: &str, arguments: &serde_json::Value) -> 
                 );
             };
 
-            let mut args = vec![
-                r_id.to_owned(),
-                f_id.to_owned(),
-                format!("--{dec}"),
-            ];
+            let mut args = vec![r_id.to_owned(), f_id.to_owned(), format!("--{dec}")];
             if let Some(rat) = rationale {
                 args.push("--rationale".to_owned());
                 args.push(rat.to_owned());
@@ -568,7 +570,9 @@ mod tests {
         let tools_req = r#"{"jsonrpc":"2.0","id":10,"method":"tools/list"}"#;
         let tools_resp = handle_json_rpc(temp.path(), tools_req).expect("response");
         let tools_val: serde_json::Value = serde_json::from_str(&tools_resp).unwrap();
-        let tools = tools_val["result"]["tools"].as_array().expect("tools array");
+        let tools = tools_val["result"]["tools"]
+            .as_array()
+            .expect("tools array");
         assert_eq!(tools.len(), 4);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"argus_status"));
@@ -580,7 +584,9 @@ mod tests {
         let res_req = r#"{"jsonrpc":"2.0","id":11,"method":"resources/list"}"#;
         let res_resp = handle_json_rpc(temp.path(), res_req).expect("response");
         let res_val: serde_json::Value = serde_json::from_str(&res_resp).unwrap();
-        let resources = res_val["result"]["resources"].as_array().expect("resources array");
+        let resources = res_val["result"]["resources"]
+            .as_array()
+            .expect("resources array");
         assert_eq!(resources.len(), 2);
 
         // resources/read argus://policies
@@ -614,7 +620,12 @@ mod tests {
         let tool_resp = handle_json_rpc(temp.path(), unknown_tool_req).expect("response");
         let tool_val: serde_json::Value = serde_json::from_str(&tool_resp).unwrap();
         assert_eq!(tool_val["result"]["isError"], true);
-        assert!(tool_val["result"]["content"][0]["text"].as_str().unwrap().contains("Unknown tool"));
+        assert!(
+            tool_val["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Unknown tool")
+        );
     }
 
     #[test]
@@ -632,21 +643,19 @@ mod tests {
             run_id: run_id.clone(),
             policy_version: "documentation-public-api@1".to_owned(),
             summary: argus_report::DocumentationReportSummary::default(),
-            finding_clusters: vec![
-                argus_report::DocumentationFindingCluster {
-                    id: argus_core::FindingId::derive([b"cluster-mcp-1".as_slice()]),
-                    representative: argus_policies::DocumentationCandidate {
-                        title: "Undocumented public function".to_owned(),
-                        description: "Public function lacks doc comment".to_owned(),
-                        severity: argus_core::Severity::High,
-                        confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
-                        dimensions: std::collections::BTreeSet::new(),
-                        citations: Vec::new(),
-                    },
-                    occurrences: Vec::new(),
-                    adjudication: argus_core::AdjudicationState::Unreviewed,
+            finding_clusters: vec![argus_report::DocumentationFindingCluster {
+                id: argus_core::FindingId::derive([b"cluster-mcp-1".as_slice()]),
+                representative: argus_policies::DocumentationCandidate {
+                    title: "Undocumented public function".to_owned(),
+                    description: "Public function lacks doc comment".to_owned(),
+                    severity: argus_core::Severity::High,
+                    confidence: argus_core::Confidence::from_basis_points(9000).unwrap(),
+                    dimensions: std::collections::BTreeSet::new(),
+                    citations: Vec::new(),
                 },
-            ],
+                occurrences: Vec::new(),
+                adjudication: argus_core::AdjudicationState::Unreviewed,
+            }],
             assessments: Vec::new(),
         };
 

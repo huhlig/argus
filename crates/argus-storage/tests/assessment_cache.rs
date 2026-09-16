@@ -16,15 +16,11 @@
 
 use argus_core::{ContentHash, PolicyId, ReviewFingerprint, SnapshotId, TargetId};
 use argus_storage::{
-    CachedAssessmentRecord, DurableQueue, ReviewAssessmentCache,
-    parse_review_assessment_cache_key, review_assessment_cache_key,
+    CachedAssessmentRecord, DurableQueue, ReviewAssessmentCache, parse_review_assessment_cache_key,
+    review_assessment_cache_key,
 };
 
-fn fixture_fingerprint(
-    target_str: &str,
-    policy_str: &str,
-    impl_byte: u8,
-) -> ReviewFingerprint {
+fn fixture_fingerprint(target_str: &str, policy_str: &str, impl_byte: u8) -> ReviewFingerprint {
     ReviewFingerprint {
         snapshot: SnapshotId::derive([b"snapshot-1".as_slice()]),
         target: TargetId::derive([target_str.as_bytes()]),
@@ -472,7 +468,10 @@ fn durable_queue_integrated_cache_operations() {
         .unwrap()
         .expect("should hit cache in DurableQueue");
     assert_eq!(hit.outcome_kind, "candidate_findings");
-    assert_eq!(hit.summary.as_deref(), Some("Potential memory leak detected"));
+    assert_eq!(
+        hit.summary.as_deref(),
+        Some("Potential memory leak detected")
+    );
 
     // Lookup by hash
     let hash = fp.composite_hash();

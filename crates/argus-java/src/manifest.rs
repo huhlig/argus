@@ -18,8 +18,8 @@ use argus_core::{
     Target, TargetId, TargetKind, TargetVisibility,
 };
 use argus_language::{
-    AdapterIdentity, AdapterInventory, AdapterProvider, DiscoveryPartition,
-    LanguageAdapter, ProviderRole, SourceAccess,
+    AdapterIdentity, AdapterInventory, AdapterProvider, DiscoveryPartition, LanguageAdapter,
+    ProviderRole, SourceAccess,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -154,9 +154,13 @@ impl JavaManifestAdapter {
         let text = std::str::from_utf8(bytes).ok()?;
         let project: PomProject = quick_xml::de::from_str(text).ok()?;
 
-        let group_id = project.group_id.or_else(|| project.parent.as_ref().and_then(|p| p.group_id.clone()));
+        let group_id = project
+            .group_id
+            .or_else(|| project.parent.as_ref().and_then(|p| p.group_id.clone()));
         let artifact_id = project.artifact_id?;
-        let version = project.version.or_else(|| project.parent.as_ref().and_then(|p| p.version.clone()));
+        let version = project
+            .version
+            .or_else(|| project.parent.as_ref().and_then(|p| p.version.clone()));
         let modules = project.modules.map(|m| m.module).unwrap_or_default();
 
         let mut dependencies = Vec::new();
@@ -194,7 +198,14 @@ impl JavaManifestAdapter {
 
     /// Parse a Gradle build file (`build.gradle` or `build.gradle.kts`).
     #[must_use]
-    pub fn parse_gradle_build(bytes: &[u8]) -> (Option<String>, Option<String>, Option<String>, Vec<JavaPackageDependency>) {
+    pub fn parse_gradle_build(
+        bytes: &[u8],
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Vec<JavaPackageDependency>,
+    ) {
         let text = String::from_utf8_lossy(bytes);
         let mut group = None;
         let name = None;
@@ -215,7 +226,8 @@ impl JavaManifestAdapter {
             }
 
             // Extract version
-            if version.is_none() && (line.starts_with("version =") || line.starts_with("version=")) {
+            if version.is_none() && (line.starts_with("version =") || line.starts_with("version="))
+            {
                 if let Some(val) = extract_string_literal(line) {
                     version = Some(val);
                 }
@@ -350,7 +362,10 @@ impl LanguageAdapter for JavaManifestAdapter {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn inventory(&self, source: &dyn SourceAccess) -> Result<AdapterInventory, argus_core::ArgusError> {
+    fn inventory(
+        &self,
+        source: &dyn SourceAccess,
+    ) -> Result<AdapterInventory, argus_core::ArgusError> {
         let mut targets = Vec::new();
         let mut relations = Vec::new();
         let mut partitions = Vec::new();
@@ -364,8 +379,10 @@ impl LanguageAdapter for JavaManifestAdapter {
         let mut gradle_modules = Vec::new();
         for path in &self.manifest_paths {
             let path_str = path.as_str();
-            if path_str == "settings.gradle" || path_str.ends_with("/settings.gradle")
-                || path_str == "settings.gradle.kts" || path_str.ends_with("/settings.gradle.kts")
+            if path_str == "settings.gradle"
+                || path_str.ends_with("/settings.gradle")
+                || path_str == "settings.gradle.kts"
+                || path_str.ends_with("/settings.gradle.kts")
             {
                 if let Ok(bytes) = source.read(path) {
                     let (name, inc) = Self::parse_gradle_settings(&bytes);
@@ -433,7 +450,11 @@ impl LanguageAdapter for JavaManifestAdapter {
                     artifact.as_bytes(),
                 ]);
 
-                let modules = if is_root { gradle_modules.clone() } else { Vec::new() };
+                let modules = if is_root {
+                    gradle_modules.clone()
+                } else {
+                    Vec::new()
+                };
 
                 discovered_packages.push(DiscoveredJavaPackage {
                     manifest_path: path.clone(),
@@ -448,10 +469,11 @@ impl LanguageAdapter for JavaManifestAdapter {
             }
         }
 
-        let package_artifact_to_id: std::collections::BTreeMap<String, TargetId> = discovered_packages
-            .iter()
-            .map(|pkg| (pkg.artifact_id.to_ascii_lowercase(), pkg.target_id.clone()))
-            .collect();
+        let package_artifact_to_id: std::collections::BTreeMap<String, TargetId> =
+            discovered_packages
+                .iter()
+                .map(|pkg| (pkg.artifact_id.to_ascii_lowercase(), pkg.target_id.clone()))
+                .collect();
 
         // Emit targets and relations
         for pkg in &discovered_packages {
@@ -461,7 +483,9 @@ impl LanguageAdapter for JavaManifestAdapter {
                 PortableTargetKind::Package
             };
 
-            let file_size = source.read(&pkg.manifest_path).map_or(0, |b| b.len() as u64);
+            let file_size = source
+                .read(&pkg.manifest_path)
+                .map_or(0, |b| b.len() as u64);
             let span = ByteSpan::new(0, file_size)?;
             let location = SourceLocation {
                 path: pkg.manifest_path.clone(),
@@ -495,7 +519,9 @@ impl LanguageAdapter for JavaManifestAdapter {
 
             // Dependencies between packages in the workspace
             for dep in &pkg.dependencies {
-                if let Some(dep_target_id) = package_artifact_to_id.get(&dep.artifact_id.to_ascii_lowercase()) {
+                if let Some(dep_target_id) =
+                    package_artifact_to_id.get(&dep.artifact_id.to_ascii_lowercase())
+                {
                     let rel_id = RelationId::derive([
                         pkg.target_id.as_str().as_bytes(),
                         dep_target_id.as_str().as_bytes(),

@@ -87,11 +87,7 @@ impl PythonRelationshipProvider {
 
         // 2. Inheritance relations
         for inh in inheritances {
-            let simple_name = inh
-                .base_name
-                .rsplit('.')
-                .next()
-                .unwrap_or(&inh.base_name);
+            let simple_name = inh.base_name.rsplit('.').next().unwrap_or(&inh.base_name);
 
             if let Some(candidates) = class_targets.get(simple_name) {
                 if candidates.len() == 1 {
@@ -140,15 +136,12 @@ impl PythonRelationshipProvider {
         // 3. Import relations
         for imp in imports {
             if let Some(mod_path) = &imp.module_path {
-                let resolved_target = file_targets_by_module
-                    .get(mod_path)
-                    .copied()
-                    .or_else(|| {
-                        file_targets_by_module
-                            .iter()
-                            .find(|(k, _)| mod_path.starts_with(k.as_str()))
-                            .map(|(_, v)| *v)
-                    });
+                let resolved_target = file_targets_by_module.get(mod_path).copied().or_else(|| {
+                    file_targets_by_module
+                        .iter()
+                        .find(|(k, _)| mod_path.starts_with(k.as_str()))
+                        .map(|(_, v)| *v)
+                });
 
                 if let Some(target_file) = resolved_target {
                     insert_relation(

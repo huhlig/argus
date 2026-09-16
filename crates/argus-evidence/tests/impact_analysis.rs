@@ -15,8 +15,8 @@
 
 use argus_core::{
     AuditModel, ByteSpan, ContentHash, DesignArtifactId, InventoryState, PolicyId,
-    PortableTargetKind, ReviewFingerprint, SnapshotId, SourceLocation, SourcePath, Target, TargetId,
-    TargetKind, TargetVisibility,
+    PortableTargetKind, ReviewFingerprint, SnapshotId, SourceLocation, SourcePath, Target,
+    TargetId, TargetKind, TargetVisibility,
 };
 use argus_evidence::{
     CallEdge, DependencyKind, DocumentedContract, ImpactAnalysisConfig, ImpactAnalyzer,
@@ -63,7 +63,9 @@ fn test_target_delta_from_file_delta() {
     audit_model.targets.insert(t4_id.clone(), t4);
 
     let mut file_delta = FileDelta::default();
-    file_delta.added.insert(SourcePath::new("src/a.rs").unwrap());
+    file_delta
+        .added
+        .insert(SourcePath::new("src/a.rs").unwrap());
     file_delta
         .modified
         .insert(SourcePath::new("src/b.rs").unwrap());
@@ -125,12 +127,8 @@ fn test_target_delta_from_audit_models_and_content_hashes() {
     cur_files.insert(p2, h2_new);
     cur_files.insert(p4, h4);
 
-    let delta = TargetDelta::from_audit_models(
-        &baseline,
-        &current,
-        Some(&base_files),
-        Some(&cur_files),
-    );
+    let delta =
+        TargetDelta::from_audit_models(&baseline, &current, Some(&base_files), Some(&cur_files));
 
     assert!(delta.unchanged.contains(&t1_id));
     assert!(delta.modified.contains(&t2_id));

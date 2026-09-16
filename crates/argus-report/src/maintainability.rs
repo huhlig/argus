@@ -299,7 +299,9 @@ impl MaintainabilityReport {
         Ok(())
     }
 
-    pub fn read_jsonl(path: &Path) -> Result<Vec<MaintainabilityReportAssessment>, argus_core::ArgusError> {
+    pub fn read_jsonl(
+        path: &Path,
+    ) -> Result<Vec<MaintainabilityReportAssessment>, argus_core::ArgusError> {
         read_jsonl(path)
     }
 
@@ -587,11 +589,11 @@ mod tests {
     #[test]
     fn build_empty_maintainability_report() {
         let run_id = RunId::derive([b"run-1".as_slice()]);
-        let report = MaintainabilityReport::build(run_id, "maintainability-conservative@1", &[], &[], &[])
-            .unwrap();
+        let report =
+            MaintainabilityReport::build(run_id, "maintainability-conservative@1", &[], &[], &[])
+                .unwrap();
         assert_eq!(report.summary.total, 0);
         assert_eq!(report.summary.finding_clusters, 0);
         assert!(report.to_markdown().contains("No maintainability defects"));
     }
 }
-

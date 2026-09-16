@@ -308,8 +308,9 @@ impl DesignArtifactParser {
                 .to_owned()
         });
 
-        let status_resolved =
-            status.unwrap_or_else(|| DesignStatus::Unknown { raw: "unspecified".to_owned() });
+        let status_resolved = status.unwrap_or_else(|| DesignStatus::Unknown {
+            raw: "unspecified".to_owned(),
+        });
 
         Ok(DesignArtifact {
             id,
@@ -519,7 +520,8 @@ impl DesignArtifactIndex {
                     path: artifact.path.clone(),
                     severity: DocumentHealthSeverity::Warning,
                     kind: DocumentHealthIssueKind::StaleDraft,
-                    message: "Draft artifact contains no sections or substantive content".to_owned(),
+                    message: "Draft artifact contains no sections or substantive content"
+                        .to_owned(),
                 });
             }
 
@@ -644,7 +646,10 @@ fn extract_frontmatter(content: &str) -> (ParsedFrontmatter, &str) {
         }
 
         // Check if line is a bullet item for a multi-line list
-        if let Some(item) = trimmed_line.strip_prefix('-').or_else(|| trimmed_line.strip_prefix('*')) {
+        if let Some(item) = trimmed_line
+            .strip_prefix('-')
+            .or_else(|| trimmed_line.strip_prefix('*'))
+        {
             let item_val = item.trim().trim_matches('"').trim_matches('\'').to_owned();
             if let Some(key) = &current_list_key {
                 match key.as_str() {
@@ -736,7 +741,9 @@ fn parse_status(val: &str) -> DesignStatus {
     } else if lower.starts_with("draft") {
         DesignStatus::Draft
     } else {
-        DesignStatus::Unknown { raw: val.trim().to_owned() }
+        DesignStatus::Unknown {
+            raw: val.trim().to_owned(),
+        }
     }
 }
 
@@ -794,29 +801,28 @@ fn parse_sections(lines: &[&str]) -> Vec<DesignSection> {
     let mut current_level = 0;
     let mut current_body_lines = Vec::new();
 
-    let flush_section = |sections: &mut Vec<DesignSection>,
-                         heading: &str,
-                         level: u32,
-                         body_lines: &[&str]| {
-        if heading.is_empty() && body_lines.is_empty() {
-            return;
-        }
-        let content = body_lines.join("\n").trim().to_owned();
-        let id = slugify(if heading.is_empty() { "intro" } else { heading });
-        let requirements = extract_requirements(body_lines);
-        sections.push(DesignSection {
-            id,
-            heading: heading.to_owned(),
-            level,
-            content,
-            requirements,
-        });
-    };
+    let flush_section =
+        |sections: &mut Vec<DesignSection>, heading: &str, level: u32, body_lines: &[&str]| {
+            if heading.is_empty() && body_lines.is_empty() {
+                return;
+            }
+            let content = body_lines.join("\n").trim().to_owned();
+            let id = slugify(if heading.is_empty() { "intro" } else { heading });
+            let requirements = extract_requirements(body_lines);
+            sections.push(DesignSection {
+                id,
+                heading: heading.to_owned(),
+                level,
+                content,
+                requirements,
+            });
+        };
 
     for line in lines {
         let trimmed = line.trim();
         if trimmed.starts_with('#') {
-            let level = u32::try_from(trimmed.chars().take_while(|c| *c == '#').count()).unwrap_or(0);
+            let level =
+                u32::try_from(trimmed.chars().take_while(|c| *c == '#').count()).unwrap_or(0);
             let heading_text = trimmed[level as usize..].trim();
             flush_section(
                 &mut sections,
@@ -877,7 +883,10 @@ fn extract_requirements(lines: &[&str]) -> Vec<DesignRequirement> {
                 .trim()
                 .to_owned();
 
-            let level = if upper.contains("MUST") || upper.contains("SHALL") || upper.contains("REQUIRED") {
+            let level = if upper.contains("MUST")
+                || upper.contains("SHALL")
+                || upper.contains("REQUIRED")
+            {
                 RequirementLevel::Must
             } else if upper.contains("SHOULD") || upper.contains("RECOMMENDED") {
                 RequirementLevel::Should

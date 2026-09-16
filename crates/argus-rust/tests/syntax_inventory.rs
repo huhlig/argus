@@ -384,4 +384,3 @@ pub fn platform_specific() -> &'static str { "linux" }
     assert_eq!(platforms.len(), 2);
     assert_ne!(platforms[0].id, platforms[1].id);
 }
-

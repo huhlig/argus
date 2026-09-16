@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    ActorRegistry, ActorRegistryError, CandidateRecorderActor, DurableConformanceOutcomeActor,
-    EvidenceRequestEvaluatorActor, FindingWorkSchedulerActor, ConformanceReviewMaterialization,
+    ActorRegistry, ActorRegistryError, CandidateRecorderActor, ConformanceReviewMaterialization,
+    DurableConformanceOutcomeActor, EvidenceRequestEvaluatorActor, FindingWorkSchedulerActor,
     OutcomeProvenance, WorkflowDataStore,
 };
 use argus_core::{EvidenceKind, RunId, SnapshotId};

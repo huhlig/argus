@@ -20,8 +20,8 @@ use argus_core::{ApplicabilityState, SourceLocation, WorkItemId};
 use argus_evidence::ReviewContextFrame;
 use argus_policies::{
     ALL_MAINTAINABILITY_DIMENSIONS, MaintainabilityAssessment, MaintainabilityAssessmentDraft,
-    MaintainabilityDimensionDraft, MaintainabilityDimensionStatus,
-    MaintainabilityResult, MaintainabilityResultDraft, MaintainabilityTargetProfile,
+    MaintainabilityDimensionDraft, MaintainabilityDimensionStatus, MaintainabilityResult,
+    MaintainabilityResultDraft, MaintainabilityTargetProfile,
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
@@ -46,7 +46,9 @@ impl argus_provider::OutputValidator for MaintainabilityReviewTransportValidator
         }
         let payload = &output["payload"];
         if payload.get("candidates").is_some() {
-            return Err("maintainability candidates must be derived from the assessment".to_owned());
+            return Err(
+                "maintainability candidates must be derived from the assessment".to_owned(),
+            );
         }
         let draft: MaintainabilityAssessmentDraft = serde_json::from_value(
             payload

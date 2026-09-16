@@ -120,21 +120,26 @@ impl MaintainabilityApplicabilityPolicy {
             "callable".to_owned(),
             MaintainabilityApplicabilityRule {
                 state: ApplicabilityState::Applicable,
-                rationale: "callable function or method eligible for maintainability and complexity review".to_owned(),
+                rationale:
+                    "callable function or method eligible for maintainability and complexity review"
+                        .to_owned(),
             },
         );
         rules.insert(
             "type".to_owned(),
             MaintainabilityApplicabilityRule {
                 state: ApplicabilityState::Applicable,
-                rationale: "type declaration eligible for cohesion, coupling, and abstraction review".to_owned(),
+                rationale:
+                    "type declaration eligible for cohesion, coupling, and abstraction review"
+                        .to_owned(),
             },
         );
         rules.insert(
             "module".to_owned(),
             MaintainabilityApplicabilityRule {
                 state: ApplicabilityState::Applicable,
-                rationale: "module declaration eligible for modularity and dependency review".to_owned(),
+                rationale: "module declaration eligible for modularity and dependency review"
+                    .to_owned(),
             },
         );
         rules.insert(
@@ -160,18 +165,19 @@ impl MaintainabilityApplicabilityPolicy {
             MaintainabilityTargetClass::Unknown => "unknown",
         };
 
-        self.rules
-            .get(key)
-            .map_or_else(
-                || MaintainabilityApplicability {
-                    state: ApplicabilityState::NotApplicable,
-                    reasons: vec![format!("no rule defined for target class {:?}", target.class)],
-                },
-                |rule| MaintainabilityApplicability {
-                    state: rule.state,
-                    reasons: vec![rule.rationale.clone()],
-                },
-            )
+        self.rules.get(key).map_or_else(
+            || MaintainabilityApplicability {
+                state: ApplicabilityState::NotApplicable,
+                reasons: vec![format!(
+                    "no rule defined for target class {:?}",
+                    target.class
+                )],
+            },
+            |rule| MaintainabilityApplicability {
+                state: rule.state,
+                reasons: vec![rule.rationale.clone()],
+            },
+        )
     }
 }
 
@@ -359,9 +365,18 @@ impl MaintainabilityAssessment {
                 for finding in findings {
                     validate_text("maintainability finding title", &finding.title)?;
                     validate_text("maintainability finding description", &finding.description)?;
-                    validate_text("maintainability refactoring pattern", &finding.refactoring.pattern)?;
-                    validate_text("maintainability refactoring advice", &finding.refactoring.advice)?;
-                    validate_text("maintainability refactoring benefit", &finding.refactoring.benefit)?;
+                    validate_text(
+                        "maintainability refactoring pattern",
+                        &finding.refactoring.pattern,
+                    )?;
+                    validate_text(
+                        "maintainability refactoring advice",
+                        &finding.refactoring.advice,
+                    )?;
+                    validate_text(
+                        "maintainability refactoring benefit",
+                        &finding.refactoring.benefit,
+                    )?;
                     if finding.dimensions.is_empty() {
                         return Err(argus_core::ArgusError::invalid_input(
                             "maintainability finding must reference at least one dimension",
@@ -656,8 +671,7 @@ mod tests {
             "dimensions": ["cyclomatic_complexity"],
             "citations": []
         });
-        let draft: MaintainabilityCandidateDraft =
-            serde_json::from_value(json_confidence).unwrap();
+        let draft: MaintainabilityCandidateDraft = serde_json::from_value(json_confidence).unwrap();
         assert_eq!(draft.confidence.basis_points(), 9000);
     }
 }

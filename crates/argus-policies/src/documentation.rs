@@ -92,6 +92,70 @@ pub struct DocumentationApplicabilityDecision {
 }
 
 impl DocumentationApplicabilityPolicy {
+    /// Reviews non-public behavioral contracts without imposing public API prose requirements.
+    pub fn internal_behavior() -> Result<Self, argus_core::ArgusError> {
+        let classes = [
+            DocumentationTargetClass::Workspace,
+            DocumentationTargetClass::Package,
+            DocumentationTargetClass::Module,
+            DocumentationTargetClass::Type,
+            DocumentationTargetClass::Callable,
+            DocumentationTargetClass::Constant,
+            DocumentationTargetClass::Test,
+            DocumentationTargetClass::File,
+            DocumentationTargetClass::LanguageSpecific,
+            DocumentationTargetClass::Other,
+        ];
+        let mut rules = Vec::new();
+        for class in classes {
+            let declaration = matches!(
+                class,
+                DocumentationTargetClass::Module
+                    | DocumentationTargetClass::Type
+                    | DocumentationTargetClass::Callable
+                    | DocumentationTargetClass::Constant
+            );
+            for visibility in [
+                TargetVisibility::Public,
+                TargetVisibility::Restricted,
+                TargetVisibility::Private,
+                TargetVisibility::NotApplicable,
+                TargetVisibility::Unknown,
+                TargetVisibility::Inherited,
+            ] {
+                if declaration
+                    && matches!(
+                        visibility,
+                        TargetVisibility::Unknown | TargetVisibility::Inherited
+                    )
+                {
+                    continue;
+                }
+                let applicable = declaration
+                    && matches!(
+                        visibility,
+                        TargetVisibility::Restricted | TargetVisibility::Private
+                    );
+                rules.push(DocumentationApplicabilityRule {
+                    class,
+                    visibility,
+                    state: if applicable {
+                        ApplicabilityState::Applicable
+                    } else {
+                        ApplicabilityState::NotApplicable
+                    },
+                    rationale: if applicable {
+                        "internal behavioral contracts are reviewed"
+                    } else {
+                        "target is outside the internal documentation policy"
+                    }
+                    .to_owned(),
+                });
+            }
+        }
+        Self::new(rules)
+    }
+
     pub fn public_api() -> Result<Self, argus_core::ArgusError> {
         let reviewed = [
             DocumentationTargetClass::Workspace,
@@ -508,20 +572,40 @@ impl DocumentationAssessmentBinding {
                 ));
             }
         }
+        let internal = self.policy_version == "documentation-internal@1";
         for dimension in &draft.dimensions {
             dimension.validate_comparison()?;
+            if internal
+                && dimension.status == DocumentationDimensionStatus::Deficient
+                && (dimension.source_materiality != SourceMateriality::MaterialBehavior
+                    || matches!(
+                        dimension.dimension,
+                        DocumentationDimension::Presence
+                            | DocumentationDimension::Examples
+                            | DocumentationDimension::Inputs
+                            | DocumentationDimension::Outputs
+                            | DocumentationDimension::Currency
+                            | DocumentationDimension::Value
+                    ))
+            {
+                return Err(argus_core::ArgusError::invalid_input(
+                    "internal documentation findings require a material behavioral contract, not public API prose requirements",
+                ));
+            }
             if !matches!(
                 dimension.status,
                 DocumentationDimensionStatus::Satisfied | DocumentationDimensionStatus::Deficient
             ) {
                 continue;
             }
-            self.require_evidence_kind(
-                &dimension.evidence,
-                EvidenceKind::Documentation,
-                "evaluated documentation dimensions require documentation evidence",
-            )?;
-            if dimension.dimension != DocumentationDimension::Presence {
+            if !internal {
+                self.require_evidence_kind(
+                    &dimension.evidence,
+                    EvidenceKind::Documentation,
+                    "evaluated documentation dimensions require documentation evidence",
+                )?;
+            }
+            if internal || dimension.dimension != DocumentationDimension::Presence {
                 self.require_evidence_kind(
                     &dimension.evidence,
                     EvidenceKind::Source,
@@ -531,11 +615,25 @@ impl DocumentationAssessmentBinding {
         }
         if let DocumentationResultDraft::CandidateFindings { findings } = &draft.result {
             for finding in findings {
-                self.require_evidence_kind(
-                    &finding.evidence,
-                    EvidenceKind::Documentation,
-                    "documentation findings require documentation evidence",
-                )?;
+                if !internal {
+                    self.require_evidence_kind(
+                        &finding.evidence,
+                        EvidenceKind::Documentation,
+                        "documentation findings require documentation evidence",
+                    )?;
+                }
+                if internal
+                    && finding.dimensions.iter().any(|d| {
+                        !draft.dimensions.iter().any(|item| {
+                            item.dimension == *d
+                                && item.status == DocumentationDimensionStatus::Deficient
+                        })
+                    })
+                {
+                    return Err(argus_core::ArgusError::invalid_input(
+                        "internal documentation findings must cite a deficient behavioral dimension",
+                    ));
+                }
                 self.require_evidence_kind(
                     &finding.evidence,
                     EvidenceKind::Source,
@@ -875,6 +973,45 @@ mod tests {
             }],
             result: DocumentationResultDraft::Passed,
         }
+    }
+
+    #[test]
+    fn internal_applicability_preserves_public_test_and_unknown_boundaries() {
+        let internal = DocumentationApplicabilityPolicy::internal_behavior().unwrap();
+        let public = DocumentationApplicabilityPolicy::public_api().unwrap();
+        for visibility in [TargetVisibility::Private, TargetVisibility::Restricted] {
+            let mut profile = target(InventoryState::Represented);
+            profile.visibility = visibility;
+            assert_eq!(
+                internal.evaluate(&profile).state,
+                ApplicabilityState::Applicable
+            );
+            assert_eq!(
+                public.evaluate(&profile).state,
+                ApplicabilityState::NotApplicable
+            );
+            profile.class = DocumentationTargetClass::Test;
+            assert_eq!(
+                internal.evaluate(&profile).state,
+                ApplicabilityState::NotApplicable
+            );
+        }
+        let mut profile = target(InventoryState::Represented);
+        assert_eq!(
+            internal.evaluate(&profile).state,
+            ApplicabilityState::NotApplicable
+        );
+        profile.visibility = TargetVisibility::Unknown;
+        assert_eq!(
+            internal.evaluate(&profile).state,
+            ApplicabilityState::Pending
+        );
+        profile.visibility = TargetVisibility::Private;
+        profile.inventory = InventoryState::Failed;
+        assert_eq!(
+            internal.evaluate(&profile).state,
+            ApplicabilityState::Pending
+        );
     }
 
     #[test]

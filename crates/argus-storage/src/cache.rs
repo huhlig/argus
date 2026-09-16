@@ -261,7 +261,9 @@ impl ReviewAssessmentCache {
         {
             write
                 .open_table(REVIEW_ASSESSMENT_CACHE)
-                .map_err(database_error("cannot create review assessment cache table"))?;
+                .map_err(database_error(
+                    "cannot create review assessment cache table",
+                ))?;
         }
         write
             .commit()
@@ -329,13 +331,7 @@ impl ReviewAssessmentCache {
         fingerprint_hash: &ContentHash,
         now_millis: u64,
     ) -> Result<bool, ArgusError> {
-        db_touch_cached_assessment(
-            &self.database,
-            target,
-            policy,
-            fingerprint_hash,
-            now_millis,
-        )
+        db_touch_cached_assessment(&self.database, target, policy, fingerprint_hash, now_millis)
     }
 
     /// Prunes all expired cache entries whose `expires_at_millis <= now_millis`.
@@ -442,9 +438,9 @@ pub(crate) fn db_insert_cached_assessment(
     record.validate()?;
     let key = record.cache_key();
     let bytes = encode_record(record)?;
-    let write = database
-        .begin_write()
-        .map_err(database_error("cannot begin write transaction for assessment cache"))?;
+    let write = database.begin_write().map_err(database_error(
+        "cannot begin write transaction for assessment cache",
+    ))?;
     {
         let mut table = write
             .open_table(REVIEW_ASSESSMENT_CACHE)
@@ -467,9 +463,9 @@ pub(crate) fn db_get_cached_assessment(
 ) -> Result<Option<CachedAssessmentRecord>, ArgusError> {
     let fingerprint_hash = fingerprint.composite_hash();
     let key = review_assessment_cache_key(target, policy, &fingerprint_hash);
-    let read = database
-        .begin_read()
-        .map_err(database_error("cannot begin read transaction for assessment cache"))?;
+    let read = database.begin_read().map_err(database_error(
+        "cannot begin read transaction for assessment cache",
+    ))?;
     let table = read
         .open_table(REVIEW_ASSESSMENT_CACHE)
         .map_err(database_error("cannot open review assessment cache table"))?;
@@ -501,9 +497,9 @@ pub(crate) fn db_get_cached_assessment_by_hash(
     now_millis: u64,
 ) -> Result<Option<CachedAssessmentRecord>, ArgusError> {
     let key = review_assessment_cache_key(target, policy, fingerprint_hash);
-    let read = database
-        .begin_read()
-        .map_err(database_error("cannot begin read transaction for assessment cache"))?;
+    let read = database.begin_read().map_err(database_error(
+        "cannot begin read transaction for assessment cache",
+    ))?;
     let table = read
         .open_table(REVIEW_ASSESSMENT_CACHE)
         .map_err(database_error("cannot open review assessment cache table"))?;
@@ -531,9 +527,9 @@ pub(crate) fn db_touch_cached_assessment(
     now_millis: u64,
 ) -> Result<bool, ArgusError> {
     let key = review_assessment_cache_key(target, policy, fingerprint_hash);
-    let write = database
-        .begin_write()
-        .map_err(database_error("cannot begin write transaction to touch assessment cache"))?;
+    let write = database.begin_write().map_err(database_error(
+        "cannot begin write transaction to touch assessment cache",
+    ))?;
     let modified = {
         let mut table = write
             .open_table(REVIEW_ASSESSMENT_CACHE)
@@ -568,9 +564,9 @@ pub(crate) fn db_prune_expired_assessments(
     database: &Database,
     now_millis: u64,
 ) -> Result<usize, ArgusError> {
-    let write = database
-        .begin_write()
-        .map_err(database_error("cannot begin write transaction to prune expired assessments"))?;
+    let write = database.begin_write().map_err(database_error(
+        "cannot begin write transaction to prune expired assessments",
+    ))?;
     let removed = {
         let mut table = write
             .open_table(REVIEW_ASSESSMENT_CACHE)
@@ -580,7 +576,8 @@ pub(crate) fn db_prune_expired_assessments(
             .iter()
             .map_err(database_error("cannot scan review assessment cache"))?
         {
-            let (key, value) = entry.map_err(database_error("cannot read assessment cache entry"))?;
+            let (key, value) =
+                entry.map_err(database_error("cannot read assessment cache entry"))?;
             let record: CachedAssessmentRecord = decode_record(value.value())?;
             if record.is_expired(now_millis) {
                 keys_to_remove.push(key.value().to_owned());
@@ -608,9 +605,9 @@ pub(crate) fn db_prune_invalidated_targets(
         return Ok(0);
     }
     let target_set: HashSet<&str> = targets.iter().map(TargetId::as_str).collect();
-    let write = database
-        .begin_write()
-        .map_err(database_error("cannot begin write transaction to prune invalidated targets"))?;
+    let write = database.begin_write().map_err(database_error(
+        "cannot begin write transaction to prune invalidated targets",
+    ))?;
     let removed = {
         let mut table = write
             .open_table(REVIEW_ASSESSMENT_CACHE)
@@ -630,9 +627,9 @@ pub(crate) fn db_prune_invalidated_targets(
         }
         let count = keys_to_remove.len();
         for key in keys_to_remove {
-            table
-                .remove(key.as_str())
-                .map_err(database_error("cannot remove invalidated cached assessment"))?;
+            table.remove(key.as_str()).map_err(database_error(
+                "cannot remove invalidated cached assessment",
+            ))?;
         }
         count
     };
@@ -668,9 +665,9 @@ pub(crate) fn db_prune_invalidated_target_policy(
         }
         let count = keys_to_remove.len();
         for key in keys_to_remove {
-            table
-                .remove(key.as_str())
-                .map_err(database_error("cannot remove invalidated cached assessment"))?;
+            table.remove(key.as_str()).map_err(database_error(
+                "cannot remove invalidated cached assessment",
+            ))?;
         }
         count
     };
@@ -687,9 +684,9 @@ pub(crate) fn db_prune_by_filter<F>(
 where
     F: Fn(&CachedAssessmentRecord) -> bool,
 {
-    let write = database
-        .begin_write()
-        .map_err(database_error("cannot begin write transaction to prune by filter"))?;
+    let write = database.begin_write().map_err(database_error(
+        "cannot begin write transaction to prune by filter",
+    ))?;
     let removed = {
         let mut table = write
             .open_table(REVIEW_ASSESSMENT_CACHE)
@@ -699,7 +696,8 @@ where
             .iter()
             .map_err(database_error("cannot scan review assessment cache"))?
         {
-            let (key, value) = entry.map_err(database_error("cannot read assessment cache entry"))?;
+            let (key, value) =
+                entry.map_err(database_error("cannot read assessment cache entry"))?;
             let record: CachedAssessmentRecord = decode_record(value.value())?;
             if should_remove(&record) {
                 keys_to_remove.push(key.value().to_owned());
@@ -740,9 +738,9 @@ pub(crate) fn db_cached_assessment_count(database: &Database) -> Result<usize, A
 pub(crate) fn db_all_cached_assessments(
     database: &Database,
 ) -> Result<Vec<CachedAssessmentRecord>, ArgusError> {
-    let read = database
-        .begin_read()
-        .map_err(database_error("cannot begin read transaction for all assessments"))?;
+    let read = database.begin_read().map_err(database_error(
+        "cannot begin read transaction for all assessments",
+    ))?;
     let table = read
         .open_table(REVIEW_ASSESSMENT_CACHE)
         .map_err(database_error("cannot open review assessment cache table"))?;
@@ -800,9 +798,9 @@ pub(crate) fn db_cached_assessment_stats(
 }
 
 pub(crate) fn db_clear_cached_assessments(database: &Database) -> Result<usize, ArgusError> {
-    let write = database
-        .begin_write()
-        .map_err(database_error("cannot begin write transaction to clear cache"))?;
+    let write = database.begin_write().map_err(database_error(
+        "cannot begin write transaction to clear cache",
+    ))?;
     let removed = {
         let mut table = write
             .open_table(REVIEW_ASSESSMENT_CACHE)

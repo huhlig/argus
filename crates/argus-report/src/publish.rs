@@ -178,10 +178,7 @@ pub fn severity_to_beads_priority(sev: Severity) -> u8 {
 #[must_use]
 pub fn format_beads_create_command(finding: &DifferentialFinding) -> String {
     let escaped_title = finding.title.replace('"', "\\\"");
-    let loc_str = finding
-        .primary_location
-        .as_deref()
-        .unwrap_or("unspecified");
+    let loc_str = finding.primary_location.as_deref().unwrap_or("unspecified");
     let targets_str = if finding.targets.is_empty() {
         "none".to_owned()
     } else {
@@ -217,10 +214,7 @@ pub fn format_beads_create_command(finding: &DifferentialFinding) -> String {
 #[must_use]
 pub fn format_github_issue_command(finding: &DifferentialFinding) -> String {
     let escaped_title = format!("[Argus] {}", finding.title).replace('"', "\\\"");
-    let loc_str = finding
-        .primary_location
-        .as_deref()
-        .unwrap_or("unspecified");
+    let loc_str = finding.primary_location.as_deref().unwrap_or("unspecified");
     let targets_str = if finding.targets.is_empty() {
         "none".to_owned()
     } else {
@@ -284,12 +278,17 @@ pub fn prepare_publication(
 
     match target {
         PublicationTarget::Beads => {
-            payload_commands.push(format!("# Beads issue publication commands for Argus run {run_id}"));
-            payload_commands.push("# Run these commands to import findings into project tracker:".to_owned());
+            payload_commands.push(format!(
+                "# Beads issue publication commands for Argus run {run_id}"
+            ));
+            payload_commands
+                .push("# Run these commands to import findings into project tracker:".to_owned());
             payload_commands.push(String::new());
         }
         PublicationTarget::GitHub => {
-            payload_commands.push(format!("# GitHub issue publication commands for Argus run {run_id}"));
+            payload_commands.push(format!(
+                "# GitHub issue publication commands for Argus run {run_id}"
+            ));
             payload_commands.push("# Run these commands with the GitHub CLI (gh):".to_owned());
             payload_commands.push(String::new());
         }

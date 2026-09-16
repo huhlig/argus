@@ -78,5 +78,7 @@ pub fn spec_for_extension(ext: &str) -> Option<LanguageSpec> {
 /// Finds a language specification matching a manifest or source filename.
 #[must_use]
 pub fn spec_for_manifest(filename: &str) -> Option<LanguageSpec> {
-    all_specs().into_iter().find(|s| s.matches_manifest(filename))
+    all_specs()
+        .into_iter()
+        .find(|s| s.matches_manifest(filename))
 }

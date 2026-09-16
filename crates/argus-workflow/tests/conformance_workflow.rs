@@ -142,7 +142,10 @@ fn conformance_outcome_actor_persists_assessment_and_receipt() {
     let policy_version = "1.0.0".to_string();
 
     queue
-        .admit(&argus_storage::QueueWork::pending(work_item.clone(), Vec::new()))
+        .admit(&argus_storage::QueueWork::pending(
+            work_item.clone(),
+            Vec::new(),
+        ))
         .unwrap();
     queue.lease_next(0, 100).unwrap().unwrap();
 
@@ -189,19 +192,17 @@ fn conformance_outcome_actor_persists_assessment_and_receipt() {
         },
     };
 
-    let actor = ConformanceOutcomeActor::new(
-        queue.clone(),
-        assessment,
-        logical_key,
-        provenance,
-    )
-    .unwrap();
+    let actor =
+        ConformanceOutcomeActor::new(queue.clone(), assessment, logical_key, provenance).unwrap();
 
     let receipt = actor.record().unwrap();
     assert_eq!(receipt.disposition, OutcomeDisposition::Inserted);
     assert!(receipt.outcome.result_ref.starts_with("artifact:"));
 
-    let stored = queue.artifact(&receipt.outcome.result_ref).unwrap().unwrap();
+    let stored = queue
+        .artifact(&receipt.outcome.result_ref)
+        .unwrap()
+        .unwrap();
     assert_eq!(stored.kind, CONFORMANCE_ASSESSMENT_ARTIFACT_KIND);
 }
 

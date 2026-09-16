@@ -327,7 +327,12 @@ pub fn evaluate_maintainability(
         unable_to_verify_assessments += report
             .assessments
             .iter()
-            .filter(|a| matches!(a.assessment.result, argus_policies::MaintainabilityResult::UnableToVerify { .. }))
+            .filter(|a| {
+                matches!(
+                    a.assessment.result,
+                    argus_policies::MaintainabilityResult::UnableToVerify { .. }
+                )
+            })
             .count();
 
         let mut seen_cluster_ids = BTreeSet::new();

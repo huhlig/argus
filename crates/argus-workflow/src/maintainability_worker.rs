@@ -26,7 +26,9 @@ use langchart_adapters::{
     checkpoint::CheckpointStore,
     context::{ContextError, ContextItem, ContextResolver, ContextView},
 };
-use langchart_model::{id::RunId, id::StateId, policy::ContextPolicy, validation::CompiledWorkflow};
+use langchart_model::{
+    id::RunId, id::StateId, policy::ContextPolicy, validation::CompiledWorkflow,
+};
 use langchart_runtime::{AgentActor, InstanceCheckpoint, RunStatus, WorkflowInstance};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::time::{Duration, Instant};
@@ -82,7 +84,8 @@ impl MaintainabilityWorker {
         }
         let checkpoint_store = Arc::new(open_checkpoint_store(&config.state_directory).map_err(
             |error| {
-                ArgusError::invariant("cannot open maintainability checkpoint store").with_source(error)
+                ArgusError::invariant("cannot open maintainability checkpoint store")
+                    .with_source(error)
             },
         )?);
         Ok(Self {
@@ -94,7 +97,10 @@ impl MaintainabilityWorker {
         })
     }
 
-    pub async fn run_next(&self, now_millis: u64) -> Result<MaintainabilityWorkerResult, ArgusError> {
+    pub async fn run_next(
+        &self,
+        now_millis: u64,
+    ) -> Result<MaintainabilityWorkerResult, ArgusError> {
         let leased = {
             let queue = self.queue.clone();
             let audit_run = self.config.identity.audit_run.clone();
@@ -120,9 +126,7 @@ impl MaintainabilityWorker {
         };
 
         match self.execute_with_heartbeats(&leased, now_millis).await {
-            Ok(()) => Ok(MaintainabilityWorkerResult::Succeeded {
-                work_id: leased.id,
-            }),
+            Ok(()) => Ok(MaintainabilityWorkerResult::Succeeded { work_id: leased.id }),
             Err(error) => {
                 let message = error.to_string();
                 let queue = self.queue.clone();
@@ -149,7 +153,8 @@ impl MaintainabilityWorker {
                 })
                 .await
                 .map_err(|error| {
-                    ArgusError::invariant("maintainability fail-attempt task failed").with_source(error)
+                    ArgusError::invariant("maintainability fail-attempt task failed")
+                        .with_source(error)
                 })??;
                 Ok(match state {
                     QueueState::Pending => MaintainabilityWorkerResult::RetryScheduled {
@@ -196,7 +201,8 @@ impl MaintainabilityWorker {
                 })
                 .await
                 .map_err(|error| {
-                    ArgusError::invariant("maintainability heartbeat task failed").with_source(error)
+                    ArgusError::invariant("maintainability heartbeat task failed")
+                        .with_source(error)
                 })??;
             }
             #[allow(unreachable_code)]
@@ -311,7 +317,8 @@ impl MaintainabilityWorker {
     > {
         let admission: MaintainabilityReviewAdmission = serde_json::from_slice(&leased.payload)
             .map_err(|error| {
-                ArgusError::invalid_input("invalid maintainability review admission").with_source(error)
+                ArgusError::invalid_input("invalid maintainability review admission")
+                    .with_source(error)
             })?;
         if admission.unit.work_item != leased.id {
             return Err(ArgusError::invariant(
@@ -431,7 +438,8 @@ impl MaintainabilityWorker {
             self.config.identity.clone(),
         )
         .map_err(|error| {
-            ArgusError::invariant("cannot assemble maintainability actor registry").with_source(error)
+            ArgusError::invariant("cannot assemble maintainability actor registry")
+                .with_source(error)
         })?;
         let actors = registry.reconstruct(&manifest).map_err(|error| {
             ArgusError::invariant("cannot reconstruct maintainability actors").with_source(error)
@@ -498,7 +506,10 @@ fn langchart_run_id(audit_run: &AuditRunId, work_id: &WorkItemId, retry_generati
         hasher.update(b"\0retry\0");
         hasher.update(&retry_generation.to_be_bytes());
     }
-    RunId::new(format!("argus-maintainability-{}", hasher.finalize().to_hex()))
+    RunId::new(format!(
+        "argus-maintainability-{}",
+        hasher.finalize().to_hex()
+    ))
 }
 
 struct MaintainabilityContextResolver {

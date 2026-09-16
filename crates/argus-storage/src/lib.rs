@@ -20,8 +20,8 @@ mod queue;
 
 pub use bundle::{BundleManifest, finalize_bundle, finalize_run_bundle};
 pub use cache::{
-    CachedAssessmentRecord, CachedAssessmentStats, ReviewAssessmentCache,
-    parse_review_assessment_cache_key, review_assessment_cache_key, REVIEW_ASSESSMENT_CACHE,
+    CachedAssessmentRecord, CachedAssessmentStats, REVIEW_ASSESSMENT_CACHE, ReviewAssessmentCache,
+    parse_review_assessment_cache_key, review_assessment_cache_key,
 };
 pub use queue::{
     CoverageKey, DurableProviderTelemetryPublisher, DurableQueue, LeasedWork, OutcomeRecord,

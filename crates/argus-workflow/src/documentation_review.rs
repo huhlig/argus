@@ -231,9 +231,20 @@ impl PolicyAssessmentContract for DocumentationAssessmentContract {
     }
 
     fn instructions(&self) -> &str {
-        DOCUMENTATION_INSTRUCTIONS
+        if self.binding.policy_version == "documentation-internal@1" {
+            INTERNAL_DOCUMENTATION_INSTRUCTIONS
+        } else {
+            DOCUMENTATION_INSTRUCTIONS
+        }
     }
 }
+
+const INTERNAL_DOCUMENTATION_INSTRUCTIONS: &str = r#"Review private or restricted code for critical behavioral contracts, using the supplied source and any doc/nearby inline comments. This is the internal documentation policy, not public API documentation.
+Evaluate all 14 schema dimensions once, but set presence, inputs, outputs, examples, currency, and value to not_applicable (status, comparison, documentation_coverage and source_materiality). Do not require examples, headings, parameter prose, a comment on every helper, or TODO labels.
+For purpose, behavior, errors, panics, safety, side_effects, invariants, and accuracy, report a deficiency only when source establishes a non-obvious material contract and the available comments omit or contradict it. Accept concise nearby comments; obvious pure helpers need no restatement. Meaningful mutation, I/O, blocking, synchronization, panic/error conditions, and preconditions matter only where the source supports them.
+Use stated/partial/omitted/unable_to_verify documentation_coverage and material_behavior/no_material_behavior/unable_to_verify source_materiality. Consistent + satisfied means comments cover the behavior, or omitted comments accompany no_material_behavior. Contradictory or material_omission + deficient requires material_behavior. Insufficient evidence uses unable_to_verify; never invent a contract. Irrelevant dimensions use not_applicable throughout.
+Every satisfied or deficient dimension and every finding must cite source evidence IDs. Cite documentation evidence too when present. Nearby inline comments in source may support a dimension comparison, but claims[] is reserved for literal claims extracted from documentation-kind records; leave it empty when none exist. Use IDs, never content hashes. Findings must name only deficient behavioral dimensions and explain the non-obvious behavior and the missing or misleading contract. Behavioral defects themselves belong to correctness review.
+Emit review.candidate_found with candidate_findings if any dimension is deficient; review.pass with passed if all are satisfied or not_applicable. Use the workflow's evidence/insufficiency route for unresolved evidence, not a fabricated pass. review.failed is reserved for execution errors."#;
 
 const DOCUMENTATION_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded evidence against the documentation policy rubric in two explicit stages:
 1. First, extract claims strictly from records whose kind is documentation. Never infer a documentation claim from a signature, source code, or expected API convention. Identify all documentation, doc comments, and inline comments that mention, describe, or acknowledge gaps, inconsistencies, stubs, or unimplemented aspects.
@@ -519,6 +530,110 @@ mod tests {
             result: DocumentationResultDraft::Passed,
         };
         (binding, draft)
+    }
+
+    #[test]
+    fn internal_contract_accepts_source_only_behavior_and_rejects_public_prose_demands() {
+        use argus_policies::{DocumentationCandidateDraft, DocumentationDimension};
+        let (mut binding, mut draft) = fixture();
+        binding.policy_version = "documentation-internal@1".to_owned();
+        binding.target.visibility = DocumentationVisibility::Private;
+        let source = binding
+            .evidence_kinds
+            .iter()
+            .find(|(_, kind)| **kind == EvidenceKind::Source)
+            .unwrap()
+            .0
+            .clone();
+        binding.evidence.retain(|id, _| *id == source);
+        binding.evidence_kinds.retain(|id, _| *id == source);
+        draft.claims.clear();
+        for dimension in &mut draft.dimensions {
+            dimension.evidence = vec![source.clone()];
+            dimension.documentation_coverage = DocumentationCoverage::Omitted;
+            dimension.source_materiality = SourceMateriality::NoMaterialBehavior;
+        }
+        let contract = DocumentationAssessmentContract::new(binding);
+        assert!(
+            contract
+                .instructions()
+                .contains("not public API documentation")
+        );
+        // An obvious pure helper may pass without documentation records.
+        contract
+            .validate("review.pass", &serde_json::to_value(&draft).unwrap())
+            .unwrap();
+        for dimension in [
+            DocumentationDimension::Panics,
+            DocumentationDimension::SideEffects,
+            DocumentationDimension::Invariants,
+        ] {
+            let mut candidate = draft.clone();
+            let item = candidate
+                .dimensions
+                .iter_mut()
+                .find(|item| item.dimension == dimension)
+                .unwrap();
+            item.source_materiality = SourceMateriality::MaterialBehavior;
+            item.comparison = DocumentationComparison::MaterialOmission;
+            item.status = DocumentationDimensionStatus::Deficient;
+            candidate.result = DocumentationResultDraft::CandidateFindings {
+                findings: vec![DocumentationCandidateDraft {
+                    title: "Non-obvious behavioral contract is missing".to_owned(),
+                    description:
+                        "Source establishes behavior that the available comments do not explain."
+                            .to_owned(),
+                    severity: argus_core::Severity::Medium,
+                    confidence_basis_points: 9000,
+                    dimensions: std::collections::BTreeSet::from([dimension]),
+                    evidence: vec![source.clone()],
+                }],
+            };
+            contract
+                .validate(
+                    "review.candidate_found",
+                    &serde_json::to_value(&candidate).unwrap(),
+                )
+                .unwrap();
+            candidate
+                .dimensions
+                .iter_mut()
+                .find(|item| item.dimension == dimension)
+                .unwrap()
+                .source_materiality = SourceMateriality::NoMaterialBehavior;
+            assert!(
+                contract
+                    .validate(
+                        "review.candidate_found",
+                        &serde_json::to_value(candidate).unwrap()
+                    )
+                    .is_err()
+            );
+        }
+        // A documented invariant can be established by a nearby source comment.
+        let invariant = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Invariants)
+            .unwrap();
+        invariant.documentation_coverage = DocumentationCoverage::Stated;
+        invariant.source_materiality = SourceMateriality::MaterialBehavior;
+        contract
+            .validate("review.pass", &serde_json::to_value(&draft).unwrap())
+            .unwrap();
+        let examples = draft
+            .dimensions
+            .iter_mut()
+            .find(|item| item.dimension == DocumentationDimension::Examples)
+            .unwrap();
+        examples.status = DocumentationDimensionStatus::Deficient;
+        examples.comparison = DocumentationComparison::MaterialOmission;
+        examples.source_materiality = SourceMateriality::MaterialBehavior;
+        assert!(
+            contract
+                .bind_output(&serde_json::to_value(draft).unwrap())
+                .is_err()
+        );
     }
 
     #[test]

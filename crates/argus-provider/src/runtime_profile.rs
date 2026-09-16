@@ -301,7 +301,11 @@ pub enum ProviderTransportProfile {
         #[serde(default)]
         profile_name: Option<String>,
         /// Optional Bedrock inference profile ID or ARN (e.g. `us.anthropic.claude-3-7-sonnet-20250219-v1:0`).
-        #[serde(default, alias = "inference_profile_id", alias = "inference_profile_env")]
+        #[serde(
+            default,
+            alias = "inference_profile_id",
+            alias = "inference_profile_env"
+        )]
         inference_profile: Option<String>,
         /// Optional request timeout in seconds.
         #[serde(default)]
@@ -445,23 +449,22 @@ impl ProviderRuntimeProfile {
             } => {
                 let region = substitute_value(region, &mut read_secret)?;
                 let endpoint_url =
-                    substitute_optional_value(endpoint_url.as_deref(), &mut read_secret)?
-                        .map(|url| {
+                    substitute_optional_value(endpoint_url.as_deref(), &mut read_secret)?.map(
+                        |url| {
                             let mut trimmed = url.trim().trim_end_matches('/');
                             if let Some(without_v1) = trimmed.strip_suffix("/v1") {
                                 trimmed = without_v1.trim_end_matches('/');
                             }
                             trimmed.to_owned()
-                        });
+                        },
+                    );
                 let profile_name =
                     substitute_optional_value(profile_name.as_deref(), &mut read_secret)?;
-                let inference_profile = substitute_optional_value(
-                    inference_profile.as_deref(),
-                    &mut read_secret,
-                )?
-                .or_else(|| read_secret("AWS_BEDROCK_INFERENCE_PROFILE_ID"))
-                .or_else(|| read_secret("AWS_BEDROCK_INFERENCE_PROFILE"))
-                .or_else(|| read_secret("BEDROCK_INFERENCE_PROFILE"));
+                let inference_profile =
+                    substitute_optional_value(inference_profile.as_deref(), &mut read_secret)?
+                        .or_else(|| read_secret("AWS_BEDROCK_INFERENCE_PROFILE_ID"))
+                        .or_else(|| read_secret("AWS_BEDROCK_INFERENCE_PROFILE"))
+                        .or_else(|| read_secret("BEDROCK_INFERENCE_PROFILE"));
 
                 let bearer_token =
                     substitute_optional_value(bearer_token.as_deref(), &mut read_secret)?

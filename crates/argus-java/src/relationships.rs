@@ -94,13 +94,10 @@ impl JavaRelationshipProvider {
                 "java:extends"
             };
 
-            let simple_name = inh
-                .base_name
-                .rsplit('.')
-                .next()
-                .unwrap_or(&inh.base_name);
+            let simple_name = inh.base_name.rsplit('.').next().unwrap_or(&inh.base_name);
 
-            let base_target = if let Some(candidates) = type_targets_by_simple_name.get(simple_name) {
+            let base_target = if let Some(candidates) = type_targets_by_simple_name.get(simple_name)
+            {
                 if candidates.len() == 1 {
                     Some(candidates[0])
                 } else {
@@ -142,7 +139,9 @@ impl JavaRelationshipProvider {
                 if let Some(importer_file) = targets.iter().find(|t| {
                     t.location.as_ref().is_some_and(|l| {
                         let lp = l.path.as_str().replace('\\', "/");
-                        imp.span.start >= l.bytes.start && imp.span.end <= l.bytes.end && !lp.ends_with(&possible_file_path)
+                        imp.span.start >= l.bytes.start
+                            && imp.span.end <= l.bytes.end
+                            && !lp.ends_with(&possible_file_path)
                     })
                 }) {
                     insert_relation(

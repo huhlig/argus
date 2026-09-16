@@ -911,7 +911,12 @@ pub fn render_findings_html_report(
                 let targets_tags = finding
                     .targets
                     .iter()
-                    .map(|t| format!(r#"<span class="pill-tag">{}</span>"#, escape_html(t.as_str())))
+                    .map(|t| {
+                        format!(
+                            r#"<span class="pill-tag">{}</span>"#,
+                            escape_html(t.as_str())
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("");
                 let _ = write!(

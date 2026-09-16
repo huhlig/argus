@@ -386,7 +386,9 @@ async fn bedrock_user_inference_profile_config() {
     assert_eq!(default_profile.capabilities.concurrency_capacity, 4);
 
     // Resolves by alias
-    let fable_profile = config.resolve_runtime_profile(Some("claude-fable")).unwrap();
+    let fable_profile = config
+        .resolve_runtime_profile(Some("claude-fable"))
+        .unwrap();
     assert_eq!(
         fable_profile.capabilities.identity.model,
         "global.anthropic.claude-fable-5-1"
@@ -398,7 +400,9 @@ async fn bedrock_user_inference_profile_config() {
         "global.anthropic.claude-opus-5"
     );
 
-    let haiku_profile = config.resolve_runtime_profile(Some("claude-haiku")).unwrap();
+    let haiku_profile = config
+        .resolve_runtime_profile(Some("claude-haiku"))
+        .unwrap();
     assert_eq!(
         haiku_profile.capabilities.identity.model,
         "global.anthropic.claude-haiku-4-5-20251001-v1:0"

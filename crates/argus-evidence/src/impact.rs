@@ -137,18 +137,15 @@ impl TargetDelta {
                     || current_target.capabilities != baseline_target.capabilities
                     || current_target.diagnostic != baseline_target.diagnostic;
 
-                let file_content_changed = match (
-                    &current_target.location,
-                    baseline_files,
-                    current_files,
-                ) {
-                    (Some(loc), Some(base_map), Some(cur_map)) => {
-                        let base_hash = base_map.get(&loc.path);
-                        let cur_hash = cur_map.get(&loc.path);
-                        base_hash != cur_hash
-                    }
-                    _ => false,
-                };
+                let file_content_changed =
+                    match (&current_target.location, baseline_files, current_files) {
+                        (Some(loc), Some(base_map), Some(cur_map)) => {
+                            let base_hash = base_map.get(&loc.path);
+                            let cur_hash = cur_map.get(&loc.path);
+                            base_hash != cur_hash
+                        }
+                        _ => false,
+                    };
 
                 if target_meta_changed || file_content_changed {
                     delta.modified.insert(id.clone());
@@ -325,9 +322,7 @@ impl ImpactAnalysisReport {
                             child: detail.root_change.clone(),
                         }
                     }
-                    ImpactPropagationKind::DesignLinkage => {
-                        InvalidationReason::DirectModification
-                    }
+                    ImpactPropagationKind::DesignLinkage => InvalidationReason::DirectModification,
                     ImpactPropagationKind::ConservativePartition => {
                         InvalidationReason::ConservativeIncompleteResolution {
                             partition: detail.root_change.clone(),
@@ -450,7 +445,10 @@ impl ImpactAnalyzer {
                 path: vec![target.clone()],
                 description: format!("Target `{}` directly added or modified", target.as_str()),
             };
-            impact_details.entry(target.clone()).or_default().push(detail);
+            impact_details
+                .entry(target.clone())
+                .or_default()
+                .push(detail);
         }
     }
 
@@ -522,7 +520,12 @@ impl ImpactAnalyzer {
 
                         if !already_seen {
                             list.push(detail);
-                            queue.push_back((upstream.clone(), next_depth, root.clone(), next_path));
+                            queue.push_back((
+                                upstream.clone(),
+                                next_depth,
+                                root.clone(),
+                                next_path,
+                            ));
                         }
                     }
                 }
@@ -546,8 +549,10 @@ impl ImpactAnalyzer {
                 if !directly_changed.contains(caller) {
                     transitively_impacted.insert(caller.clone());
                     affected_targets.insert(caller.clone());
-                    impact_details.entry(caller.clone()).or_default().push(
-                        TargetImpactDetail {
+                    impact_details
+                        .entry(caller.clone())
+                        .or_default()
+                        .push(TargetImpactDetail {
                             target: caller.clone(),
                             root_change: removed.clone(),
                             propagation_kind: ImpactPropagationKind::DependencyForward,
@@ -558,8 +563,7 @@ impl ImpactAnalyzer {
                                 caller.as_str(),
                                 removed.as_str()
                             ),
-                        },
-                    );
+                        });
                     queue.push_back((
                         caller.clone(),
                         1,
@@ -663,8 +667,10 @@ impl ImpactAnalyzer {
                         affected_targets.insert(target.clone());
                     }
 
-                    impact_details.entry(target.clone()).or_default().push(
-                        TargetImpactDetail {
+                    impact_details
+                        .entry(target.clone())
+                        .or_default()
+                        .push(TargetImpactDetail {
                             target: target.clone(),
                             root_change: target.clone(),
                             propagation_kind: ImpactPropagationKind::DesignLinkage,
@@ -674,8 +680,7 @@ impl ImpactAnalyzer {
                                 "Linked design artifact `{}` modified",
                                 artifact.as_str()
                             ),
-                        },
-                    );
+                        });
                 }
             }
         }
@@ -732,8 +737,10 @@ impl ImpactAnalyzer {
                         affected_targets.insert(parent.clone());
                     }
 
-                    impact_details.entry(parent.clone()).or_default().push(
-                        TargetImpactDetail {
+                    impact_details
+                        .entry(parent.clone())
+                        .or_default()
+                        .push(TargetImpactDetail {
                             target: parent.clone(),
                             root_change: child.clone(),
                             propagation_kind: ImpactPropagationKind::ContainmentParent,
@@ -743,8 +750,7 @@ impl ImpactAnalyzer {
                                 "Container parent of modified target `{}`",
                                 child.as_str()
                             ),
-                        },
-                    );
+                        });
 
                     containment_queue.push(parent.clone());
                 }

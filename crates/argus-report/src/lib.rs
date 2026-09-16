@@ -22,14 +22,14 @@ mod conformance_evaluation;
 mod correctness;
 mod correctness_evaluation;
 pub mod differential;
-pub mod html;
-pub mod publish;
-pub mod sarif;
 mod evaluation;
+pub mod html;
 mod maintainability;
 mod maintainability_evaluation;
 mod optimization;
 mod optimization_evaluation;
+pub mod publish;
+pub mod sarif;
 
 pub use architecture::{
     ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ARCHITECTURE_REPORT_SCHEMA_VERSION,
@@ -43,8 +43,8 @@ pub use architecture_evaluation::{
     ExpectedArchitectureIssue, evaluate_architecture,
 };
 pub use backlog::{
-    BacklogCategory, BacklogItem, BacklogReport, classify_backlog_finding,
-    extract_backlog_report, extract_conformance_backlog_items,
+    BacklogCategory, BacklogItem, BacklogReport, classify_backlog_finding, extract_backlog_report,
+    extract_conformance_backlog_items,
 };
 pub use conformance::{
     CONFORMANCE_ASSESSMENT_ARTIFACT_KIND, CONFORMANCE_REPORT_SCHEMA_VERSION,
@@ -69,45 +69,32 @@ pub use correctness_evaluation::{
     ExpectedCorrectnessIssue, evaluate_correctness,
 };
 pub use differential::{
-    compare_findings, differential_report_from_bundles, differential_report_from_queue,
-    extract_all_findings_from_bundle, extract_all_findings_from_queue,
-    extract_architecture_findings, extract_conformance_findings, extract_correctness_findings,
-    extract_documentation_findings, extract_maintainability_findings, extract_optimization_findings,
-    DifferentialFinding, DifferentialGateResult, DifferentialReport, DifferentialSummary,
-    DifferentialThresholds, FindingCategory, SeverityBreakdown, DIFFERENTIAL_REPORT_SCHEMA_VERSION,
-};
-pub use html::{
-    escape_html, render_differential_html_report, render_findings_html_report, HtmlReportOptions,
-};
-pub use publish::{
-    compute_finding_content_hash, compute_receipt_digest, format_beads_create_command,
-    format_github_issue_command, prepare_publication, severity_to_beads_priority,
-    PublicationReceipt, PublicationReceiptItem, PublicationStatus, PublicationTarget,
-    PUBLICATION_RECEIPT_SCHEMA_VERSION,
-};
-pub use sarif::{
-    build_rule_catalog, parse_sarif_location, render_differential_sarif_report, render_sarif_report,
-    SarifArtifactLocation, SarifDriver, SarifLevel, SarifLocation, SarifMessage,
-    SarifMultiformatMessageString, SarifPhysicalLocation, SarifRegion, SarifReport,
-    SarifReportingConfiguration, SarifResult, SarifRule, SarifRun, SarifTool, SARIF_SCHEMA_URI,
-    SARIF_VERSION,
+    DIFFERENTIAL_REPORT_SCHEMA_VERSION, DifferentialFinding, DifferentialGateResult,
+    DifferentialReport, DifferentialSummary, DifferentialThresholds, FindingCategory,
+    SeverityBreakdown, compare_findings, differential_report_from_bundles,
+    differential_report_from_queue, extract_all_findings_from_bundle,
+    extract_all_findings_from_queue, extract_architecture_findings, extract_conformance_findings,
+    extract_correctness_findings, extract_documentation_findings, extract_maintainability_findings,
+    extract_optimization_findings,
 };
 pub use evaluation::{
     DOCUMENTATION_CORPUS_SCHEMA_VERSION, DOCUMENTATION_EVALUATION_SCHEMA_VERSION,
     DocumentationEvaluation, DocumentationEvaluationCorpus, DocumentationEvaluationThresholds,
     EvaluationRate, ExpectedDocumentationIssue, evaluate_documentation,
 };
+pub use html::{
+    HtmlReportOptions, escape_html, render_differential_html_report, render_findings_html_report,
+};
 pub use maintainability::{
     MAINTAINABILITY_ASSESSMENT_ARTIFACT_KIND, MAINTAINABILITY_REPORT_SCHEMA_VERSION,
     MaintainabilityFindingCluster, MaintainabilityFindingOccurrence, MaintainabilityReport,
-    MaintainabilityReportAssessment, MaintainabilityReportSummary, maintainability_report_from_queue,
-    write_maintainability_bundle_reports,
+    MaintainabilityReportAssessment, MaintainabilityReportSummary,
+    maintainability_report_from_queue, write_maintainability_bundle_reports,
 };
 pub use maintainability_evaluation::{
     ExpectedMaintainabilityIssue, MAINTAINABILITY_CORPUS_SCHEMA_VERSION,
     MAINTAINABILITY_EVALUATION_SCHEMA_VERSION, MaintainabilityEvaluation,
-    MaintainabilityEvaluationCorpus, MaintainabilityEvaluationThresholds,
-    evaluate_maintainability,
+    MaintainabilityEvaluationCorpus, MaintainabilityEvaluationThresholds, evaluate_maintainability,
 };
 pub use optimization::{
     OPTIMIZATION_ASSESSMENT_ARTIFACT_KIND, OPTIMIZATION_REPORT_SCHEMA_VERSION,
@@ -117,9 +104,20 @@ pub use optimization::{
 };
 pub use optimization_evaluation::{
     ExpectedOptimizationIssue, OPTIMIZATION_CORPUS_SCHEMA_VERSION,
-    OPTIMIZATION_EVALUATION_SCHEMA_VERSION, OptimizationEvaluation,
-    OptimizationEvaluationCorpus, OptimizationEvaluationThresholds,
-    evaluate_optimization,
+    OPTIMIZATION_EVALUATION_SCHEMA_VERSION, OptimizationEvaluation, OptimizationEvaluationCorpus,
+    OptimizationEvaluationThresholds, evaluate_optimization,
+};
+pub use publish::{
+    PUBLICATION_RECEIPT_SCHEMA_VERSION, PublicationReceipt, PublicationReceiptItem,
+    PublicationStatus, PublicationTarget, compute_finding_content_hash, compute_receipt_digest,
+    format_beads_create_command, format_github_issue_command, prepare_publication,
+    severity_to_beads_priority,
+};
+pub use sarif::{
+    SARIF_SCHEMA_URI, SARIF_VERSION, SarifArtifactLocation, SarifDriver, SarifLevel, SarifLocation,
+    SarifMessage, SarifMultiformatMessageString, SarifPhysicalLocation, SarifRegion, SarifReport,
+    SarifReportingConfiguration, SarifResult, SarifRule, SarifRun, SarifTool, build_rule_catalog,
+    parse_sarif_location, render_differential_sarif_report, render_sarif_report,
 };
 
 use argus_core::{
@@ -645,16 +643,21 @@ pub fn write_documentation_bundle_reports(
         &artifacts,
         &adjudications,
     )?;
+    let prefix = if policy_version == "documentation-internal@1" {
+        "internal-documentation"
+    } else {
+        "documentation"
+    };
     write_reconciled(
-        &bundle.join("documentation-report.json"),
+        &bundle.join(format!("{prefix}-report.json")),
         &report.to_json()?,
     )?;
     write_reconciled(
-        &bundle.join("documentation-report.jsonl"),
+        &bundle.join(format!("{prefix}-report.jsonl")),
         &report.to_jsonl()?,
     )?;
     write_reconciled(
-        &bundle.join("documentation-report.md"),
+        &bundle.join(format!("{prefix}-report.md")),
         report.to_markdown().as_bytes(),
     )?;
     Ok(report)

@@ -183,23 +183,26 @@ impl ShortCircuitCacheWorker {
     ///
     /// # Errors
     /// Returns [`ArgusError`] if database operations fail.
-    pub async fn run_next(&self, now_millis: u64) -> Result<ShortCircuitCacheWorkerResult, ArgusError> {
+    pub async fn run_next(
+        &self,
+        now_millis: u64,
+    ) -> Result<ShortCircuitCacheWorkerResult, ArgusError> {
         let queue = self.queue.clone();
         let audit_run = self.config.audit_run.clone();
         let adapter = self.config.adapter.clone();
         let policy = self.config.policy.clone();
         let lease_duration = self.config.lease_duration_millis;
 
-        let leased = tokio::task::spawn_blocking(move || {
-            match (&adapter, &policy) {
-                (Some(a), Some(p)) => {
-                    queue.lease_next_for_partition(now_millis, lease_duration, &audit_run, a, p)
-                }
-                _ => queue.lease_next(now_millis, lease_duration),
+        let leased = tokio::task::spawn_blocking(move || match (&adapter, &policy) {
+            (Some(a), Some(p)) => {
+                queue.lease_next_for_partition(now_millis, lease_duration, &audit_run, a, p)
             }
+            _ => queue.lease_next(now_millis, lease_duration),
         })
         .await
-        .map_err(|err| ArgusError::invariant("cache worker lease task failed").with_source(err))??;
+        .map_err(|err| {
+            ArgusError::invariant("cache worker lease task failed").with_source(err)
+        })??;
 
         let Some(leased) = leased else {
             return Ok(ShortCircuitCacheWorkerResult::Idle);
@@ -231,28 +234,28 @@ impl ShortCircuitCacheWorker {
             let lease_duration = self.config.lease_duration_millis;
             let excluded = seen_misses.clone();
 
-            let leased = tokio::task::spawn_blocking(move || {
-                match (&adapter, &policy) {
-                    (Some(a), Some(p)) => queue.lease_next_for_partition_matching(
-                        now_millis,
-                        lease_duration,
-                        &audit_run,
-                        a,
-                        p,
-                        |work| !excluded.contains(&work.id),
-                    ),
-                    _ => queue.lease_next_for_partition_matching(
-                        now_millis,
-                        lease_duration,
-                        &audit_run,
-                        adapter.as_deref().unwrap_or(""),
-                        policy.as_deref().unwrap_or(""),
-                        |work| !excluded.contains(&work.id),
-                    ),
-                }
+            let leased = tokio::task::spawn_blocking(move || match (&adapter, &policy) {
+                (Some(a), Some(p)) => queue.lease_next_for_partition_matching(
+                    now_millis,
+                    lease_duration,
+                    &audit_run,
+                    a,
+                    p,
+                    |work| !excluded.contains(&work.id),
+                ),
+                _ => queue.lease_next_for_partition_matching(
+                    now_millis,
+                    lease_duration,
+                    &audit_run,
+                    adapter.as_deref().unwrap_or(""),
+                    policy.as_deref().unwrap_or(""),
+                    |work| !excluded.contains(&work.id),
+                ),
             })
             .await
-            .map_err(|err| ArgusError::invariant("cache sweep lease task failed").with_source(err))??;
+            .map_err(|err| {
+                ArgusError::invariant("cache sweep lease task failed").with_source(err)
+            })??;
 
             let Some(leased) = leased else {
                 break;
@@ -432,9 +435,9 @@ impl ShortCircuitCacheWorker {
 
             // 4. Record outcome in queue (marks leased work as succeeded)
             let recorder = OutcomeRecorder::new(&queue);
-            let receipt = recorder
-                .record(&effective_outcome)
-                .map_err(|err| ArgusError::invariant(format!("cannot record cached outcome: {err}")))?;
+            let receipt = recorder.record(&effective_outcome).map_err(|err| {
+                ArgusError::invariant(format!("cannot record cached outcome: {err}"))
+            })?;
 
             // 5. Touch cache entry hit stats
             if let Some(cache_engine) = &cache {
@@ -507,9 +510,10 @@ fn parse_work_metadata(payload: &[u8]) -> Option<(TargetId, PolicyId, String)> {
         ));
     }
     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(payload) {
-        let target_str = val
-            .get("target")
-            .and_then(|v| v.as_str().or_else(|| v.get("target").and_then(|t| t.as_str())));
+        let target_str = val.get("target").and_then(|v| {
+            v.as_str()
+                .or_else(|| v.get("target").and_then(|t| t.as_str()))
+        });
         let policy_str = val.get("policy").and_then(serde_json::Value::as_str);
         let policy_ver = val
             .get("policy_version")

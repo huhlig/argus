@@ -16,8 +16,8 @@ use crate::{
     JavaManifestAdapter, JavaRelationshipProvider, JavaSyntaxInventory, JavaSyntaxProvider,
 };
 use argus_core::{
-    CapabilityStatus, ConfigurationId, PortableTargetKind, Relation, RelationId, RelationProvenance,
-    ResolutionQuality, SourcePath, TargetId, TargetKind,
+    CapabilityStatus, ConfigurationId, PortableTargetKind, Relation, RelationId,
+    RelationProvenance, ResolutionQuality, SourcePath, TargetId, TargetKind,
 };
 use argus_language::{
     AdapterIdentity, AdapterInventory, AdapterProvider, CollectingInventorySink,
@@ -149,7 +149,10 @@ impl JavaWorkspaceAdapter {
             let norm_path = path.as_str().replace('\\', "/");
             let parent_pkg_id = package_targets
                 .iter()
-                .find(|(dir, _)| norm_path.starts_with(dir) && (dir.is_empty() || norm_path[dir.len()..].starts_with('/')))
+                .find(|(dir, _)| {
+                    norm_path.starts_with(dir)
+                        && (dir.is_empty() || norm_path[dir.len()..].starts_with('/'))
+                })
                 .map(|(_, id)| id.clone());
 
             let syntax = syntax_provider.parse_file(path, &text, parent_pkg_id.as_ref())?;
@@ -263,7 +266,10 @@ impl LanguageAdapter for JavaWorkspaceAdapter {
             AdapterProvider {
                 identity: "javac-diagnostics".to_owned(),
                 role: ProviderRole::Tool,
-                capabilities: vec!["compiler-diagnostics".to_owned(), "linter-diagnostics".to_owned()],
+                capabilities: vec![
+                    "compiler-diagnostics".to_owned(),
+                    "linter-diagnostics".to_owned(),
+                ],
             },
         ]
     }

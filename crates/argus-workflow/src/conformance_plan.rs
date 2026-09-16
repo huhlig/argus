@@ -145,12 +145,14 @@ impl ConformanceReviewMaterialization {
             canonical_json: stored_context.payload,
         };
         validate_restored_identity(&admission.unit, &package, &context)?;
-        let contract = Arc::new(crate::conformance_review::ConformanceAssessmentContract::from_context(
-            admission.unit.work_item.clone(),
-            admission.unit.target.clone(),
-            admission.unit.applicability.state,
-            &context.frame,
-        )?);
+        let contract = Arc::new(
+            crate::conformance_review::ConformanceAssessmentContract::from_context(
+                admission.unit.work_item.clone(),
+                admission.unit.target.clone(),
+                admission.unit.applicability.state,
+                &context.frame,
+            )?,
+        );
         Ok(Self {
             unit: admission.unit.clone(),
             package,
@@ -254,12 +256,14 @@ impl ConformanceReviewUnit {
         )?;
         let context = ReviewContextBuilder::new(store).build(&package)?;
 
-        let contract = Arc::new(crate::conformance_review::ConformanceAssessmentContract::from_context(
-            self.work_item.clone(),
-            self.target.clone(),
-            self.applicability.state,
-            &context.frame,
-        )?);
+        let contract = Arc::new(
+            crate::conformance_review::ConformanceAssessmentContract::from_context(
+                self.work_item.clone(),
+                self.target.clone(),
+                self.applicability.state,
+                &context.frame,
+            )?,
+        );
 
         Ok(ConformanceReviewMaterialization {
             unit: self.clone(),
@@ -322,10 +326,8 @@ impl ConformanceReviewBatch {
                     )
                     .with_source(error)
                 })?;
-            let package = queue.store_artifact(
-                CONFORMANCE_EVIDENCE_PACKAGE_ARTIFACT_KIND,
-                &package_bytes,
-            )?;
+            let package =
+                queue.store_artifact(CONFORMANCE_EVIDENCE_PACKAGE_ARTIFACT_KIND, &package_bytes)?;
             if package.content_hash != materialized.package.hash {
                 return Err(argus_core::ArgusError::invariant(
                     "stored conformance evidence package identity mismatch",

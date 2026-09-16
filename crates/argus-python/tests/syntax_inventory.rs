@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use argus_core::{ConfigurationId, PortableTargetKind, SnapshotId, SourcePath, TargetKind, TargetVisibility};
+use argus_core::{
+    ConfigurationId, PortableTargetKind, SnapshotId, SourcePath, TargetKind, TargetVisibility,
+};
 use argus_language::SourceAccess;
 use argus_python::PythonSyntaxProvider;
 use std::collections::BTreeMap;
@@ -83,7 +85,14 @@ class Worker:
     let file_target = inventory
         .targets
         .iter()
-        .find(|t| matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::File }))
+        .find(|t| {
+            matches!(
+                t.kind,
+                TargetKind::Portable {
+                    kind: PortableTargetKind::File
+                }
+            )
+        })
         .expect("file target");
     assert_eq!(file_target.name, "src/worker.py");
 
@@ -95,7 +104,9 @@ class Worker:
     assert_eq!(calc_fn.visibility, TargetVisibility::Public);
     assert!(matches!(
         calc_fn.kind,
-        TargetKind::Portable { kind: PortableTargetKind::Callable }
+        TargetKind::Portable {
+            kind: PortableTargetKind::Callable
+        }
     ));
 
     let worker_class = inventory
@@ -106,7 +117,9 @@ class Worker:
     assert_eq!(worker_class.visibility, TargetVisibility::Public);
     assert!(matches!(
         worker_class.kind,
-        TargetKind::Portable { kind: PortableTargetKind::Type }
+        TargetKind::Portable {
+            kind: PortableTargetKind::Type
+        }
     ));
 
     let init_method = inventory

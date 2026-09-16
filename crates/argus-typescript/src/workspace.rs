@@ -17,8 +17,8 @@ use crate::{
     TypeScriptSyntaxProvider,
 };
 use argus_core::{
-    CapabilityStatus, ConfigurationId, PortableTargetKind, Relation, RelationId, RelationProvenance,
-    ResolutionQuality, SourcePath, TargetId, TargetKind,
+    CapabilityStatus, ConfigurationId, PortableTargetKind, Relation, RelationId,
+    RelationProvenance, ResolutionQuality, SourcePath, TargetId, TargetKind,
 };
 use argus_language::{
     AdapterIdentity, AdapterInventory, AdapterProvider, CollectingInventorySink, ConflictRecord,
@@ -169,7 +169,8 @@ impl TypeScriptWorkspaceAdapter {
                     sink.conflict(ConflictRecord {
                         subject: target.id.to_string(),
                         providers: vec!["oxc-syntax".to_owned()],
-                        detail: "duplicate syntax target ID encountered during discovery".to_owned(),
+                        detail: "duplicate syntax target ID encountered during discovery"
+                            .to_owned(),
                     })?;
                 }
             }
@@ -221,14 +222,9 @@ impl TypeScriptWorkspaceAdapter {
         }
 
         // 3. Relationships inference
-        let relationship_provider =
-            TypeScriptRelationshipProvider::new(self.configuration.clone());
-        let semantic = relationship_provider.infer(
-            source,
-            &all_targets,
-            &all_inheritances,
-            &all_imports,
-        )?;
+        let relationship_provider = TypeScriptRelationshipProvider::new(self.configuration.clone());
+        let semantic =
+            relationship_provider.infer(source, &all_targets, &all_inheritances, &all_imports)?;
 
         sink.partition(DiscoveryPartition {
             name: "typescript-relationships".to_owned(),

@@ -20,10 +20,10 @@
 //! when byte ranges shift.
 
 use crate::{
-    architecture_report_from_queue, conformance_report_from_queue, correctness_report_from_queue,
-    documentation_report_from_queue, maintainability_report_from_queue,
-    optimization_report_from_queue, ArchitectureReport, ConformanceReport, CorrectnessReport,
-    DocumentationReport, MaintainabilityReport, OptimizationReport,
+    ArchitectureReport, ConformanceReport, CorrectnessReport, DocumentationReport,
+    MaintainabilityReport, OptimizationReport, architecture_report_from_queue,
+    conformance_report_from_queue, correctness_report_from_queue, documentation_report_from_queue,
+    maintainability_report_from_queue, optimization_report_from_queue,
 };
 use argus_core::{
     AdjudicationState, Confidence, FindingId, RunId, Severity, SourceLocation, TargetId,
@@ -491,7 +491,12 @@ pub fn extract_documentation_findings(report: &DocumentationReport) -> Vec<Diffe
                 .collect();
             DifferentialFinding {
                 id: cluster.id.clone(),
-                policy: "documentation".to_owned(),
+                policy: if report.policy_version == "documentation-internal@1" {
+                    "internal-documentation"
+                } else {
+                    "documentation"
+                }
+                .to_owned(),
                 title: cluster.representative.title.clone(),
                 severity: cluster.representative.severity,
                 confidence: cluster.representative.confidence,
@@ -922,13 +927,20 @@ pub fn extract_all_findings_from_queue(
         .any(|w| w.coverage.policy.starts_with("optimization"));
 
     if is_documentation {
-        if let Ok(rep) = documentation_report_from_queue(
-            queue,
-            run_id.clone(),
-            "documentation-public-api@1",
-        ) {
+        if let Ok(rep) =
+            documentation_report_from_queue(queue, run_id.clone(), "documentation-public-api@1")
+        {
             findings.extend(extract_documentation_findings(&rep));
         }
+    }
+    if records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy == "documentation-internal@1")
+    {
+        let rep =
+            documentation_report_from_queue(queue, run_id.clone(), "documentation-internal@1")?;
+        findings.extend(extract_documentation_findings(&rep));
     }
     if is_correctness {
         if let Ok(rep) =
@@ -1006,6 +1018,18 @@ pub fn extract_all_findings_from_bundle(
         }
     }
 
+    let internal_json = bundle.join("internal-documentation-report.json");
+    if internal_json.is_file() {
+        let content = fs::read(&internal_json).map_err(|e| {
+            argus_core::ArgusError::invalid_input("cannot read internal documentation report")
+                .with_source(e)
+        })?;
+        let report: DocumentationReport = serde_json::from_slice(&content).map_err(|e| {
+            argus_core::ArgusError::invalid_input("invalid internal documentation report")
+                .with_source(e)
+        })?;
+        findings.extend(extract_documentation_findings(&report));
+    }
     let corr_json = bundle.join("correctness-report.json");
     if corr_json.is_file() {
         if let Ok(content) = fs::read_to_string(&corr_json) {
@@ -1057,6 +1081,13 @@ pub fn extract_all_findings_from_bundle(
             bundle,
             run_id.clone(),
             "documentation-public-api@1",
+        ) {
+            findings.extend(extract_documentation_findings(&rep));
+        }
+        if let Ok(rep) = crate::write_documentation_bundle_reports(
+            bundle,
+            run_id.clone(),
+            "documentation-internal@1",
         ) {
             findings.extend(extract_documentation_findings(&rep));
         }

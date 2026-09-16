@@ -123,7 +123,9 @@ impl TypeScriptSyntaxProvider {
         })?;
 
         let source_type = SourceType::from_path(path.as_str()).unwrap_or_else(|_| {
-            SourceType::default().with_typescript(true).with_module(true)
+            SourceType::default()
+                .with_typescript(true)
+                .with_module(true)
         });
 
         let allocator = Allocator::default();
@@ -351,16 +353,17 @@ impl TargetCollector<'_> {
                     self.collect_declaration(decl, parent_id, prefix, true, Some(outer_start))?;
                 }
             }
-            Statement::ExportDefaultDeclaration(export_default) => match &export_default.declaration
-            {
-                ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
-                    self.collect_function(func, parent_id, prefix, true, Some(outer_start))?;
+            Statement::ExportDefaultDeclaration(export_default) => {
+                match &export_default.declaration {
+                    ExportDefaultDeclarationKind::FunctionDeclaration(func) => {
+                        self.collect_function(func, parent_id, prefix, true, Some(outer_start))?;
+                    }
+                    ExportDefaultDeclarationKind::ClassDeclaration(class) => {
+                        self.collect_class(class, parent_id, prefix, true, Some(outer_start))?;
+                    }
+                    _ => {}
                 }
-                ExportDefaultDeclarationKind::ClassDeclaration(class) => {
-                    self.collect_class(class, parent_id, prefix, true, Some(outer_start))?;
-                }
-                _ => {}
-            },
+            }
             Statement::ImportDeclaration(import_decl) => {
                 let source_module = import_decl.source.value.to_string();
                 let is_type_only = import_decl.import_kind.is_type();
@@ -837,10 +840,7 @@ impl TargetCollector<'_> {
 
     fn attach_doc(&mut self, target_id: &TargetId, node_start: u32, outer_start: Option<u32>) {
         let search_pos = outer_start.unwrap_or(node_start);
-        let preceding = self
-            .jsdoc_comments
-            .range(..=search_pos)
-            .next_back();
+        let preceding = self.jsdoc_comments.range(..=search_pos).next_back();
 
         if let Some((&comment_end, comment_text)) = preceding {
             let gap = usize::try_from(comment_end)
@@ -850,7 +850,8 @@ impl TargetCollector<'_> {
 
             if let Some(gap_str) = gap {
                 if gap_str.trim().is_empty() {
-                    self.documentation.insert(target_id.clone(), comment_text.clone());
+                    self.documentation
+                        .insert(target_id.clone(), comment_text.clone());
                 }
             }
         }

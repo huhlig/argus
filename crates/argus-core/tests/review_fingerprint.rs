@@ -26,7 +26,9 @@ fn sample_fingerprint() -> ReviewFingerprint {
         documentation_hash: ContentHash::digest(b"/// Does something useful."),
         downstream_dependency_hash: ContentHash::digest(b"dep1,dep2"),
         upstream_call_structure_hash: ContentHash::digest(b"caller1:line10,caller2:line25"),
-        call_tree_behavior_hash: ContentHash::digest(b"caller1:requires_lock;caller2:precondition_positive"),
+        call_tree_behavior_hash: ContentHash::digest(
+            b"caller1:requires_lock;caller2:precondition_positive",
+        ),
         test_hash: ContentHash::digest(b"test_target_1"),
         design_hash: ContentHash::digest(b"ADR-001: Requirement 3"),
         policy_version: "documentation@1.0.0".to_owned(),

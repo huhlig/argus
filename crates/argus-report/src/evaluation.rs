@@ -668,20 +668,44 @@ mod tests {
         };
 
         // Non-CI mode: fails because precision is unmeasured and min_adjudicated_findings unmet
-        let non_ci_err = unadjudicated_eval.check_thresholds(&thresholds).unwrap_err();
-        assert!(non_ci_err.iter().any(|v| v.contains("precision was unmeasured")));
-        assert!(non_ci_err.iter().any(|v| v.contains("adjudicated findings is below minimum")));
-        assert!(non_ci_err.iter().any(|v| v.contains("unadjudicated findings exceeds maximum")));
+        let non_ci_err = unadjudicated_eval
+            .check_thresholds(&thresholds)
+            .unwrap_err();
+        assert!(
+            non_ci_err
+                .iter()
+                .any(|v| v.contains("precision was unmeasured"))
+        );
+        assert!(
+            non_ci_err
+                .iter()
+                .any(|v| v.contains("adjudicated findings is below minimum"))
+        );
+        assert!(
+            non_ci_err
+                .iter()
+                .any(|v| v.contains("unadjudicated findings exceeds maximum"))
+        );
 
         // CI mode: does not block on human adjudication
-        assert!(unadjudicated_eval.check_thresholds_with_mode(&thresholds, true).is_ok());
+        assert!(
+            unadjudicated_eval
+                .check_thresholds_with_mode(&thresholds, true)
+                .is_ok()
+        );
 
         // CI mode: still strictly enforces automated thresholds (e.g. min_recall 100%)
         let strict_recall = DocumentationEvaluationThresholds {
             min_recall_basis_points: Some(10_000),
             ..Default::default()
         };
-        let ci_recall_err = unadjudicated_eval.check_thresholds_with_mode(&strict_recall, true).unwrap_err();
-        assert!(ci_recall_err.iter().any(|v| v.contains("recall 0.00% is below threshold 100.00%")));
+        let ci_recall_err = unadjudicated_eval
+            .check_thresholds_with_mode(&strict_recall, true)
+            .unwrap_err();
+        assert!(
+            ci_recall_err
+                .iter()
+                .any(|v| v.contains("recall 0.00% is below threshold 100.00%"))
+        );
     }
 }

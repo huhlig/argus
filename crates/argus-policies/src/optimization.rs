@@ -379,10 +379,7 @@ impl OptimizationAssessment {
                         "optimization proposed change",
                         &finding.proposed_optimization,
                     )?;
-                    validate_text(
-                        "optimization blast radius",
-                        &finding.impact.blast_radius,
-                    )?;
+                    validate_text("optimization blast radius", &finding.impact.blast_radius)?;
                     validate_text(
                         "optimization potential benefit",
                         &finding.impact.potential_benefit,
@@ -418,7 +415,9 @@ impl OptimizationAssessment {
                 ProfilingEvidenceStatus::Available { summary, .. } => {
                     validate_text("profiling evidence summary", summary)?;
                 }
-                ProfilingEvidenceStatus::Unavailable { suggested_benchmarks } => {
+                ProfilingEvidenceStatus::Unavailable {
+                    suggested_benchmarks,
+                } => {
                     for benchmark in suggested_benchmarks {
                         validate_text("suggested benchmark", benchmark)?;
                     }

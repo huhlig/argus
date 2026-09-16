@@ -29,8 +29,9 @@ pub use evidence::{
 };
 pub use fingerprint::{FingerprintDifference, ReviewFingerprint};
 pub use id::{
-    AssessmentId, AttemptId, ConfigurationId, DesignArtifactId, DesignLinkId, EvidenceId, FindingId,
-    PolicyId, RelationId, RunId, SnapshotId, SourceTreeId, TargetId, WorkItemId, WorkflowId,
+    AssessmentId, AttemptId, ConfigurationId, DesignArtifactId, DesignLinkId, EvidenceId,
+    FindingId, PolicyId, RelationId, RunId, SnapshotId, SourceTreeId, TargetId, WorkItemId,
+    WorkflowId,
 };
 pub use lifecycle::{
     AdjudicationState, ApplicabilityState, AssessmentState, AuditState, ExecutionState,

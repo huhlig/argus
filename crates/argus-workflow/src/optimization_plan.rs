@@ -122,8 +122,10 @@ impl OptimizationReviewMaterialization {
         let package = PackageArtifact {
             hash: stored_package.content_hash,
             package: serde_json::from_slice(&stored_package.payload).map_err(|error| {
-                argus_core::ArgusError::invalid_input("invalid stored optimization evidence package")
-                    .with_source(error)
+                argus_core::ArgusError::invalid_input(
+                    "invalid stored optimization evidence package",
+                )
+                .with_source(error)
             })?,
         };
         package.validate_identity()?;
@@ -314,10 +316,8 @@ impl OptimizationReviewBatch {
                     )
                     .with_source(error)
                 })?;
-            let package = queue.store_artifact(
-                OPTIMIZATION_EVIDENCE_PACKAGE_ARTIFACT_KIND,
-                &package_bytes,
-            )?;
+            let package = queue
+                .store_artifact(OPTIMIZATION_EVIDENCE_PACKAGE_ARTIFACT_KIND, &package_bytes)?;
             if package.content_hash != materialized.package.hash {
                 return Err(argus_core::ArgusError::invariant(
                     "stored optimization evidence package identity mismatch",
@@ -553,6 +553,9 @@ mod tests {
         };
         let plan = planner.plan(&snapshot, &config, &[target], &[]).unwrap();
         assert_eq!(plan.units.len(), 1);
-        assert_eq!(plan.units[0].applicability.state, ApplicabilityState::Applicable);
+        assert_eq!(
+            plan.units[0].applicability.state,
+            ApplicabilityState::Applicable
+        );
     }
 }

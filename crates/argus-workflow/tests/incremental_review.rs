@@ -15,15 +15,18 @@
 //! Integration tests for incremental review planning and short-circuit cache execution.
 
 use argus_core::{
-    ConfigurationId, ContentHash, InventoryState, PolicyId, PortableTargetKind,
-    ReviewFingerprint, RunId, SnapshotId, Target, TargetId, TargetKind, TargetVisibility,
+    ConfigurationId, ContentHash, InventoryState, PolicyId, PortableTargetKind, ReviewFingerprint,
+    RunId, SnapshotId, Target, TargetId, TargetKind, TargetVisibility,
 };
 use argus_policies::CorrectnessApplicabilityPolicy;
-use argus_storage::{CachedAssessmentRecord, DurableQueue, QueueState, QueueWork, RunRecord, RunState};
+use argus_storage::{
+    CachedAssessmentRecord, DurableQueue, QueueState, QueueWork, RunRecord, RunState,
+};
 use argus_workflow::{
-    AdmissionMode, CorrectnessReviewAdmission, CorrectnessReviewPlanner, MapFingerprintResolver,
-    ShortCircuitCacheWorker, ShortCircuitCacheWorkerConfig, ShortCircuitCacheWorkerResult,
-    TargetAdmissionDecision, WorkAdmissionPlanner, CORRECTNESS_REVIEW_PLAN_SCHEMA_VERSION,
+    AdmissionMode, CORRECTNESS_REVIEW_PLAN_SCHEMA_VERSION, CorrectnessReviewAdmission,
+    CorrectnessReviewPlanner, MapFingerprintResolver, ShortCircuitCacheWorker,
+    ShortCircuitCacheWorkerConfig, ShortCircuitCacheWorkerResult, TargetAdmissionDecision,
+    WorkAdmissionPlanner,
 };
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -43,11 +46,7 @@ fn create_test_target(id_str: &str, name: &str) -> Target {
     }
 }
 
-fn fixture_fingerprint(
-    target: &TargetId,
-    policy: &PolicyId,
-    impl_byte: u8,
-) -> ReviewFingerprint {
+fn fixture_fingerprint(target: &TargetId, policy: &PolicyId, impl_byte: u8) -> ReviewFingerprint {
     ReviewFingerprint {
         snapshot: SnapshotId::derive([b"snap-1".as_slice()]),
         target: target.clone(),

@@ -71,7 +71,10 @@ fn ingest_repository_adrs() {
         .into_iter()
         .filter(|i| i.severity == DocumentHealthSeverity::Error)
         .collect();
-    assert!(errors.is_empty(), "ADRs in docs/adr should have zero health errors: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "ADRs in docs/adr should have zero health errors: {errors:?}"
+    );
 }
 
 #[test]
@@ -113,7 +116,10 @@ This is the core specification.
     assert_eq!(artifact.authors, vec!["Hans W. Uhlig".to_owned()]);
     assert_eq!(
         artifact.governs,
-        vec!["crates/argus-core".to_owned(), "crates/argus-evidence".to_owned()]
+        vec![
+            "crates/argus-core".to_owned(),
+            "crates/argus-evidence".to_owned()
+        ]
     );
     assert!(artifact.tags.contains("core"));
     assert!(artifact.tags.contains("architecture"));
@@ -149,7 +155,11 @@ fn health_check_duplicate_identifiers() {
     index.insert(adr_2);
 
     let issues = index.validate_health();
-    assert!(issues.iter().any(|i| i.kind == DocumentHealthIssueKind::DuplicateIdentifier));
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.kind == DocumentHealthIssueKind::DuplicateIdentifier)
+    );
 }
 
 #[test]
@@ -163,7 +173,11 @@ fn health_check_missing_metadata() {
 
     index.insert(adr);
     let issues = index.validate_health();
-    assert!(issues.iter().any(|i| i.kind == DocumentHealthIssueKind::MissingRequiredMetadata));
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.kind == DocumentHealthIssueKind::MissingRequiredMetadata)
+    );
 }
 
 #[test]
@@ -177,7 +191,11 @@ fn health_check_broken_supersession() {
 
     index.insert(adr);
     let issues = index.validate_health();
-    assert!(issues.iter().any(|i| i.kind == DocumentHealthIssueKind::BrokenSupersession));
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.kind == DocumentHealthIssueKind::BrokenSupersession)
+    );
 }
 
 #[test]
@@ -199,5 +217,9 @@ fn health_check_supersession_cycle_and_chain() {
     index.insert(adr_2);
 
     let issues = index.validate_health();
-    assert!(issues.iter().any(|i| i.kind == DocumentHealthIssueKind::SupersessionCycle));
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.kind == DocumentHealthIssueKind::SupersessionCycle)
+    );
 }

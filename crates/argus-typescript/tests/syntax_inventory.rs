@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use argus_core::{ConfigurationId, EvidenceKind, PortableTargetKind, SnapshotId, SourcePath, TargetKind, TargetVisibility};
+use argus_core::{
+    ConfigurationId, EvidenceKind, PortableTargetKind, SnapshotId, SourcePath, TargetKind,
+    TargetVisibility,
+};
 use argus_language::SourceAccess;
 use argus_typescript::TypeScriptSyntaxProvider;
 use std::collections::BTreeMap;
@@ -115,7 +118,14 @@ namespace LegacyApi {
     let file_target = inventory
         .targets
         .iter()
-        .find(|t| matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::File }))
+        .find(|t| {
+            matches!(
+                t.kind,
+                TargetKind::Portable {
+                    kind: PortableTargetKind::File
+                }
+            )
+        })
         .expect("file target exists");
     assert_eq!(file_target.name, "src/index.ts");
 
@@ -221,13 +231,27 @@ namespace LegacyApi {
         .iter()
         .find(|e| e.target.as_ref() == Some(&greet_target.id) && e.kind == EvidenceKind::Source)
         .expect("greet source evidence exists");
-    assert!(greet_src_evidence.detail.as_deref().unwrap().contains("function greet"));
+    assert!(
+        greet_src_evidence
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("function greet")
+    );
 
     let greet_doc_evidence = evidence
         .iter()
-        .find(|e| e.target.as_ref() == Some(&greet_target.id) && e.kind == EvidenceKind::Documentation)
+        .find(|e| {
+            e.target.as_ref() == Some(&greet_target.id) && e.kind == EvidenceKind::Documentation
+        })
         .expect("greet doc evidence exists");
-    assert!(greet_doc_evidence.detail.as_deref().unwrap().contains("Application greeting utility."));
+    assert!(
+        greet_doc_evidence
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("Application greeting utility.")
+    );
 }
 
 #[test]

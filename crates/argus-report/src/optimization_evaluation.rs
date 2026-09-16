@@ -327,7 +327,12 @@ pub fn evaluate_optimization(
         unable_to_verify_assessments += report
             .assessments
             .iter()
-            .filter(|a| matches!(a.assessment.result, argus_policies::OptimizationResult::UnableToVerify { .. }))
+            .filter(|a| {
+                matches!(
+                    a.assessment.result,
+                    argus_policies::OptimizationResult::UnableToVerify { .. }
+                )
+            })
             .count();
 
         let mut seen_cluster_ids = BTreeSet::new();

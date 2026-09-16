@@ -680,12 +680,13 @@ impl PrimaryReviewActor {
                     .iter()
                     .enumerate()
                     .try_for_each(|(index, candidate)| {
-                        validate_candidate_draft(candidate).map_err(|message| {
-                            format!("candidate #{index} is invalid: {message}")
-                        })
+                        validate_candidate_draft(candidate)
+                            .map_err(|message| format!("candidate #{index} is invalid: {message}"))
                     })
                     .map_err(|message| {
-                        AgentError::Internal(format!("policy candidate contract violation: {message}"))
+                        AgentError::Internal(format!(
+                            "policy candidate contract violation: {message}"
+                        ))
                     })?;
                 payload
                     .as_object_mut()
@@ -1165,9 +1166,10 @@ fn validate_review_payload_keys(
             ));
         }
     }
-    if object.keys().any(|key| {
-        !required.contains(&key.as_str()) && !allowed_optional.contains(&key.as_str())
-    }) {
+    if object
+        .keys()
+        .any(|key| !required.contains(&key.as_str()) && !allowed_optional.contains(&key.as_str()))
+    {
         let mut received = object.keys().map(String::as_str).collect::<Vec<_>>();
         received.sort_unstable();
         return Err(format!(

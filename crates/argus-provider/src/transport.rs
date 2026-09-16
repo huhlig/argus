@@ -197,7 +197,10 @@ impl LangchartModelProvider {
     ) -> Result<Self, ProviderError> {
         require_deployment(&capabilities, DeploymentMode::Online, "bedrock")?;
         if !capabilities.identity.model.is_empty()
-            && !config.models.iter().any(|m| m == &capabilities.identity.model)
+            && !config
+                .models
+                .iter()
+                .any(|m| m == &capabilities.identity.model)
         {
             config.models.push(capabilities.identity.model.clone());
         }
@@ -403,7 +406,8 @@ impl ModelProvider for LangchartModelProvider {
             }
             FinishReason::ToolCalls => {
                 return Err(ProviderError::InvalidOutput(
-                    "transport did not return a terminal JSON response: tool calls returned".to_owned(),
+                    "transport did not return a terminal JSON response: tool calls returned"
+                        .to_owned(),
                 ));
             }
             FinishReason::Other(reason) => {

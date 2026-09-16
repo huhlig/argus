@@ -14,8 +14,8 @@
 
 use argus_core::{AdjudicationState, Confidence, FindingId, RunId, Severity, TargetId};
 use argus_report::{
-    compute_finding_content_hash, prepare_publication, DifferentialFinding, FindingCategory,
-    PublicationStatus, PublicationTarget,
+    DifferentialFinding, FindingCategory, PublicationStatus, PublicationTarget,
+    compute_finding_content_hash, prepare_publication,
 };
 
 #[test]

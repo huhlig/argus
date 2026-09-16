@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use argus_core::{
-    ByteSpan, ConfigurationId, EvidenceKind, InventoryState, PortableTargetKind,
-    SnapshotId, SourceLocation, SourcePath, Target, TargetId, TargetKind, TargetVisibility,
+    ByteSpan, ConfigurationId, EvidenceKind, InventoryState, PortableTargetKind, SnapshotId,
+    SourceLocation, SourcePath, Target, TargetId, TargetKind, TargetVisibility,
 };
 use argus_java::JavaDiagnosticProvider;
 use argus_language::SourceAccess;
@@ -79,11 +79,8 @@ src/main/java/com/example/App.java:5: error: incompatible types: String cannot b
 src/main/java/com/example/App.java:4:17: warning: [deprecation] test() has been deprecated
 "#;
 
-    let provider = JavaDiagnosticProvider::new(
-        ConfigurationId::derive([b"cfg".as_slice()]),
-        None,
-        None,
-    );
+    let provider =
+        JavaDiagnosticProvider::new(ConfigurationId::derive([b"cfg".as_slice()]), None, None);
 
     let inv = provider
         .ingest_javac_lines(javac_output, &source, &[target])
@@ -92,11 +89,19 @@ src/main/java/com/example/App.java:4:17: warning: [deprecation] test() has been 
     assert_eq!(inv.evidence.len(), 2);
     assert_eq!(inv.unparsed_lines.len(), 0);
 
-    let err = inv.evidence.iter().find(|e| e.summary.contains("error:")).unwrap();
+    let err = inv
+        .evidence
+        .iter()
+        .find(|e| e.summary.contains("error:"))
+        .unwrap();
     assert_eq!(err.kind, EvidenceKind::CompilerDiagnostic);
     assert!(err.summary.contains("incompatible types"));
 
-    let warn = inv.evidence.iter().find(|e| e.summary.contains("warning:")).unwrap();
+    let warn = inv
+        .evidence
+        .iter()
+        .find(|e| e.summary.contains("warning:"))
+        .unwrap();
     assert!(warn.summary.contains("[deprecation]"));
 }
 
@@ -118,11 +123,8 @@ fn checkstyle_xml_diagnostics_ingestion() {
     </file>
 </checkstyle>"#;
 
-    let provider = JavaDiagnosticProvider::new(
-        ConfigurationId::derive([b"cfg".as_slice()]),
-        None,
-        None,
-    );
+    let provider =
+        JavaDiagnosticProvider::new(ConfigurationId::derive([b"cfg".as_slice()]), None, None);
 
     let inv = provider
         .ingest_checkstyle_xml(checkstyle_xml, &source, &[target])

@@ -123,7 +123,8 @@ impl ConformanceApplicabilityPolicy {
                     class,
                     visibility,
                     state: ApplicabilityState::Applicable,
-                    rationale: "Target is eligible for design document conformance review".to_owned(),
+                    rationale: "Target is eligible for design document conformance review"
+                        .to_owned(),
                 });
             }
         }
@@ -139,7 +140,8 @@ impl ConformanceApplicabilityPolicy {
                 class: ConformanceTargetClass::Test,
                 visibility,
                 state: ApplicabilityState::Applicable,
-                rationale: "Tests are reviewed for design requirement verification conformance".to_owned(),
+                rationale: "Tests are reviewed for design requirement verification conformance"
+                    .to_owned(),
             });
             rules.push(ConformanceApplicabilityRule {
                 class: ConformanceTargetClass::Constant,
@@ -177,7 +179,8 @@ impl ConformanceApplicabilityPolicy {
                     class,
                     visibility,
                     state: ApplicabilityState::Applicable,
-                    rationale: "Architectural container is eligible for design conformance review".to_owned(),
+                    rationale: "Architectural container is eligible for design conformance review"
+                        .to_owned(),
                 });
             }
         }
@@ -328,12 +331,8 @@ pub struct ConformanceCandidate {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ConformanceResult {
     Passed,
-    CandidateFindings {
-        findings: Vec<ConformanceCandidate>,
-    },
-    UnableToVerify {
-        reason: String,
-    },
+    CandidateFindings { findings: Vec<ConformanceCandidate> },
+    UnableToVerify { reason: String },
 }
 
 /// Persisted trusted design conformance assessment.
@@ -663,7 +662,9 @@ impl ConformanceAssessmentBinding {
 
 fn validate_text(label: &str, value: &str) -> Result<(), ArgusError> {
     if value.trim().is_empty() {
-        return Err(ArgusError::invalid_input(format!("{label} cannot be empty")));
+        return Err(ArgusError::invalid_input(format!(
+            "{label} cannot be empty"
+        )));
     }
     Ok(())
 }

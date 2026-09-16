@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use argus_core::{ConfigurationId, EvidenceKind, PortableTargetKind, SnapshotId, SourcePath, TargetKind};
+use argus_core::{
+    ConfigurationId, EvidenceKind, PortableTargetKind, SnapshotId, SourcePath, TargetKind,
+};
 use argus_language::{LanguageAdapter, SourceAccess, normalize_inventory};
 use argus_python::PythonWorkspaceAdapter;
 use std::collections::BTreeMap;
@@ -80,13 +82,43 @@ def run() -> None:
     let inventory = adapter.inventory(&source).unwrap();
     let first = normalize_inventory(&source, inventory).unwrap();
 
-    assert!(first.targets.iter().any(|t| matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::Workspace })));
-    assert!(first.targets.iter().any(|t| matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::Package })));
-    assert!(first.targets.iter().any(|t| matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::File })));
-    assert!(first.targets.iter().any(|t| matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::Callable })));
+    assert!(first.targets.iter().any(|t| matches!(
+        t.kind,
+        TargetKind::Portable {
+            kind: PortableTargetKind::Workspace
+        }
+    )));
+    assert!(first.targets.iter().any(|t| matches!(
+        t.kind,
+        TargetKind::Portable {
+            kind: PortableTargetKind::Package
+        }
+    )));
+    assert!(first.targets.iter().any(|t| matches!(
+        t.kind,
+        TargetKind::Portable {
+            kind: PortableTargetKind::File
+        }
+    )));
+    assert!(first.targets.iter().any(|t| matches!(
+        t.kind,
+        TargetKind::Portable {
+            kind: PortableTargetKind::Callable
+        }
+    )));
 
-    assert!(first.evidence.iter().any(|e| e.kind == EvidenceKind::Documentation));
-    assert!(first.evidence.iter().any(|e| e.kind == EvidenceKind::Source));
+    assert!(
+        first
+            .evidence
+            .iter()
+            .any(|e| e.kind == EvidenceKind::Documentation)
+    );
+    assert!(
+        first
+            .evidence
+            .iter()
+            .any(|e| e.kind == EvidenceKind::Source)
+    );
 
     // Idempotency: second run produces exact same inventory
     let second_inv = adapter.inventory(&source).unwrap();

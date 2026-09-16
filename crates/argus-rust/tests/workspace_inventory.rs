@@ -484,4 +484,3 @@ pub mod platform;
     let mut sink = CountingSink::default();
     adapter.inventory_into(&source, &mut sink).unwrap();
 }
-

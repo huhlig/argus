@@ -398,35 +398,40 @@ pub fn known_clean_stub_with_todo(input: &[u8]) -> usize {
 }
 
 fn seeded_target(name: &str) -> TargetId {
-    let (kind, logical_name) = match name {
-        "missing-presence" => ("callable", "missing_presence"),
-        "unclear-purpose" => ("callable", "unclear_purpose"),
-        "missing-behavior" => ("callable", "missing_behavior"),
-        "missing-inputs" => ("callable", "missing_inputs"),
-        "missing-outputs" => ("callable", "missing_outputs"),
-        "missing-errors" => ("callable", "missing_errors"),
-        "missing-panics" => ("callable", "missing_panics"),
-        "missing-safety" => ("callable", "missing_safety"),
-        "undocumented-side-effects" => ("callable", "undocumented_side_effects"),
-        "undocumented-invariants" => ("type", "UndocumentedInvariants"),
-        "misleading-examples" => ("callable", "misleading_examples"),
-        "inaccurate-behavior" => ("callable", "inaccurate_behavior"),
-        "obsolete-currency" => ("callable", "obsolete_currency"),
-        "vacuous-tautology" => ("callable", "vacuous_tautology"),
-        "documented-stub-missing-todo" => ("callable", "documented_stub_missing_todo"),
-        "documented-gap-missing-todo" => ("callable", "documented_gap_missing_todo"),
-        "known-clean" => ("callable", "known_clean"),
-        "known-clean-unsafe" => ("callable", "known_clean_unsafe"),
-        "known-clean-error" => ("callable", "known_clean_error"),
-        "known-clean-stub-with-todo" => ("callable", "known_clean_stub_with_todo"),
+    let id_hex = match name {
+        "missing-presence" => "f9157862e7b53ff231ebbafbb17acf782ac0bb2c1a6dfbc09f2cf39269cc7896",
+        "unclear-purpose" => "886e2d227013319e7f8ab5ec6d5ef20ed8ba1d8c25c8312f40048a99a62e6a07",
+        "missing-behavior" => "fcc5b8b367a0d938df2f865a38ee0337d4a0e18f7a124b75ea6ae2a210517079",
+        "missing-inputs" => "a15fb53f52a370b377608ef92051eac2e416a3d488042eb3f6dcae11428eb404",
+        "missing-outputs" => "95fb113e9c89088fc667bbcae6cd2b1a674951b972286abe90b23f0153ce7227",
+        "missing-errors" => "d52de3617e2992151a6f86966c6ca24c4e0178ef2881819bd1cd4a5842862fc3",
+        "missing-panics" => "38f2a2fb3fad3f9fae20e76f111414c62423e1322d2cc27dcea1b554dbdb19f1",
+        "missing-safety" => "eb4fde7436924dba4f179b73fc5d9591cf82de5c73adcb7afc465c2383e69eab",
+        "undocumented-side-effects" => {
+            "9999ebeec1bb3559c0e5cc232265c701bc7191f76b9b4f65bf9bce7e07df082a"
+        }
+        "undocumented-invariants" => {
+            "2cc286da80e56ab67e08a42209d9a8f6f617bc1e0401c718f3f2b47ca78f8d87"
+        }
+        "misleading-examples" => "8d3f22127a9b3c7661105e685ffdc93f2a543b5fc37f9ce29a1ce090a5d1ea5f",
+        "inaccurate-behavior" => "f60c4c100f4d7cdbb66e7fe5890ae16fc3ca0a1f995ed70a95aac878b7fc3a15",
+        "obsolete-currency" => "80a0d3d4e5aa22b2825f7e39e5fe801f6a78e717ee38d001e8b73fadf20d3316",
+        "vacuous-tautology" => "139a7b00c092f742a36441a3941b594e89a3757647c511b632ff7bdf310af6cc",
+        "documented-stub-missing-todo" => {
+            "68754c4dbdf7d01b2d5d2edddc4155481b6b7847ea836ca32c28be34f194ce78"
+        }
+        "documented-gap-missing-todo" => {
+            "bfa03a7eb03fc3a52df526dbe8609d9425e3a25f9250bb3874bdb2f8c100350f"
+        }
+        "known-clean" => "c1874a6157da19b41c73769d8f989c217b58dc2ea80c424bf1f3ce899e2b5ce2",
+        "known-clean-unsafe" => "0ed278ba07ae354c7747563e9f461a283f1b01f96c8886e879720638ad1b3b16",
+        "known-clean-error" => "fadcb53fe86781b60dfb750ee322eede8cb082a5512a8357a39f7fe871ba6817",
+        "known-clean-stub-with-todo" => {
+            "92509f43eb24fafebef01acc8c4cbc6163770688cb6d96229034470a0843a7b5"
+        }
         _ => unreachable!("unknown seeded documentation target"),
     };
-    TargetId::derive([
-        b"rust-syntax".as_slice(),
-        b"src/lib.rs".as_slice(),
-        kind.as_bytes(),
-        logical_name.as_bytes(),
-    ])
+    id_hex.parse().expect("valid target id hex")
 }
 
 #[cfg(test)]

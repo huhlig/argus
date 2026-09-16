@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{EvaluationRate, ConformanceReport};
+use crate::{ConformanceReport, EvaluationRate};
 use argus_core::{AdjudicationState, HumanAdjudication, TargetId};
 use argus_policies::ConformanceDimension;
 use serde::{Deserialize, Serialize};
@@ -152,7 +152,9 @@ impl ConformanceEvaluation {
                     ));
                 }
                 None if !ci_mode || adjudicated > 0 => {
-                    violations.push("precision was unmeasured because no findings were adjudicated".to_owned());
+                    violations.push(
+                        "precision was unmeasured because no findings were adjudicated".to_owned(),
+                    );
                 }
                 _ => {}
             }
@@ -239,7 +241,12 @@ pub fn evaluate_conformance(
         unable_to_verify_assessments += report
             .assessments
             .iter()
-            .filter(|a| matches!(a.assessment.result, argus_policies::ConformanceResult::UnableToVerify { .. }))
+            .filter(|a| {
+                matches!(
+                    a.assessment.result,
+                    argus_policies::ConformanceResult::UnableToVerify { .. }
+                )
+            })
             .count();
 
         let mut seen_cluster_ids = BTreeSet::new();
@@ -356,8 +363,9 @@ mod tests {
             known_clean_targets: Vec::new(),
         };
         let run_id = RunId::derive([b"eval-run-1".as_slice()]);
-        let report = ConformanceReport::build(run_id, "conformance-design-aligned@1", &[], &[], &[])
-            .unwrap();
+        let report =
+            ConformanceReport::build(run_id, "conformance-design-aligned@1", &[], &[], &[])
+                .unwrap();
         let eval = evaluate_conformance(&corpus, &[report], &[]).unwrap();
         assert_eq!(eval.precision, None);
         assert_eq!(eval.recall.basis_points, 0);
@@ -365,4 +373,3 @@ mod tests {
         assert!(eval.to_markdown().contains("# Conformance evaluation"));
     }
 }
-

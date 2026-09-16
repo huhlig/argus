@@ -63,10 +63,7 @@ fn maven_pom_manifest_inventory() {
 
     let source = MemorySource {
         snapshot: SnapshotId::derive([b"test-maven-single".as_slice()]),
-        files: BTreeMap::from([(
-            SourcePath::new("pom.xml").unwrap(),
-            pom.as_bytes().to_vec(),
-        )]),
+        files: BTreeMap::from([(SourcePath::new("pom.xml").unwrap(), pom.as_bytes().to_vec())]),
     };
 
     let adapter = JavaManifestAdapter::new(
@@ -131,9 +128,18 @@ fn multi_module_maven_pom_inventory() {
     let source = MemorySource {
         snapshot: SnapshotId::derive([b"test-multi-module".as_slice()]),
         files: BTreeMap::from([
-            (SourcePath::new("pom.xml").unwrap(), parent_pom.as_bytes().to_vec()),
-            (SourcePath::new("mod-core/pom.xml").unwrap(), core_pom.as_bytes().to_vec()),
-            (SourcePath::new("mod-app/pom.xml").unwrap(), app_pom.as_bytes().to_vec()),
+            (
+                SourcePath::new("pom.xml").unwrap(),
+                parent_pom.as_bytes().to_vec(),
+            ),
+            (
+                SourcePath::new("mod-core/pom.xml").unwrap(),
+                core_pom.as_bytes().to_vec(),
+            ),
+            (
+                SourcePath::new("mod-app/pom.xml").unwrap(),
+                app_pom.as_bytes().to_vec(),
+            ),
         ]),
     };
 
@@ -154,8 +160,18 @@ fn multi_module_maven_pom_inventory() {
 
     // Relations: 2 containment (root -> mod-core, root -> mod-app), 1 dependency (mod-app -> mod-core)
     assert_eq!(normalized.relations.len(), 3);
-    assert!(normalized.relations.iter().any(|r| r.kind.starts_with("core:depends_on")));
-    assert!(normalized.relations.iter().any(|r| r.kind == "core:contains"));
+    assert!(
+        normalized
+            .relations
+            .iter()
+            .any(|r| r.kind.starts_with("core:depends_on"))
+    );
+    assert!(
+        normalized
+            .relations
+            .iter()
+            .any(|r| r.kind == "core:contains")
+    );
 }
 
 #[test]
@@ -232,8 +248,7 @@ fn direct_pom_parse_helper() {
     </modules>
 </project>"#;
 
-    let parsed =
-        JavaManifestAdapter::parse_pom(pom.as_bytes()).expect("pom should parse");
+    let parsed = JavaManifestAdapter::parse_pom(pom.as_bytes()).expect("pom should parse");
     assert_eq!(parsed.group_id.as_deref(), Some("com.parent"));
     assert_eq!(parsed.artifact_id, "child-service");
     assert_eq!(parsed.version.as_deref(), Some("3.0.0"));

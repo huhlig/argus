@@ -14,8 +14,9 @@
 
 use argus_core::{AdjudicationState, Confidence, FindingId, RunId, Severity, TargetId};
 use argus_report::{
-    escape_html, render_differential_html_report, render_findings_html_report, DifferentialFinding,
-    DifferentialReport, DifferentialSummary, FindingCategory, HtmlReportOptions, SeverityBreakdown,
+    DifferentialFinding, DifferentialReport, DifferentialSummary, FindingCategory,
+    HtmlReportOptions, SeverityBreakdown, escape_html, render_differential_html_report,
+    render_findings_html_report,
 };
 
 #[test]

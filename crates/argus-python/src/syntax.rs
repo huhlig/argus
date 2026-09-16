@@ -83,7 +83,8 @@ impl PythonSyntaxProvider {
         parent: Option<TargetId>,
     ) -> Result<PythonSyntaxInventory, argus_core::ArgusError> {
         let mut diagnostics = Vec::new();
-        let parsed = match ruff_python_parser::parse(text, ruff_python_parser::Mode::Module.into()) {
+        let parsed = match ruff_python_parser::parse(text, ruff_python_parser::Mode::Module.into())
+        {
             Ok(p) => p,
             Err(err) => {
                 diagnostics.push(format!("parse error in {}: {err}", path.as_str()));
@@ -406,7 +407,9 @@ impl TargetCollector<'_> {
                 for target_expr in &assign_stmt.targets {
                     if let Expr::Name(name_expr) = target_expr {
                         let var_name = name_expr.id.as_str();
-                        let is_const = var_name.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit());
+                        let is_const = var_name
+                            .chars()
+                            .all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit());
                         let kind = if is_const {
                             TargetKind::Portable {
                                 kind: PortableTargetKind::Constant,
@@ -421,7 +424,11 @@ impl TargetCollector<'_> {
                         let span = text_range_to_bytespan(assign_stmt.range())?;
                         let var_id = TargetId::derive([
                             b"python".as_slice(),
-                            if is_const { b"constant".as_slice() } else { b"variable".as_slice() },
+                            if is_const {
+                                b"constant".as_slice()
+                            } else {
+                                b"variable".as_slice()
+                            },
                             self.path.as_str().as_bytes(),
                             var_name.as_bytes(),
                         ]);
@@ -456,7 +463,9 @@ impl TargetCollector<'_> {
             Stmt::AnnAssign(ann_assign) => {
                 if let Expr::Name(name_expr) = &*ann_assign.target {
                     let var_name = name_expr.id.as_str();
-                    let is_const = var_name.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit());
+                    let is_const = var_name
+                        .chars()
+                        .all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit());
                     let kind = if is_const {
                         TargetKind::Portable {
                             kind: PortableTargetKind::Constant,
@@ -471,7 +480,11 @@ impl TargetCollector<'_> {
                     let span = text_range_to_bytespan(ann_assign.range())?;
                     let var_id = TargetId::derive([
                         b"python".as_slice(),
-                        if is_const { b"constant".as_slice() } else { b"variable".as_slice() },
+                        if is_const {
+                            b"constant".as_slice()
+                        } else {
+                            b"variable".as_slice()
+                        },
                         self.path.as_str().as_bytes(),
                         var_name.as_bytes(),
                     ]);

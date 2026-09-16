@@ -13,9 +13,7 @@
 // limitations under the License.
 
 use argus_core::SourcePath;
-use argus_snapshot::{
-    CaptureOptions, FileChangeKind, FileDelta, capture_snapshot, git_diff_delta,
-};
+use argus_snapshot::{CaptureOptions, FileChangeKind, FileDelta, capture_snapshot, git_diff_delta};
 use std::{fs, process::Command};
 
 #[test]
@@ -44,7 +42,11 @@ fn snapshot_diff_identifies_added_modified_and_removed_files() {
         capture_snapshot(&repository_root, &state_root, &CaptureOptions::default()).unwrap();
 
     // Now edit lib.rs, delete Cargo.toml, and add util.rs
-    fs::write(repository_root.join("src/lib.rs"), b"pub fn modified() {}\n").unwrap();
+    fs::write(
+        repository_root.join("src/lib.rs"),
+        b"pub fn modified() {}\n",
+    )
+    .unwrap();
     fs::remove_file(repository_root.join("Cargo.toml")).unwrap();
     fs::write(repository_root.join("src/util.rs"), b"pub fn helper() {}\n").unwrap();
 

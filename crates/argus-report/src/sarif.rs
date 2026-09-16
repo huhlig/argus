@@ -23,8 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Standard SARIF v2.1.0 schema URI.
-pub const SARIF_SCHEMA_URI: &str =
-    "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
+pub const SARIF_SCHEMA_URI: &str = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
 
 /// Standard SARIF v2.1.0 version string.
 pub const SARIF_VERSION: &str = "2.1.0";

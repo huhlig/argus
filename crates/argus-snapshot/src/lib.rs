@@ -24,7 +24,8 @@ pub use capture::{
 };
 pub use manifest::{
     AnalysisConfiguration, CaptureIssue, CaptureIssueKind, CompilerInput, DriftKind, DriftRecord,
-    DriftReport, EnvironmentInput, FileClass, FileRecord, SnapshotDelta, SnapshotManifest, VcsState,
+    DriftReport, EnvironmentInput, FileClass, FileRecord, SnapshotDelta, SnapshotManifest,
+    VcsState,
 };
 pub use store::{LineIndex, SnapshotRepository, SourceReader};
 

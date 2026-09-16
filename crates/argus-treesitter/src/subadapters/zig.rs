@@ -35,7 +35,10 @@ pub fn spec() -> LanguageSpec {
 
 fn classify_zig(kind: &str) -> Option<NodeClassification> {
     match kind {
-        "ContainerDecl" | "container_declaration" | "struct_declaration" | "enum_declaration"
+        "ContainerDecl"
+        | "container_declaration"
+        | "struct_declaration"
+        | "enum_declaration"
         | "union_declaration" => Some(NodeClassification::Type),
         "FnProto" | "fn_proto" | "fn_decl" => Some(NodeClassification::Callable),
         "CallExpr" | "call_expr" => Some(NodeClassification::Call),

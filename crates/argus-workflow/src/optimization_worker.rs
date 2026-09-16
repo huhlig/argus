@@ -25,7 +25,9 @@ use langchart_adapters::{
     checkpoint::CheckpointStore,
     context::{ContextError, ContextItem, ContextResolver, ContextView},
 };
-use langchart_model::{id::RunId, id::StateId, policy::ContextPolicy, validation::CompiledWorkflow};
+use langchart_model::{
+    id::RunId, id::StateId, policy::ContextPolicy, validation::CompiledWorkflow,
+};
 use langchart_runtime::{AgentActor, InstanceCheckpoint, RunStatus, WorkflowInstance};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::time::{Duration, Instant};
@@ -81,7 +83,8 @@ impl OptimizationWorker {
         }
         let checkpoint_store = Arc::new(open_checkpoint_store(&config.state_directory).map_err(
             |error| {
-                ArgusError::invariant("cannot open optimization checkpoint store").with_source(error)
+                ArgusError::invariant("cannot open optimization checkpoint store")
+                    .with_source(error)
             },
         )?);
         Ok(Self {
@@ -119,9 +122,7 @@ impl OptimizationWorker {
         };
 
         match self.execute_with_heartbeats(&leased, now_millis).await {
-            Ok(()) => Ok(OptimizationWorkerResult::Succeeded {
-                work_id: leased.id,
-            }),
+            Ok(()) => Ok(OptimizationWorkerResult::Succeeded { work_id: leased.id }),
             Err(error) => {
                 let message = error.to_string();
                 let queue = self.queue.clone();
@@ -148,7 +149,8 @@ impl OptimizationWorker {
                 })
                 .await
                 .map_err(|error| {
-                    ArgusError::invariant("optimization fail-attempt task failed").with_source(error)
+                    ArgusError::invariant("optimization fail-attempt task failed")
+                        .with_source(error)
                 })??;
                 Ok(match state {
                     QueueState::Pending => OptimizationWorkerResult::RetryScheduled {
@@ -310,7 +312,8 @@ impl OptimizationWorker {
     > {
         let admission: OptimizationReviewAdmission = serde_json::from_slice(&leased.payload)
             .map_err(|error| {
-                ArgusError::invalid_input("invalid optimization review admission").with_source(error)
+                ArgusError::invalid_input("invalid optimization review admission")
+                    .with_source(error)
             })?;
         if admission.unit.work_item != leased.id {
             return Err(ArgusError::invariant(

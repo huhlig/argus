@@ -122,8 +122,10 @@ impl MaintainabilityReviewMaterialization {
         let package = PackageArtifact {
             hash: stored_package.content_hash,
             package: serde_json::from_slice(&stored_package.payload).map_err(|error| {
-                argus_core::ArgusError::invalid_input("invalid stored maintainability evidence package")
-                    .with_source(error)
+                argus_core::ArgusError::invalid_input(
+                    "invalid stored maintainability evidence package",
+                )
+                .with_source(error)
             })?,
         };
         package.validate_identity()?;
@@ -134,8 +136,10 @@ impl MaintainabilityReviewMaterialization {
         )?;
         let frame: ReviewContextFrame =
             serde_json::from_slice(&stored_context.payload).map_err(|error| {
-                argus_core::ArgusError::invalid_input("invalid stored maintainability review context")
-                    .with_source(error)
+                argus_core::ArgusError::invalid_input(
+                    "invalid stored maintainability review context",
+                )
+                .with_source(error)
             })?;
         let context = ContextArtifact {
             hash: stored_context.content_hash,
@@ -553,6 +557,9 @@ mod tests {
         };
         let plan = planner.plan(&snapshot, &config, &[target], &[]).unwrap();
         assert_eq!(plan.units.len(), 1);
-        assert_eq!(plan.units[0].applicability.state, ApplicabilityState::Applicable);
+        assert_eq!(
+            plan.units[0].applicability.state,
+            ApplicabilityState::Applicable
+        );
     }
 }

@@ -160,7 +160,9 @@ impl JavaDiagnosticProvider {
         let mut evidence = Vec::new();
         let mut unparsed_lines = Vec::new();
 
-        let report: CheckstyleReport = if let Ok(r) = quick_xml::de::from_str(xml_str) { r } else {
+        let report: CheckstyleReport = if let Ok(r) = quick_xml::de::from_str(xml_str) {
+            r
+        } else {
             unparsed_lines.push(xml_str.to_string());
             return Ok(JavaDiagnosticInventory {
                 evidence,
@@ -182,7 +184,9 @@ impl JavaDiagnosticProvider {
                     let span = compute_line_byte_span(&file_bytes, line_num, col_num)
                         .unwrap_or(location.bytes);
 
-                    let msg = err.message.unwrap_or_else(|| "checkstyle warning".to_string());
+                    let msg = err
+                        .message
+                        .unwrap_or_else(|| "checkstyle warning".to_string());
                     let sev = err.severity.unwrap_or_else(|| "warning".to_string());
 
                     let evidence_id = EvidenceId::derive([
@@ -296,7 +300,11 @@ fn find_target_for_file<'a>(file_path: &str, targets: &'a [Target]) -> Option<&'
     })
 }
 
-fn compute_line_byte_span(bytes: &[u8], line_1_indexed: usize, col_1_indexed: Option<usize>) -> Option<ByteSpan> {
+fn compute_line_byte_span(
+    bytes: &[u8],
+    line_1_indexed: usize,
+    col_1_indexed: Option<usize>,
+) -> Option<ByteSpan> {
     let mut current_line = 1;
     let mut line_start = 0;
 

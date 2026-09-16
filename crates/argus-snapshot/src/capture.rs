@@ -498,10 +498,11 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
         .current_dir(root)
         .output()
         .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim_end().to_owned())
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned()
+    })
 }
 
 fn path_text(path: &Path) -> String {

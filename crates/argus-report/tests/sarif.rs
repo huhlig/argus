@@ -14,9 +14,9 @@
 
 use argus_core::{AdjudicationState, Confidence, FindingId, RunId, Severity, TargetId};
 use argus_report::{
-    parse_sarif_location, render_differential_sarif_report, render_sarif_report,
-    DifferentialFinding, DifferentialReport, DifferentialSummary, FindingCategory, SarifLevel,
-    SARIF_SCHEMA_URI, SARIF_VERSION,
+    DifferentialFinding, DifferentialReport, DifferentialSummary, FindingCategory,
+    SARIF_SCHEMA_URI, SARIF_VERSION, SarifLevel, parse_sarif_location,
+    render_differential_sarif_report, render_sarif_report,
 };
 
 #[test]
@@ -34,14 +34,20 @@ fn test_sarif_v2_schema_and_version() {
 fn test_parse_sarif_locations() {
     // Line and column
     let loc1 = parse_sarif_location("src\\auth\\token.rs:42:15").expect("valid location");
-    assert_eq!(loc1.physical_location.artifact_location.uri, "src/auth/token.rs");
+    assert_eq!(
+        loc1.physical_location.artifact_location.uri,
+        "src/auth/token.rs"
+    );
     let reg1 = loc1.physical_location.region.expect("region");
     assert_eq!(reg1.start_line, 42);
     assert_eq!(reg1.start_column, Some(15));
 
     // Line only
     let loc2 = parse_sarif_location("crates/core/lib.rs:100").expect("valid location");
-    assert_eq!(loc2.physical_location.artifact_location.uri, "crates/core/lib.rs");
+    assert_eq!(
+        loc2.physical_location.artifact_location.uri,
+        "crates/core/lib.rs"
+    );
     let reg2 = loc2.physical_location.region.expect("region");
     assert_eq!(reg2.start_line, 100);
     assert_eq!(reg2.start_column, None);
@@ -80,7 +86,12 @@ fn test_render_sarif_report_rules_and_results() {
     let result = &report.runs[0].results[0];
     assert_eq!(result.rule_id, "argus/correctness");
     assert_eq!(result.level, SarifLevel::Error);
-    assert!(result.message.text.contains("Potential concurrency race condition"));
+    assert!(
+        result
+            .message
+            .text
+            .contains("Potential concurrency race condition")
+    );
     assert_eq!(
         result.partial_fingerprints.get("argus/findingId/v1"),
         Some(&finding_id.to_string())
@@ -90,7 +101,10 @@ fn test_render_sarif_report_rules_and_results() {
         Some("correctness")
     );
     assert_eq!(
-        result.properties.get("confidenceBasisPoints").and_then(|v| v.as_u64()),
+        result
+            .properties
+            .get("confidenceBasisPoints")
+            .and_then(|v| v.as_u64()),
         Some(9500)
     );
 

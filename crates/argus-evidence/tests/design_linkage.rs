@@ -70,7 +70,11 @@ Use redb.
         "argus_storage::store::DurableStore",
         "crates/argus-storage/src/store.rs",
     );
-    let target_cli = dummy_target("cli-target", "argus_cli::main", "crates/argus-cli/src/main.rs");
+    let target_cli = dummy_target(
+        "cli-target",
+        "argus_cli::main",
+        "crates/argus-cli/src/main.rs",
+    );
 
     let targets = vec![target_storage.clone(), target_cli.clone()];
     let engine = DesignLinkageEngine::new();
@@ -227,5 +231,9 @@ fn real_repository_adrs_linkage() {
     // target_transport should link to ADR 0005
     let transport_links = linkage.links_for_target(&target_transport.id);
     assert!(!transport_links.is_empty());
-    assert!(transport_links.iter().any(|l| l.artifact_identifier.as_deref() == Some("ADR-0005")));
+    assert!(
+        transport_links
+            .iter()
+            .any(|l| l.artifact_identifier.as_deref() == Some("ADR-0005"))
+    );
 }

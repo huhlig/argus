@@ -58,9 +58,12 @@ class Dog(Animal):
     };
 
     let syntax_provider = PythonSyntaxProvider::new(ConfigurationId::derive([b"cfg".as_slice()]));
-    let inventory = syntax_provider.parse_file(&path, source_code, None).unwrap();
+    let inventory = syntax_provider
+        .parse_file(&path, source_code, None)
+        .unwrap();
 
-    let rel_provider = PythonRelationshipProvider::new(ConfigurationId::derive([b"cfg".as_slice()]));
+    let rel_provider =
+        PythonRelationshipProvider::new(ConfigurationId::derive([b"cfg".as_slice()]));
     let semantic = rel_provider
         .infer(
             &source,
@@ -86,7 +89,11 @@ class Dog(Animal):
         .find(|r| r.kind == "python:extends")
         .expect("extends relation");
     let dog_target = inventory.targets.iter().find(|t| t.name == "Dog").unwrap();
-    let animal_target = inventory.targets.iter().find(|t| t.name == "Animal").unwrap();
+    let animal_target = inventory
+        .targets
+        .iter()
+        .find(|t| t.name == "Animal")
+        .unwrap();
     assert_eq!(extends_rel.source, dog_target.id);
     assert_eq!(extends_rel.target, animal_target.id);
 
@@ -97,7 +104,11 @@ class Dog(Animal):
         .find(|r| r.kind == "python:calls")
         .expect("calls relation");
     let bark_target = inventory.targets.iter().find(|t| t.name == "bark").unwrap();
-    let speak_target = inventory.targets.iter().find(|t| t.name == "speak").unwrap();
+    let speak_target = inventory
+        .targets
+        .iter()
+        .find(|t| t.name == "speak")
+        .unwrap();
     assert_eq!(call_rel.source, bark_target.id);
     assert_eq!(call_rel.target, speak_target.id);
 }

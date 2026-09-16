@@ -21,9 +21,7 @@ mod syntax;
 mod workspace;
 
 pub use diagnostics::{TypeScriptDiagnosticInventory, TypeScriptDiagnosticProvider};
-pub use package_json::{
-    DiscoveredPackage, PackageJson, PackageJsonAdapter, resolve_package_entry,
-};
+pub use package_json::{DiscoveredPackage, PackageJson, PackageJsonAdapter, resolve_package_entry};
 pub use relationships::{
     TypeScriptRelationshipInventory, TypeScriptRelationshipProvider, resolve_relative_import,
 };

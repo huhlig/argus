@@ -74,18 +74,18 @@ dev = [
     let normalized = normalize_inventory(&source, inventory).unwrap();
 
     assert_eq!(normalized.targets.len(), 2); // 1 Workspace, 1 Package
-    assert!(
-        normalized
-            .targets
-            .iter()
-            .any(|t| matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::Workspace }) && t.name == "my-service")
-    );
-    assert!(
-        normalized
-            .targets
-            .iter()
-            .any(|t| matches!(t.kind, TargetKind::Portable { kind: PortableTargetKind::Package }) && t.name == "my-service")
-    );
+    assert!(normalized.targets.iter().any(|t| matches!(
+        t.kind,
+        TargetKind::Portable {
+            kind: PortableTargetKind::Workspace
+        }
+    ) && t.name == "my-service"));
+    assert!(normalized.targets.iter().any(|t| matches!(
+        t.kind,
+        TargetKind::Portable {
+            kind: PortableTargetKind::Package
+        }
+    ) && t.name == "my-service"));
 }
 
 #[test]

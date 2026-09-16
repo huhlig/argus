@@ -284,7 +284,13 @@ impl DocumentationReviewUnit {
 
         let requirements = PolicyEvidenceRequirements {
             allowed_kinds: BTreeSet::from([EvidenceKind::Documentation, EvidenceKind::Source]),
-            required_kinds: BTreeSet::from([EvidenceKind::Documentation]),
+            required_kinds: BTreeSet::from([
+                if self.policy_version == "documentation-internal@1" {
+                    EvidenceKind::Source
+                } else {
+                    EvidenceKind::Documentation
+                },
+            ]),
             maximum_classification,
         };
         let package = EvidencePackageBuilder::new(store).build(

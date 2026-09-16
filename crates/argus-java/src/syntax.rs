@@ -139,7 +139,9 @@ impl JavaSyntaxProvider {
         inventory.targets.push(file_target);
 
         if let Some(p) = parent {
-            inventory.containments.push((p.clone(), file_target_id.clone()));
+            inventory
+                .containments
+                .push((p.clone(), file_target_id.clone()));
         }
 
         // 2. Package declaration
@@ -165,7 +167,9 @@ impl JavaSyntaxProvider {
                         span,
                     });
                 }
-                ImportDecl::SingleStatic { path: p, member, .. } => {
+                ImportDecl::SingleStatic {
+                    path: p, member, ..
+                } => {
                     inventory.imports.push(DiscoveredJavaImport {
                         path: format!("{}.{}", p, member.name),
                         is_static: true,
@@ -188,19 +192,59 @@ impl JavaSyntaxProvider {
         for decl in &cu.type_decls {
             match decl {
                 TypeDecl::Class(c) => {
-                    self.extract_class(path, text, package_name.as_deref(), None, c, &file_target_id, &mut inventory)?;
+                    self.extract_class(
+                        path,
+                        text,
+                        package_name.as_deref(),
+                        None,
+                        c,
+                        &file_target_id,
+                        &mut inventory,
+                    )?;
                 }
                 TypeDecl::Interface(i) => {
-                    self.extract_interface(path, text, package_name.as_deref(), None, i, &file_target_id, &mut inventory)?;
+                    self.extract_interface(
+                        path,
+                        text,
+                        package_name.as_deref(),
+                        None,
+                        i,
+                        &file_target_id,
+                        &mut inventory,
+                    )?;
                 }
                 TypeDecl::Record(r) => {
-                    self.extract_record(path, text, package_name.as_deref(), None, r, &file_target_id, &mut inventory)?;
+                    self.extract_record(
+                        path,
+                        text,
+                        package_name.as_deref(),
+                        None,
+                        r,
+                        &file_target_id,
+                        &mut inventory,
+                    )?;
                 }
                 TypeDecl::Enum(e) => {
-                    self.extract_enum(path, text, package_name.as_deref(), None, e, &file_target_id, &mut inventory)?;
+                    self.extract_enum(
+                        path,
+                        text,
+                        package_name.as_deref(),
+                        None,
+                        e,
+                        &file_target_id,
+                        &mut inventory,
+                    )?;
                 }
                 TypeDecl::AnnotationType(a) => {
-                    self.extract_annotation_type(path, text, package_name.as_deref(), None, a, &file_target_id, &mut inventory)?;
+                    self.extract_annotation_type(
+                        path,
+                        text,
+                        package_name.as_deref(),
+                        None,
+                        a,
+                        &file_target_id,
+                        &mut inventory,
+                    )?;
                 }
                 TypeDecl::Empty(_) => {}
             }
@@ -262,7 +306,9 @@ impl JavaSyntaxProvider {
             diagnostic: None,
         };
         inventory.targets.push(target);
-        inventory.containments.push((parent_id.clone(), target_id.clone()));
+        inventory
+            .containments
+            .push((parent_id.clone(), target_id.clone()));
 
         // Documentation
         self.extract_doc_comments(path, text, &target_id, &class.doc_comment, inventory)?;
@@ -270,7 +316,10 @@ impl JavaSyntaxProvider {
         // Extends clause
         if let Some(ref ext) = class.extends_clause {
             let base_name = type_to_string(&ext.supertype);
-            let ext_span = ByteSpan::new(ext.extends_span.start() as u64, ext.supertype.span().end() as u64)?;
+            let ext_span = ByteSpan::new(
+                ext.extends_span.start() as u64,
+                ext.supertype.span().end() as u64,
+            )?;
             inventory.inheritances.push(DiscoveredJavaInheritance {
                 sub_target_id: target_id.clone(),
                 base_name,
@@ -283,7 +332,10 @@ impl JavaSyntaxProvider {
         if let Some(ref imp) = class.implements_clause {
             for supertype in &imp.supertypes {
                 let base_name = type_to_string(supertype);
-                let imp_span = ByteSpan::new(supertype.span().start() as u64, supertype.span().end() as u64)?;
+                let imp_span = ByteSpan::new(
+                    supertype.span().start() as u64,
+                    supertype.span().end() as u64,
+                )?;
                 inventory.inheritances.push(DiscoveredJavaInheritance {
                     sub_target_id: target_id.clone(),
                     base_name,
@@ -294,9 +346,18 @@ impl JavaSyntaxProvider {
         }
 
         // Body declarations
-        let enc_str = enclosing_type.map_or_else(|| class_name.clone(), |e| format!("{e}.{class_name}"));
+        let enc_str =
+            enclosing_type.map_or_else(|| class_name.clone(), |e| format!("{e}.{class_name}"));
         for decl in &class.body.declarations {
-            self.extract_class_body_decl(path, text, package_name, &enc_str, &target_id, decl, inventory)?;
+            self.extract_class_body_decl(
+                path,
+                text,
+                package_name,
+                &enc_str,
+                &target_id,
+                decl,
+                inventory,
+            )?;
         }
 
         Ok(())
@@ -355,14 +416,19 @@ impl JavaSyntaxProvider {
             diagnostic: None,
         };
         inventory.targets.push(target);
-        inventory.containments.push((parent_id.clone(), target_id.clone()));
+        inventory
+            .containments
+            .push((parent_id.clone(), target_id.clone()));
 
         self.extract_doc_comments(path, text, &target_id, &iface.doc_comment, inventory)?;
 
         if let Some(ref ext) = iface.extends_clause {
             for supertype in &ext.supertypes {
                 let base_name = type_to_string(supertype);
-                let ext_span = ByteSpan::new(supertype.span().start() as u64, supertype.span().end() as u64)?;
+                let ext_span = ByteSpan::new(
+                    supertype.span().start() as u64,
+                    supertype.span().end() as u64,
+                )?;
                 inventory.inheritances.push(DiscoveredJavaInheritance {
                     sub_target_id: target_id.clone(),
                     base_name,
@@ -372,8 +438,17 @@ impl JavaSyntaxProvider {
             }
         }
 
-        let enc_str = enclosing_type.map_or_else(|| iface_name.clone(), |e| format!("{e}.{iface_name}"));
-        self.extract_interface_body(path, text, package_name, &enc_str, &target_id, &iface.body, inventory)?;
+        let enc_str =
+            enclosing_type.map_or_else(|| iface_name.clone(), |e| format!("{e}.{iface_name}"));
+        self.extract_interface_body(
+            path,
+            text,
+            package_name,
+            &enc_str,
+            &target_id,
+            &iface.body,
+            inventory,
+        )?;
 
         Ok(())
     }
@@ -431,14 +506,19 @@ impl JavaSyntaxProvider {
             diagnostic: None,
         };
         inventory.targets.push(target);
-        inventory.containments.push((parent_id.clone(), target_id.clone()));
+        inventory
+            .containments
+            .push((parent_id.clone(), target_id.clone()));
 
         self.extract_doc_comments(path, text, &target_id, &record.doc_comment, inventory)?;
 
         if let Some(ref imp) = record.implements_clause {
             for supertype in &imp.supertypes {
                 let base_name = type_to_string(supertype);
-                let imp_span = ByteSpan::new(supertype.span().start() as u64, supertype.span().end() as u64)?;
+                let imp_span = ByteSpan::new(
+                    supertype.span().start() as u64,
+                    supertype.span().end() as u64,
+                )?;
                 inventory.inheritances.push(DiscoveredJavaInheritance {
                     sub_target_id: target_id.clone(),
                     base_name,
@@ -448,7 +528,8 @@ impl JavaSyntaxProvider {
             }
         }
 
-        let enc_str = enclosing_type.map_or_else(|| rec_name.clone(), |e| format!("{e}.{rec_name}"));
+        let enc_str =
+            enclosing_type.map_or_else(|| rec_name.clone(), |e| format!("{e}.{rec_name}"));
         for member in &record.body.members {
             match member {
                 RecordBodyDecl::Method(m) => {
@@ -458,24 +539,60 @@ impl JavaSyntaxProvider {
                     self.extract_constructor(path, text, &enc_str, &target_id, ctor, inventory)?;
                 }
                 RecordBodyDecl::CompactConstructor(cctor) => {
-                    self.extract_compact_constructor(path, text, &enc_str, &target_id, cctor, inventory)?;
+                    self.extract_compact_constructor(
+                        path, text, &enc_str, &target_id, cctor, inventory,
+                    )?;
                 }
                 RecordBodyDecl::Field(f) => {
                     self.extract_field(path, text, &enc_str, &target_id, f, inventory)?;
                 }
                 RecordBodyDecl::Class(c) => {
-                    self.extract_class(path, text, package_name, Some(&enc_str), c, &target_id, inventory)?;
+                    self.extract_class(
+                        path,
+                        text,
+                        package_name,
+                        Some(&enc_str),
+                        c,
+                        &target_id,
+                        inventory,
+                    )?;
                 }
                 RecordBodyDecl::Interface(i) => {
-                    self.extract_interface(path, text, package_name, Some(&enc_str), i, &target_id, inventory)?;
+                    self.extract_interface(
+                        path,
+                        text,
+                        package_name,
+                        Some(&enc_str),
+                        i,
+                        &target_id,
+                        inventory,
+                    )?;
                 }
                 RecordBodyDecl::Record(r) => {
-                    self.extract_record(path, text, package_name, Some(&enc_str), r, &target_id, inventory)?;
+                    self.extract_record(
+                        path,
+                        text,
+                        package_name,
+                        Some(&enc_str),
+                        r,
+                        &target_id,
+                        inventory,
+                    )?;
                 }
                 RecordBodyDecl::Enum(e) => {
-                    self.extract_enum(path, text, package_name, Some(&enc_str), e, &target_id, inventory)?;
+                    self.extract_enum(
+                        path,
+                        text,
+                        package_name,
+                        Some(&enc_str),
+                        e,
+                        &target_id,
+                        inventory,
+                    )?;
                 }
-                RecordBodyDecl::InstanceInit(_) | RecordBodyDecl::StaticInit(_) | RecordBodyDecl::Empty(_) => {}
+                RecordBodyDecl::InstanceInit(_)
+                | RecordBodyDecl::StaticInit(_)
+                | RecordBodyDecl::Empty(_) => {}
             }
         }
 
@@ -535,14 +652,19 @@ impl JavaSyntaxProvider {
             diagnostic: None,
         };
         inventory.targets.push(target);
-        inventory.containments.push((parent_id.clone(), target_id.clone()));
+        inventory
+            .containments
+            .push((parent_id.clone(), target_id.clone()));
 
         self.extract_doc_comments(path, text, &target_id, &en.doc_comment, inventory)?;
 
         if let Some(ref imp) = en.implements_clause {
             for supertype in &imp.supertypes {
                 let base_name = type_to_string(supertype);
-                let imp_span = ByteSpan::new(supertype.span().start() as u64, supertype.span().end() as u64)?;
+                let imp_span = ByteSpan::new(
+                    supertype.span().start() as u64,
+                    supertype.span().end() as u64,
+                )?;
                 inventory.inheritances.push(DiscoveredJavaInheritance {
                     sub_target_id: target_id.clone(),
                     base_name,
@@ -552,12 +674,21 @@ impl JavaSyntaxProvider {
             }
         }
 
-        let enc_str = enclosing_type.map_or_else(|| enum_name.clone(), |e| format!("{e}.{enum_name}"));
+        let enc_str =
+            enclosing_type.map_or_else(|| enum_name.clone(), |e| format!("{e}.{enum_name}"));
         for c in &en.body.constants {
             self.extract_enum_constant(path, &enc_str, &target_id, c, inventory)?;
         }
         for member in &en.body.members {
-            self.extract_class_body_decl(path, text, package_name, &enc_str, &target_id, member, inventory)?;
+            self.extract_class_body_decl(
+                path,
+                text,
+                package_name,
+                &enc_str,
+                &target_id,
+                member,
+                inventory,
+            )?;
         }
 
         Ok(())
@@ -616,7 +747,9 @@ impl JavaSyntaxProvider {
             diagnostic: None,
         };
         inventory.targets.push(target);
-        inventory.containments.push((parent_id.clone(), target_id.clone()));
+        inventory
+            .containments
+            .push((parent_id.clone(), target_id.clone()));
 
         self.extract_doc_comments(path, text, &target_id, &anno.doc_comment, inventory)?;
 
@@ -645,21 +778,63 @@ impl JavaSyntaxProvider {
                 self.extract_field(path, text, enclosing_type, parent_id, f, inventory)?;
             }
             ClassBodyDecl::Class(c) => {
-                self.extract_class(path, text, package_name, Some(enclosing_type), c, parent_id, inventory)?;
+                self.extract_class(
+                    path,
+                    text,
+                    package_name,
+                    Some(enclosing_type),
+                    c,
+                    parent_id,
+                    inventory,
+                )?;
             }
             ClassBodyDecl::Interface(i) => {
-                self.extract_interface(path, text, package_name, Some(enclosing_type), i, parent_id, inventory)?;
+                self.extract_interface(
+                    path,
+                    text,
+                    package_name,
+                    Some(enclosing_type),
+                    i,
+                    parent_id,
+                    inventory,
+                )?;
             }
             ClassBodyDecl::Record(r) => {
-                self.extract_record(path, text, package_name, Some(enclosing_type), r, parent_id, inventory)?;
+                self.extract_record(
+                    path,
+                    text,
+                    package_name,
+                    Some(enclosing_type),
+                    r,
+                    parent_id,
+                    inventory,
+                )?;
             }
             ClassBodyDecl::Enum(e) => {
-                self.extract_enum(path, text, package_name, Some(enclosing_type), e, parent_id, inventory)?;
+                self.extract_enum(
+                    path,
+                    text,
+                    package_name,
+                    Some(enclosing_type),
+                    e,
+                    parent_id,
+                    inventory,
+                )?;
             }
             ClassBodyDecl::AnnotationType(a) => {
-                self.extract_annotation_type(path, text, package_name, Some(enclosing_type), a, parent_id, inventory)?;
+                self.extract_annotation_type(
+                    path,
+                    text,
+                    package_name,
+                    Some(enclosing_type),
+                    a,
+                    parent_id,
+                    inventory,
+                )?;
             }
-            ClassBodyDecl::StaticInit(_) | ClassBodyDecl::InstanceInit(_) | ClassBodyDecl::Empty(_) => {}
+            ClassBodyDecl::StaticInit(_)
+            | ClassBodyDecl::InstanceInit(_)
+            | ClassBodyDecl::Empty(_) => {}
         }
         Ok(())
     }
@@ -684,19 +859,59 @@ impl JavaSyntaxProvider {
                     self.extract_field(path, text, enclosing_type, parent_id, f, inventory)?;
                 }
                 InterfaceMemberDecl::Class(c) => {
-                    self.extract_class(path, text, package_name, Some(enclosing_type), c, parent_id, inventory)?;
+                    self.extract_class(
+                        path,
+                        text,
+                        package_name,
+                        Some(enclosing_type),
+                        c,
+                        parent_id,
+                        inventory,
+                    )?;
                 }
                 InterfaceMemberDecl::Interface(i) => {
-                    self.extract_interface(path, text, package_name, Some(enclosing_type), i, parent_id, inventory)?;
+                    self.extract_interface(
+                        path,
+                        text,
+                        package_name,
+                        Some(enclosing_type),
+                        i,
+                        parent_id,
+                        inventory,
+                    )?;
                 }
                 InterfaceMemberDecl::Record(r) => {
-                    self.extract_record(path, text, package_name, Some(enclosing_type), r, parent_id, inventory)?;
+                    self.extract_record(
+                        path,
+                        text,
+                        package_name,
+                        Some(enclosing_type),
+                        r,
+                        parent_id,
+                        inventory,
+                    )?;
                 }
                 InterfaceMemberDecl::Enum(e) => {
-                    self.extract_enum(path, text, package_name, Some(enclosing_type), e, parent_id, inventory)?;
+                    self.extract_enum(
+                        path,
+                        text,
+                        package_name,
+                        Some(enclosing_type),
+                        e,
+                        parent_id,
+                        inventory,
+                    )?;
                 }
                 InterfaceMemberDecl::AnnotationInterface(a) => {
-                    self.extract_annotation_type(path, text, package_name, Some(enclosing_type), a, parent_id, inventory)?;
+                    self.extract_annotation_type(
+                        path,
+                        text,
+                        package_name,
+                        Some(enclosing_type),
+                        a,
+                        parent_id,
+                        inventory,
+                    )?;
                 }
                 InterfaceMemberDecl::Empty(_) => {}
             }
@@ -719,7 +934,9 @@ impl JavaSyntaxProvider {
             .iter()
             .map(|p| match p {
                 java_lang::ast::item::FormalParameter::Normal { ty, .. } => type_to_string(ty),
-                java_lang::ast::item::FormalParameter::VarArgs { ty, .. } => format!("{}...", type_to_string(ty)),
+                java_lang::ast::item::FormalParameter::VarArgs { ty, .. } => {
+                    format!("{}...", type_to_string(ty))
+                }
             })
             .collect::<Vec<_>>()
             .join(",");
@@ -760,7 +977,9 @@ impl JavaSyntaxProvider {
             diagnostic: None,
         };
         inventory.targets.push(target);
-        inventory.containments.push((parent_id.clone(), target_id.clone()));
+        inventory
+            .containments
+            .push((parent_id.clone(), target_id.clone()));
 
         self.extract_doc_comments(path, text, &target_id, &method.doc_comment, inventory)?;
 
@@ -787,7 +1006,9 @@ impl JavaSyntaxProvider {
             .iter()
             .map(|p| match p {
                 java_lang::ast::item::FormalParameter::Normal { ty, .. } => type_to_string(ty),
-                java_lang::ast::item::FormalParameter::VarArgs { ty, .. } => format!("{}...", type_to_string(ty)),
+                java_lang::ast::item::FormalParameter::VarArgs { ty, .. } => {
+                    format!("{}...", type_to_string(ty))
+                }
             })
             .collect::<Vec<_>>()
             .join(",");
@@ -828,7 +1049,9 @@ impl JavaSyntaxProvider {
             diagnostic: None,
         };
         inventory.targets.push(target);
-        inventory.containments.push((parent_id.clone(), target_id.clone()));
+        inventory
+            .containments
+            .push((parent_id.clone(), target_id.clone()));
 
         self.extract_doc_comments(path, text, &target_id, &ctor.doc_comment, inventory)?;
 
@@ -856,7 +1079,10 @@ impl JavaSyntaxProvider {
             enclosing_type.as_bytes(),
             sig.as_bytes(),
         ]);
-        let span = ByteSpan::new(cctor.body.brace_span.0.start() as u64, cctor.body.brace_span.1.end() as u64)?;
+        let span = ByteSpan::new(
+            cctor.body.brace_span.0.start() as u64,
+            cctor.body.brace_span.1.end() as u64,
+        )?;
         let location = SourceLocation {
             path: path.clone(),
             bytes: span,
@@ -885,7 +1111,9 @@ impl JavaSyntaxProvider {
             diagnostic: None,
         };
         inventory.targets.push(target);
-        inventory.containments.push((parent_id.clone(), target_id.clone()));
+        inventory
+            .containments
+            .push((parent_id.clone(), target_id.clone()));
 
         self.extract_doc_comments(path, text, &target_id, &cctor.doc_comment, inventory)?;
 
@@ -909,7 +1137,10 @@ impl JavaSyntaxProvider {
         let is_const = is_static(&field.modifiers) && is_final(&field.modifiers);
 
         for d in &field.declarators {
-            let field_name = d.name.as_ref().map_or_else(|| "_".to_string(), |i| i.name.clone());
+            let field_name = d
+                .name
+                .as_ref()
+                .map_or_else(|| "_".to_string(), |i| i.name.clone());
             let target_id = TargetId::derive([
                 b"java".as_slice(),
                 b"field".as_slice(),
@@ -952,7 +1183,9 @@ impl JavaSyntaxProvider {
                 diagnostic: None,
             };
             inventory.targets.push(target);
-            inventory.containments.push((parent_id.clone(), target_id.clone()));
+            inventory
+                .containments
+                .push((parent_id.clone(), target_id.clone()));
 
             self.extract_doc_comments(path, text, &target_id, &field.doc_comment, inventory)?;
         }
@@ -976,7 +1209,10 @@ impl JavaSyntaxProvider {
             enclosing_type.as_bytes(),
             name.as_bytes(),
         ]);
-        let span = ByteSpan::new(constant.name.span().start() as u64, constant.name.span().end() as u64)?;
+        let span = ByteSpan::new(
+            constant.name.span().start() as u64,
+            constant.name.span().end() as u64,
+        )?;
         let location = SourceLocation {
             path: path.clone(),
             bytes: span,
@@ -1074,7 +1310,9 @@ impl JavaSyntaxProvider {
         inventory: &mut JavaSyntaxInventory,
     ) -> Result<(), argus_core::ArgusError> {
         match stmt {
-            Stmt::Expr(expr_stmt) => self.scan_expr_for_calls(caller, &expr_stmt.expr, inventory)?,
+            Stmt::Expr(expr_stmt) => {
+                self.scan_expr_for_calls(caller, &expr_stmt.expr, inventory)?
+            }
             Stmt::LocalVarDecl(decl) => {
                 for d in &decl.declarators {
                     if let Some(ref init) = d.initializer {
@@ -1218,11 +1456,17 @@ fn type_to_string(ty: &Type) -> String {
     match ty {
         Type::Primitive(p) => format!("{p:?}").to_lowercase(),
         Type::Reference(r) => match r {
-            java_lang::ast::ty::ReferenceType::ClassOrInterfaceType(c) => {
-                c.path.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join(".")
-            }
+            java_lang::ast::ty::ReferenceType::ClassOrInterfaceType(c) => c
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.name.as_str())
+                .collect::<Vec<_>>()
+                .join("."),
             java_lang::ast::ty::ReferenceType::TypeVar(i) => i.name.clone(),
-            java_lang::ast::ty::ReferenceType::Array(a) => format!("{}[]", type_to_string(&a.elem_type)),
+            java_lang::ast::ty::ReferenceType::Array(a) => {
+                format!("{}[]", type_to_string(&a.elem_type))
+            }
         },
         Type::Void(_) => "void".to_string(),
     }

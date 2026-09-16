@@ -205,7 +205,10 @@ impl TreeSitterEngine {
         }
 
         for (caller_id, callee_name) in walker.call_sites {
-            let simple_name = callee_name.rsplit(['.', ':', '>']).next().unwrap_or(&callee_name);
+            let simple_name = callee_name
+                .rsplit(['.', ':', '>'])
+                .next()
+                .unwrap_or(&callee_name);
             if let Some(candidates) = callable_by_name.get(simple_name) {
                 if candidates.len() == 1 {
                     let callee_id = &candidates[0];
@@ -276,12 +279,17 @@ impl Walker<'_> {
             ) => {
                 let name = (self.spec.extract_name)(node, self.source);
                 if let Some(name) = name {
-                    let portable_kind = classification.and_then(NodeClassification::to_portable_kind)
+                    let portable_kind = classification
+                        .and_then(NodeClassification::to_portable_kind)
                         .unwrap_or(PortableTargetKind::Type);
 
-                    let (parent_id, parent_scope) = self.scope_stack.last()
-                        .cloned()
-                        .unwrap_or_else(|| (self.seen_target_ids.iter().next().unwrap().clone(), String::new()));
+                    let (parent_id, parent_scope) =
+                        self.scope_stack.last().cloned().unwrap_or_else(|| {
+                            (
+                                self.seen_target_ids.iter().next().unwrap().clone(),
+                                String::new(),
+                            )
+                        });
 
                     let qualified_name = if parent_scope.is_empty() {
                         name.clone()
@@ -318,7 +326,9 @@ impl Walker<'_> {
 
                         let target = Target {
                             id: target_id.clone(),
-                            kind: TargetKind::Portable { kind: portable_kind },
+                            kind: TargetKind::Portable {
+                                kind: portable_kind,
+                            },
                             name,
                             parent: Some(parent_id.clone()),
                             location: Some(location),
@@ -375,7 +385,9 @@ impl Walker<'_> {
                         // Push onto scope stack if it's a container
                         let is_container = matches!(
                             portable_kind,
-                            PortableTargetKind::Type | PortableTargetKind::Module | PortableTargetKind::Callable
+                            PortableTargetKind::Type
+                                | PortableTargetKind::Module
+                                | PortableTargetKind::Callable
                         );
 
                         if is_container {
