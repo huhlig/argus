@@ -7491,6 +7491,7 @@ pub(crate) fn status_command(root: &std::path::Path) -> Result<String, argus_cor
         .expect("writing to a String cannot fail");
     }
     append_stalled_warnings(&telemetry.stalled_items, &mut output)?;
+    append_review_workflows_status(root, &queue, &mut output)?;
     append_architecture_status(root, &queue, &mut output)?;
     append_work_errors_summary(root, &queue, &mut output)?;
     Ok(output.trim_end().to_owned())
@@ -7541,6 +7542,87 @@ fn append_stalled_warnings(
         "Action: Run 'argus resume' to release expired leases back to pending state, or investigate crashed workers."
     )
     .expect("writing to a String cannot fail");
+    Ok(())
+}
+
+fn append_review_workflows_status(
+    root: &std::path::Path,
+    queue: &argus_storage::DurableQueue,
+    output: &mut String,
+) -> Result<(), argus_core::ArgusError> {
+    let Ok(run_id) = current_run(root) else {
+        return Ok(());
+    };
+    let records = queue.run_records(&run_id)?;
+    if records.work.is_empty() {
+        return Ok(());
+    }
+
+    struct PolicyCounts {
+        total: usize,
+        pending: usize,
+        leased: usize,
+        succeeded: usize,
+        failed: usize,
+        cancelled: usize,
+    }
+
+    let mut counts_by_policy: std::collections::BTreeMap<String, PolicyCounts> =
+        std::collections::BTreeMap::new();
+
+    for work in &records.work {
+        let entry = counts_by_policy
+            .entry(work.coverage.policy.clone())
+            .or_insert_with(|| PolicyCounts {
+                total: 0,
+                pending: 0,
+                leased: 0,
+                succeeded: 0,
+                failed: 0,
+                cancelled: 0,
+            });
+        entry.total += 1;
+        match work.state {
+            argus_storage::QueueState::Pending => entry.pending += 1,
+            argus_storage::QueueState::Leased => entry.leased += 1,
+            argus_storage::QueueState::Succeeded => entry.succeeded += 1,
+            argus_storage::QueueState::Failed => entry.failed += 1,
+            argus_storage::QueueState::Cancelled => entry.cancelled += 1,
+        }
+    }
+
+    writeln!(output, "\nReview workflows:")
+        .expect("writing to a String cannot fail");
+
+    for (policy, counts) in &counts_by_policy {
+        let label = if policy.starts_with("documentation") {
+            "Documentation"
+        } else if policy.starts_with("correctness") {
+            "Correctness"
+        } else if policy.starts_with("architecture") {
+            "Architecture"
+        } else if policy.starts_with("optimization") {
+            "Optimization"
+        } else if policy.starts_with("maintainability") {
+            "Maintainability"
+        } else if policy.starts_with("conformance") {
+            "Conformance"
+        } else {
+            policy.as_str()
+        };
+        let cancelled_str = if counts.cancelled > 0 {
+            format!(" cancelled={}", counts.cancelled)
+        } else {
+            String::new()
+        };
+        writeln!(
+            output,
+            "  * {label} ({policy}): total={} pending={} leased={} succeeded={} failed={}{cancelled_str}",
+            counts.total, counts.pending, counts.leased, counts.succeeded, counts.failed
+        )
+        .expect("writing to a String cannot fail");
+    }
+
     Ok(())
 }
 
@@ -9959,6 +10041,42 @@ mod tests {
         assert!(
             output.contains("Run 'argus resume' to release expired leases back to pending state")
         );
+    }
+
+    #[test]
+    fn status_exposes_review_workflows_breakdown() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        run(["prime".to_owned()].into_iter(), temporary.path()).unwrap();
+        let queue = working_queue(temporary.path()).unwrap();
+        let run_id = current_run(temporary.path()).unwrap();
+
+        let w1 = argus_storage::QueueWork::pending_for(
+            argus_core::WorkItemId::derive([b"doc-status-item".as_slice()]),
+            b"doc_item".to_vec(),
+            run_id.clone(),
+            argus_storage::CoverageKey {
+                policy: "documentation-public-api@1".to_owned(),
+                ..argus_storage::CoverageKey::unspecified()
+            },
+        );
+        let w2 = argus_storage::QueueWork::pending_for(
+            argus_core::WorkItemId::derive([b"corr-status-item".as_slice()]),
+            b"corr_item".to_vec(),
+            run_id.clone(),
+            argus_storage::CoverageKey {
+                policy: "correctness-conservative@1".to_owned(),
+                ..argus_storage::CoverageKey::unspecified()
+            },
+        );
+        queue.admit(&w1).unwrap();
+        queue.admit(&w2).unwrap();
+        drop(queue);
+
+        let output = status_command(temporary.path()).unwrap();
+        assert!(output.contains("Review workflows:"));
+        assert!(output.contains("Documentation (documentation-public-api@1): total=1 pending=1 leased=0 succeeded=0 failed=0"));
+        assert!(output.contains("Correctness (correctness-conservative@1): total=1 pending=1 leased=0 succeeded=0 failed=0"));
     }
 
     #[test]
