@@ -472,6 +472,18 @@ fn assemble(root: &Path, manifest: Manifest) -> Result<WorkspaceInventory, Argus
         partitions.extend(inventory.partitions.into_iter().map(|p| (name.clone(), p)));
         conflicts.extend(inventory.conflicts.into_iter().map(|c| (name.clone(), c)));
     }
+    let mut log_content = String::new();
+    for (name, partition) in &partitions {
+        log_content.push_str(&format!(
+            "{name}/{}\t{:?}\t{}\n",
+            partition.name,
+            partition.status,
+            partition.diagnostic.as_deref().unwrap_or("")
+        ));
+    }
+    let _ = atomic_write(&root.join(".argus/state/inventory/partitions.log"), log_content.as_bytes());
+    let _ = atomic_write(&directory(root, &manifest.snapshot).join("partitions.log"), log_content.as_bytes());
+
     Ok(WorkspaceInventory {
         snapshot: manifest.snapshot.clone(),
         manifest,
@@ -485,6 +497,45 @@ fn assemble(root: &Path, manifest: Manifest) -> Result<WorkspaceInventory, Argus
         capture_issues,
         excluded_typescript,
     })
+}
+
+fn compact_diagnostic(diag: Option<&str>) -> String {
+    let Some(diag) = diag else { return String::new() };
+    let parts: Vec<&str> = diag.split(';').map(str::trim).filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return String::new();
+    }
+    let mut counts = BTreeMap::<&str, usize>::new();
+    let mut order = Vec::new();
+    for part in parts {
+        if counts.insert(part, 1).is_none() {
+            order.push(part);
+        } else {
+            *counts.get_mut(part).unwrap() += 1;
+        }
+    }
+    let formatted: Vec<String> = order
+        .into_iter()
+        .map(|part| {
+            let count = counts[part];
+            if count > 1 {
+                format!("{part} ({count}x)")
+            } else {
+                part.to_owned()
+            }
+        })
+        .collect();
+    let mut joined = formatted.join("; ");
+    if joined.len() > 140 {
+        let truncate_at = joined
+            .char_indices()
+            .map(|(i, _)| i)
+            .find(|&i| i >= 137)
+            .unwrap_or(joined.len());
+        joined.truncate(truncate_at);
+        joined.push_str("...");
+    }
+    joined
 }
 
 pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
@@ -512,13 +563,64 @@ pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
     for (class, count) in counts {
         output.push_str(&format!("{class}: {count}\n"));
     }
+    let mut complete_partitions = 0;
+    let mut incomplete = Vec::new();
     for (name, partition) in &inventory.partitions {
-        output.push_str(&format!(
-            "{name}/{}\t{:?}\t{}\n",
-            partition.name,
-            partition.status,
-            partition.diagnostic.as_deref().unwrap_or("")
-        ));
+        if partition.status == argus_core::CapabilityStatus::Complete {
+            complete_partitions += 1;
+        } else {
+            incomplete.push((name, partition));
+        }
+    }
+    if complete_partitions > 0 {
+        output.push_str(&format!("Partitions complete: {complete_partitions}\n"));
+    }
+    if !incomplete.is_empty() {
+        if incomplete.len() <= 5 {
+            for (name, partition) in &incomplete {
+                let diag = compact_diagnostic(partition.diagnostic.as_deref());
+                output.push_str(&format!(
+                    "{name}/{}\t{:?}\t{}\n",
+                    partition.name,
+                    partition.status,
+                    diag
+                ));
+            }
+        } else {
+            output.push_str(&format!("Partitions with limitations: {}\n", incomplete.len()));
+            let mut issue_counts = BTreeMap::<String, usize>::new();
+            for (_, partition) in &incomplete {
+                if let Some(ref d) = partition.diagnostic {
+                    for part in d.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                        let key = if let Some(idx) = part.find(':') {
+                            &part[..idx]
+                        } else {
+                            part
+                        };
+                        *issue_counts.entry(key.to_owned()).or_default() += 1;
+                    }
+                }
+            }
+            let mut top_issues: Vec<(String, usize)> = issue_counts.into_iter().collect();
+            top_issues.sort_by(|a, b| b.1.cmp(&a.1));
+            for (issue, count) in top_issues.iter().take(5) {
+                output.push_str(&format!("  * {issue} ({count}x)\n"));
+            }
+            output.push_str("Sample partitions with limitations:\n");
+            for (name, partition) in incomplete.iter().take(5) {
+                let diag = compact_diagnostic(partition.diagnostic.as_deref());
+                output.push_str(&format!(
+                    "  * {name}/{}\t{:?}\t{}\n",
+                    partition.name,
+                    partition.status,
+                    diag
+                ));
+            }
+            output.push_str(&format!(
+                "  ... and {} additional partitions with limitations (logged to .argus/state/inventory/partitions.log)\n",
+                incomplete.len() - 5
+            ));
+        }
     }
     for (name, conflict) in &inventory.conflicts {
         output.push_str(&format!(
@@ -533,19 +635,71 @@ pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
         ));
     }
     output.push_str("Discovery scope: captured snapshot files; adapter dependency/build exclusions and capability partitions apply. Counts are declarations, not source lines.\n");
-    for issue in &inventory.capture_issues {
-        output.push_str(&format!(
-            "Capture limitation {}: {:?}: {}\n",
-            issue.path.as_str(),
-            issue.kind,
-            issue.detail
-        ));
+    if !inventory.capture_issues.is_empty() {
+        if inventory.capture_issues.len() <= 5 {
+            for issue in &inventory.capture_issues {
+                output.push_str(&format!(
+                    "Capture limitation {}: {:?}: {}\n",
+                    issue.path.as_str(),
+                    issue.kind,
+                    issue.detail
+                ));
+            }
+        } else {
+            output.push_str(&format!(
+                "Capture limitations: {} files with issues\n",
+                inventory.capture_issues.len()
+            ));
+            for issue in inventory.capture_issues.iter().take(5) {
+                output.push_str(&format!(
+                    "  * {}: {:?}: {}\n",
+                    issue.path.as_str(),
+                    issue.kind,
+                    issue.detail
+                ));
+            }
+            output.push_str(&format!(
+                "  ... and {} additional capture limitations\n",
+                inventory.capture_issues.len() - 5
+            ));
+        }
     }
-    for path in &inventory.excluded_typescript {
-        output.push_str(&format!(
-            "TypeScript discovery exclusion: {} (adapter path/support rules)\n",
-            path.as_str()
-        ));
+    if !inventory.excluded_typescript.is_empty() {
+        if inventory.excluded_typescript.len() <= 5 {
+            for path in &inventory.excluded_typescript {
+                output.push_str(&format!(
+                    "TypeScript discovery exclusion: {} (adapter path/support rules)\n",
+                    path.as_str()
+                ));
+            }
+        } else {
+            let mut by_dir = BTreeMap::<String, usize>::new();
+            for path in &inventory.excluded_typescript {
+                let parent = Path::new(path.as_str())
+                    .parent()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("");
+                *by_dir.entry(parent.to_owned()).or_default() += 1;
+            }
+            let dir_summary = by_dir
+                .iter()
+                .take(3)
+                .map(|(dir, count)| format!("{dir} ({count})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more_dirs = if by_dir.len() > 3 {
+                format!(" + {} more directories", by_dir.len() - 3)
+            } else {
+                String::new()
+            };
+            output.push_str(&format!(
+                "TypeScript discovery exclusions: {} files across {} directories [{}]{} (adapter path/support rules)\n",
+                inventory.excluded_typescript.len(),
+                by_dir.len(),
+                dir_summary,
+                more_dirs
+            ));
+        }
     }
     output.push_str(&format!(
         "Retained identifiers: {}\n",
@@ -852,5 +1006,79 @@ mod tests {
         assert!(first.manifest.adapters.contains_key("treesitter-go"));
         prime(dir.path(), "golang");
         assert_eq!(first.targets, load(dir.path(), Some("go")).unwrap().targets);
+    }
+
+    #[test]
+    fn excluded_typescript_summarizes_when_many_files() {
+        let dir = workspace();
+        prime(dir.path(), "typescript");
+        let mut inventory = load(dir.path(), None).unwrap();
+        for i in 0..5 {
+            inventory.excluded_typescript.push(
+                argus_core::SourcePath::new(format!("console/node_modules/pkg_a/file{i}.js")).unwrap(),
+            );
+        }
+        for i in 0..3 {
+            inventory.excluded_typescript.push(
+                argus_core::SourcePath::new(format!("console/node_modules/pkg_b/file{i}.js")).unwrap(),
+            );
+        }
+        let desc = describe(&inventory);
+        assert!(desc.contains("TypeScript discovery exclusions: 8 files across 2 directories"));
+        assert!(desc.contains("console/node_modules/pkg_a (5)"));
+        assert!(desc.contains("console/node_modules/pkg_b (3)"));
+        assert_eq!(desc.matches("TypeScript discovery exclusion:").count(), 0);
+    }
+
+    #[test]
+    fn complete_partitions_are_summarized_and_not_listed_individually() {
+        let dir = workspace();
+        prime(dir.path(), "rust");
+        let mut inventory = load(dir.path(), None).unwrap();
+        inventory.partitions.push((
+            "rust".to_owned(),
+            argus_language::DiscoveryPartition {
+                name: "clean-file.rs".to_owned(),
+                status: argus_core::CapabilityStatus::Complete,
+                diagnostic: None,
+            },
+        ));
+        inventory.partitions.push((
+            "rust".to_owned(),
+            argus_language::DiscoveryPartition {
+                name: "problematic-file.rs".to_owned(),
+                status: argus_core::CapabilityStatus::Partial,
+                diagnostic: Some("syntax error on line 42".to_owned()),
+            },
+        ));
+        let desc = describe(&inventory);
+        assert!(desc.contains("Partitions complete:"));
+        assert!(!desc.contains("clean-file.rs\tComplete"));
+        assert!(desc.contains("problematic-file.rs\tPartial\tsyntax error on line 42"));
+    }
+
+    #[test]
+    fn limitations_are_collapsed_when_many_partitions() {
+        let dir = workspace();
+        prime(dir.path(), "rust");
+        let mut inventory = load(dir.path(), None).unwrap();
+        // Add 8 partial partitions with repeating diagnostics
+        for i in 0..8 {
+            inventory.partitions.push((
+                "rust".to_owned(),
+                argus_language::DiscoveryPartition {
+                    name: format!("file_{i}.rs"),
+                    status: argus_core::CapabilityStatus::Partial,
+                    diagnostic: Some("unknown character escape; unknown character escape; macro expansions are not represented".to_owned()),
+                },
+            ));
+        }
+        let desc = describe(&inventory);
+        assert!(desc.contains("Partitions with limitations: 8"));
+        assert!(desc.contains("unknown character escape (16x)"));
+        assert!(desc.contains("macro expansions are not represented (8x)"));
+        assert!(desc.contains("Sample partitions with limitations:"));
+        assert!(desc.contains("unknown character escape (2x); macro expansions are not represented"));
+        assert!(desc.contains("... and 3 additional partitions with limitations (logged to .argus/state/inventory/partitions.log)"));
     }
 }

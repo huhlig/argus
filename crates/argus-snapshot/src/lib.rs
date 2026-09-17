@@ -15,6 +15,7 @@
 //! Immutable repository capture and source access.
 
 mod capture;
+pub mod ignore;
 mod manifest;
 mod store;
 
@@ -22,6 +23,7 @@ pub use capture::{
     CaptureOptions, FileChangeKind, FileDelta, capture_snapshot, git_diff_changed_paths,
     git_diff_delta,
 };
+pub use ignore::{DiscoveredRoot, Ecosystem, IgnoreOptions, SnapshotIgnore, discover_roots};
 pub use manifest::{
     AnalysisConfiguration, CaptureIssue, CaptureIssueKind, CompilerInput, DriftKind, DriftRecord,
     DriftReport, EnvironmentInput, FileClass, FileRecord, SnapshotDelta, SnapshotManifest,

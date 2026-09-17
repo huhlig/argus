@@ -58,6 +58,7 @@ java-lang = "0.3.2"
 quick-xml = { version = "0.42", features = ["serialize"] }
 toml = "0.8"
 async-trait = "0.1"
+ignore = "0.4"
 futures = "0.3"
 langchart-model = { git = "https://github.com/huhlig/langchart.git" }
 langchart-runtime = { git = "https://github.com/huhlig/langchart.git" }

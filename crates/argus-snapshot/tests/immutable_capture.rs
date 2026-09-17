@@ -229,3 +229,55 @@ fn submodule_boundary_is_explicitly_accounted_for() {
             .contains_key(&SourcePath::new("dependency/lib.rs").unwrap())
     );
 }
+
+#[test]
+fn hybrid_monorepo_ignores_subproject_dependencies_and_honors_argusignore() {
+    let temporary = tempfile::tempdir().unwrap();
+    let repository_root = temporary.path().join("repo");
+    let state_root = temporary.path().join("state");
+
+    // Rust at root
+    fs::create_dir_all(repository_root.join("src")).unwrap();
+    fs::write(
+        repository_root.join("Cargo.toml"),
+        b"[package]\nname=\"root-app\"\n",
+    )
+    .unwrap();
+    fs::write(repository_root.join("src/main.rs"), b"fn main() {}\n").unwrap();
+
+    // TypeScript subproject in console/
+    fs::create_dir_all(repository_root.join("console/src")).unwrap();
+    fs::create_dir_all(repository_root.join("console/node_modules/yallist")).unwrap();
+    fs::write(
+        repository_root.join("console/package.json"),
+        b"{\"name\":\"console\"}\n",
+    )
+    .unwrap();
+    fs::write(
+        repository_root.join("console/src/index.ts"),
+        b"export const a = 1;\n",
+    )
+    .unwrap();
+    fs::write(
+        repository_root.join("console/node_modules/yallist/yallist.js"),
+        b"module.exports = {};\n",
+    )
+    .unwrap();
+
+    // target directory at root (Rust build artifact)
+    fs::create_dir_all(repository_root.join("target/debug")).unwrap();
+    fs::write(repository_root.join("target/debug/app"), b"binary\n").unwrap();
+
+    let manifest =
+        capture_snapshot(&repository_root, &state_root, &CaptureOptions::default()).unwrap();
+
+    // Verify first-party sources are captured
+    assert!(manifest.files.contains_key(&SourcePath::new("src/main.rs").unwrap()));
+    assert!(manifest.files.contains_key(&SourcePath::new("console/src/index.ts").unwrap()));
+    assert!(manifest.files.contains_key(&SourcePath::new("console/package.json").unwrap()));
+
+    // Verify node_modules and target/ are NOT captured
+    assert!(!manifest.files.contains_key(&SourcePath::new("console/node_modules/yallist/yallist.js").unwrap()));
+    assert!(!manifest.files.contains_key(&SourcePath::new("target/debug/app").unwrap()));
+}
+

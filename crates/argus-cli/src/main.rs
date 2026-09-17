@@ -751,6 +751,39 @@ pub struct ProjectThresholdConfig {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProjectProjectConfig {
+    pub path: String,
+    pub ecosystem: argus_snapshot::Ecosystem,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProjectIgnoreConfig {
+    #[serde(default = "default_true")]
+    pub use_gitignore: bool,
+    #[serde(default = "default_true")]
+    pub use_ecosystem_defaults: bool,
+    #[serde(default = "default_true")]
+    pub use_argusignore: bool,
+    #[serde(default)]
+    pub patterns: Vec<String>,
+}
+
+impl Default for ProjectIgnoreConfig {
+    fn default() -> Self {
+        Self {
+            use_gitignore: true,
+            use_ecosystem_defaults: true,
+            use_argusignore: true,
+            patterns: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectConfig {
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -759,6 +792,10 @@ pub struct ProjectConfig {
     pub default_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thresholds: Option<ProjectThresholdConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projects: Option<Vec<ProjectProjectConfig>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<ProjectIgnoreConfig>,
 }
 
 impl Default for ProjectConfig {
@@ -768,7 +805,31 @@ impl Default for ProjectConfig {
             default_provider: None,
             default_profile: None,
             thresholds: None,
+            projects: None,
+            ignore: None,
         }
+    }
+}
+
+impl ProjectConfig {
+    pub fn to_ignore_options(&self) -> argus_snapshot::IgnoreOptions {
+        let mut options = argus_snapshot::IgnoreOptions::default();
+        if let Some(ref ignore) = self.ignore {
+            options.use_gitignore = ignore.use_gitignore;
+            options.use_ecosystem_defaults = ignore.use_ecosystem_defaults;
+            options.use_argusignore = ignore.use_argusignore;
+            options.additional_patterns = ignore.patterns.clone();
+        }
+        if let Some(ref projects) = self.projects {
+            options.explicit_roots = projects
+                .iter()
+                .map(|p| argus_snapshot::DiscoveredRoot {
+                    relative_path: std::path::PathBuf::from(if p.path == "." { "" } else { &p.path }),
+                    ecosystem: p.ecosystem,
+                })
+                .collect();
+        }
+        options
     }
 }
 
@@ -4851,10 +4912,15 @@ fn prime_command(
     } else {
         None
     };
+    let project_config = load_project_config(root, None)?;
+    let capture_options = argus_snapshot::CaptureOptions {
+        ignore: project_config.to_ignore_options(),
+        ..argus_snapshot::CaptureOptions::default()
+    };
     let snapshot = argus_snapshot::capture_snapshot(
         root,
         &root.join(".argus/state/sources"),
-        &argus_snapshot::CaptureOptions::default(),
+        &capture_options,
     )?;
 
     let has_ext = |ext: &str| {
@@ -9683,10 +9749,15 @@ fn snapshot_command(
                 ));
             }
             initialize(root)?;
+            let project_config = load_project_config(root, None)?;
+            let capture_options = argus_snapshot::CaptureOptions {
+                ignore: project_config.to_ignore_options(),
+                ..argus_snapshot::CaptureOptions::default()
+            };
             let manifest = argus_snapshot::capture_snapshot(
                 root,
                 &state,
-                &argus_snapshot::CaptureOptions::default(),
+                &capture_options,
             )?;
             Ok(format!(
                 "Created snapshot {} ({} files, {} issues, dirty: {})",
@@ -10132,7 +10203,7 @@ mod tests {
         )
         .unwrap();
         assert!(coverage.contains("Adapter: rust"));
-        assert!(coverage.contains("rust-syntax:src/lib.rs"));
+        assert!(coverage.contains("Partitions complete:"));
         assert!(coverage.contains("Retained identifiers:"));
 
         let audit = run(

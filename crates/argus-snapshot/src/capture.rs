@@ -43,6 +43,8 @@ pub struct CaptureOptions {
     pub include_generated: bool,
     /// Maximum allowed file size in bytes to include in the snapshot.
     pub maximum_file_bytes: u64,
+    /// Options controlling file and directory ignores and root discovery.
+    pub ignore: crate::IgnoreOptions,
 }
 
 impl Default for CaptureOptions {
@@ -51,6 +53,7 @@ impl Default for CaptureOptions {
             configuration: AnalysisConfiguration::default_host(),
             include_generated: false,
             maximum_file_bytes: 16 * 1024 * 1024,
+            ignore: crate::IgnoreOptions::default(),
         }
     }
 }
@@ -80,9 +83,10 @@ pub fn capture_snapshot(
     }
 
     let repository = SnapshotRepository::open(state_root)?;
+    let ignore = crate::SnapshotIgnore::new(&root, &options.ignore)?;
     let mut files = BTreeMap::new();
     let mut issues = BTreeMap::new();
-    walk(&root, &root, options, &repository, &mut files, &mut issues)?;
+    walk(&root, &root, options, &ignore, &repository, &mut files, &mut issues)?;
     let vcs = vcs_state(&root);
     let mut manifest = SnapshotManifest {
         schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -103,6 +107,7 @@ fn walk(
     root: &Path,
     directory: &Path,
     options: &CaptureOptions,
+    ignore: &crate::SnapshotIgnore,
     repository: &SnapshotRepository,
     records: &mut BTreeMap<SourcePath, FileRecord>,
     issues: &mut BTreeMap<SourcePath, CaptureIssue>,
@@ -118,12 +123,13 @@ fn walk(
         let relative = path.strip_prefix(root).map_err(|_| {
             argus_core::ArgusError::invariant("captured path escaped repository root")
         })?;
-        if ignored_directory(relative) {
-            continue;
-        }
         let file_type = entry
             .file_type()
             .map_err(io_error("cannot inspect repository entry"))?;
+        let is_dir = file_type.is_dir();
+        if ignore.is_ignored(relative, is_dir) {
+            continue;
+        }
         let source_path = SourcePath::new(path_text(relative))?;
         if file_type.is_symlink() {
             records.insert(
@@ -145,7 +151,7 @@ fn walk(
             );
             continue;
         }
-        if file_type.is_dir() {
+        if is_dir {
             if path.join(".git").is_file() {
                 record_issue(
                     source_path,
@@ -158,7 +164,7 @@ fn walk(
                 );
                 continue;
             }
-            walk(root, &path, options, repository, records, issues)?;
+            walk(root, &path, options, ignore, repository, records, issues)?;
         } else if file_type.is_file() {
             capture_file(
                 &entry,
@@ -183,7 +189,7 @@ fn capture_file(
     records: &mut BTreeMap<SourcePath, FileRecord>,
     issues: &mut BTreeMap<SourcePath, CaptureIssue>,
 ) -> Result<(), argus_core::ArgusError> {
-    let class = classify(relative);
+    let mut class = classify(relative);
     if class == FileClass::GeneratedInput && !options.include_generated {
         return Ok(());
     }
@@ -221,9 +227,14 @@ fn capture_file(
             return Ok(());
         }
     };
+    let mut is_binary = class == FileClass::Binary;
+    if !is_binary && (class == FileClass::Unsupported || class == FileClass::Source) && bytes.iter().take(8192).any(|&b| b == 0) {
+        is_binary = true;
+        class = FileClass::Binary;
+    }
     let content = ContentHash::digest(&bytes);
     repository.write_blob(&content, &bytes)?;
-    if class != FileClass::Binary && std::str::from_utf8(&bytes).is_err() {
+    if !is_binary && class != FileClass::Binary && std::str::from_utf8(&bytes).is_err() {
         issues.insert(
             source_path.clone(),
             CaptureIssue {
@@ -266,15 +277,6 @@ fn record_issue(
     issues.insert(path.clone(), CaptureIssue { path, kind, detail });
 }
 
-fn ignored_directory(path: &Path) -> bool {
-    matches!(
-        path.components()
-            .next()
-            .and_then(|part| part.as_os_str().to_str()),
-        Some(".git" | ".argus")
-    )
-}
-
 fn classify(path: &Path) -> FileClass {
     let extension = path
         .extension()
@@ -305,7 +307,37 @@ fn classify(path: &Path) -> FileClass {
         FileClass::Vendor
     } else if matches!(
         extension,
-        "png" | "jpg" | "jpeg" | "gif" | "pdf" | "zip" | "exe"
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "pdf"
+            | "zip"
+            | "exe"
+            | "pptx"
+            | "docx"
+            | "xlsx"
+            | "tar"
+            | "gz"
+            | "bz2"
+            | "xz"
+            | "zst"
+            | "7z"
+            | "wasm"
+            | "so"
+            | "dylib"
+            | "dll"
+            | "bin"
+            | "ico"
+            | "webp"
+            | "mp4"
+            | "mp3"
+            | "mov"
+            | "avi"
+            | "ttf"
+            | "woff"
+            | "woff2"
+            | "eot"
     ) {
         FileClass::Binary
     } else {
