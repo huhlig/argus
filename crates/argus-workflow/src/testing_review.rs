@@ -14,7 +14,7 @@
 
 use crate::{
     PolicyAssessmentContract, PolicyReviewDecisionValidator, PrimaryReviewActor,
-    PrimaryReviewDecision, TestingReviewUnit, WorkflowDataStore,
+    PrimaryReviewDecision, TestingReviewUnit, WorkflowDataStore, review_decision_schema_for,
 };
 use argus_core::{ApplicabilityState, EvidenceId, FindingId, SourceLocation, TargetId, WorkItemId};
 use argus_evidence::ReviewContextFrame;
@@ -27,6 +27,63 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+
+/// Transport-level check shared by every testing work item; full binding happens in the
+/// per-unit [`TestingAssessmentContract`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestingReviewTransportValidator;
+
+impl argus_provider::OutputValidator for TestingReviewTransportValidator {
+    fn validate(&self, schema: &Value, output: &Value) -> Result<(), String> {
+        let known = [
+            TestingLevel::Unit,
+            TestingLevel::Library,
+            TestingLevel::Project,
+        ]
+        .into_iter()
+        .any(|level| {
+            *schema == review_decision_schema_for(&testing_assessment_draft_schema(level))
+        });
+        if !known {
+            return Err("testing review schema identity mismatch".to_owned());
+        }
+        crate::review_actor::validate_review_output(output)?;
+        let event_type = output["event_type"]
+            .as_str()
+            .ok_or_else(|| "testing review event type is missing".to_owned())?;
+        if !matches!(
+            event_type,
+            "review.pass" | "review.suggestion" | "review.candidate_found"
+        ) {
+            return Ok(());
+        }
+        let payload = &output["payload"];
+        if payload.get("candidates").is_some() {
+            return Err("testing candidates must be derived from the assessment".to_owned());
+        }
+        let draft: TestingAssessmentDraft = serde_json::from_value(
+            payload
+                .get("assessment")
+                .cloned()
+                .ok_or_else(|| "testing assessment is missing".to_owned())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let matches_event = matches!(
+            (event_type, draft.result),
+            (
+                "review.pass" | "review.suggestion",
+                TestingResultDraft::Passed
+            ) | (
+                "review.candidate_found",
+                TestingResultDraft::CandidateFindings { .. }
+            )
+        );
+        if !matches_event {
+            return Err("testing result does not match the review event".to_owned());
+        }
+        Ok(())
+    }
+}
 
 /// Binds and validates model output for one testing review unit.
 #[derive(Clone, Debug)]
