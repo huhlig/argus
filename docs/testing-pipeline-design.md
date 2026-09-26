@@ -71,7 +71,7 @@ the testing pipeline, not a review unit".
 |-------|------------------|--------------|-----------------|
 | Unit | `Module` (portable) or module-like language kind (`module`, `package`, `namespace`, file-level module) | Module containing at least one non-test callable or type | Unit dimensions |
 | Library | `Package` | Package/crate | Library dimensions |
-| Project | `Workspace` | Workspace | Project dimensions |
+| Project | Synthesized project target (§4.2) | Run | Project dimensions |
 
 ### 4.1 Per-module units and fallback
 
@@ -92,17 +92,24 @@ the testing pipeline, not a review unit".
 
 Modules with no non-test members are `NotApplicable`.
 
-### 4.2 Missing target kinds
+### 4.2 Project unit
 
-- **Rust Workspace target.** Java, Python, and TypeScript emit
-  `PortableTargetKind::Workspace`; the Rust Cargo scanner (`crates/argus-rust/src/cargo.rs`)
-  emits only `Package`. Required change: emit a Rust `Workspace` target for the
-  Cargo workspace root, with `core:contains` edges to its packages, following the
-  stable-identifier rules in ADR 0001. This is an additive target; existing IDs do
-  not change.
-- Adapters with no `Package` or `Workspace` target (single-file tree-sitter
-  inputs) skip those levels. The report shows the levels as `NotApplicable`
-  with the reason, rather than silently omitting them.
+The project level has exactly one unit per run: a **synthesized project target**
+covering the whole inventory, created the same way the architecture planner
+normalizes its workspace scope (`normalize_architecture_targets` in
+`crates/argus-workflow/src/architecture_plan.rs`).
+
+- Adapter `Workspace` targets (Java, Python, TypeScript) and `Package` targets are
+  constituents of the project unit, not separate project units.
+- No adapter change is required. An earlier draft added a Rust `Workspace`
+  target; this was rejected because the architecture planner allows at most one
+  `Workspace` target per inventory, so multi-adapter primes (`--adapter all`)
+  would fail.
+- Known existing defect (outside this work): a repository with two
+  workspace-emitting adapters (for example Python and TypeScript) already fails
+  architecture planning for the same reason.
+- Adapters with no `Package` targets skip the library level. The report shows it
+  as `NotApplicable` with the reason, rather than silently omitting it.
 
 ## 5. Recognising Test Code (Language-Generic)
 
@@ -337,11 +344,11 @@ evidence package. This uses the existing repair loop.
 
 `crates/argus-policies/src/testing.rs`:
 
-- `TestingTargetClass { Module, Callable (fallback only), Package, Workspace, TestCode, Unknown }`
+- `TestingTargetClass { Module, Callable (fallback only), Package, Project, TestCode, Unknown }`
 - `TestingTargetProfile::from_target(target, is_test_code)`: `is_test_code` is
   computed by the planner (§5), keeping path heuristics out of the policy crate.
 - `TestingApplicabilityPolicy::conservative()`:
-  - `Module`, `Package`, `Workspace` → `Applicable`
+  - `Module`, `Package`, `Project` → `Applicable`
   - `Callable` → `Applicable` only when created by the §4.1 split
   - `TestCode`, `Unknown` → `NotApplicable`
 - `TestingDimension` and `ALL_TESTING_DIMENSIONS`, with a level mapping.
@@ -398,7 +405,6 @@ exists.
 | Change | Crate | Risk |
 |--------|-------|------|
 | `EvidenceKind::ReviewFinding` variant | argus-core | Low: additive serde variant. Exhaustive matches must be updated. |
-| Rust `Workspace` target | argus-rust | Low to medium: new stable ID. Snapshot fixtures and inventory tests need updating. |
 | Deferred-pipeline state on the run record | argus-storage / argus-cli | Medium: new persisted field. Needs `#[serde(default)]` for old runs. |
 | `full` and `work all` sequencing | argus-cli | Medium: changes the lifecycle of the most-used command. Covered by run-lifecycle tests. |
 | Signal normalization from existing report builders | argus-cli / argus-report | Low: read-only use of existing code. |
@@ -428,7 +434,7 @@ exists.
 | Phase | Work | Verification |
 |-------|------|--------------|
 | 0 | CLI pipeline registry (`Pipeline` enum, exhaustive matches replacing string switches) | Existing CLI tests pass unchanged; a test checks every pipeline name appears in each usage and help string |
-| 1 | `EvidenceKind::ReviewFinding`; Rust `Workspace` target | `cargo test -p argus-core -p argus-rust`; inventory tests updated |
+| 1 | `EvidenceKind::ReviewFinding` | `cargo test -p argus-core` |
 | 2 | Policy `testing.rs` (classes, applicability, dimensions) | Unit tests for applicability and level mapping |
 | 3 | Test-code recognition and test linking | Tests with Rust, Java, Python, and TypeScript fixtures, including the two-hop helper case and path-only external tests |
 | 4 | Per-level evidence, trimming and split, admission and restore | Planner tests; budget limits; split grouping; restore identity |
