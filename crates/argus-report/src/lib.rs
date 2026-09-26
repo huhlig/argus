@@ -31,6 +31,7 @@ mod optimization_evaluation;
 pub mod publish;
 pub mod sarif;
 mod testing;
+mod testing_evaluation;
 
 pub use architecture::{
     ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ARCHITECTURE_REPORT_SCHEMA_VERSION,
@@ -124,6 +125,10 @@ pub use testing::{
     TESTING_ASSESSMENT_ARTIFACT_KIND, TESTING_REPORT_SCHEMA_VERSION, TestingFindingCluster,
     TestingFindingOccurrence, TestingReport, TestingReportAssessment, TestingReportSummary,
     testing_report_from_queue, write_testing_bundle_reports,
+};
+pub use testing_evaluation::{
+    ExpectedTestingIssue, TESTING_CORPUS_SCHEMA_VERSION, TESTING_EVALUATION_SCHEMA_VERSION,
+    TestingEvaluation, TestingEvaluationCorpus, TestingEvaluationThresholds, evaluate_testing,
 };
 
 use argus_core::{

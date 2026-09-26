@@ -145,7 +145,7 @@ Description:
 
 Options:
   --adapter <name>        Select an adapter from this run (default: all primed adapters)
-  --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, internal-documentation, correctness, architecture, optimization, maintainability, conformance, full)
+  --pipeline <pipeline>   Policy pipeline to plan and admit (supported: documentation, internal-documentation, correctness, architecture, optimization, maintainability, conformance, testing, full)
   --preset <preset>       Execution preset: local (default, developer interactive) or ci (strict budget, automated gating)
   --ci                    Non-interactive CI execution mode (equivalent to --preset ci)
   --ci-lite               Fast CI review restricting admitted work to changed and impacted targets
@@ -166,6 +166,7 @@ Examples:
   argus audit --pipeline optimization
   argus audit --pipeline maintainability
   argus audit --pipeline conformance
+  argus audit --pipeline testing
   argus audit --pipeline full
   argus audit --pipeline full --preset ci
   argus audit --pipeline full --ci
@@ -176,7 +177,7 @@ Examples:
 
 const HELP_WORK: &str = "Execute bounded admitted review work items using a configured model provider
 
-Usage: argus work [documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|all] [--preset <local|ci>] [--ci] [--incremental] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
+Usage: argus work [documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|testing|all] [--preset <local|ci>] [--ci] [--incremental] [--provider <name[:model]>] [--limit <number> | --no-limit] [-j | --concurrency <number>] [--fail-fast] [--config <path>]
 
 Description:
   Leases pending work items from the durable queue, constructs untrusted evidence
@@ -184,7 +185,7 @@ Description:
   and records durable outcomes (pass, candidate finding, unable-to-verify, failure).
 
 Arguments & Options:
-  documentation | correctness | architecture | optimization | maintainability | conformance | all  Review policy to execute (default: all)
+  documentation | correctness | architecture | optimization | maintainability | conformance | testing | all  Review policy to execute (default: all)
   --preset <local|ci>                         Execution preset: local (default) or ci (fail-fast, bounded concurrency)
   --ci                                        Non-interactive CI execution mode (equivalent to --preset ci)
   --incremental                               Use review assessment cache to short-circuit unchanged reviews
@@ -499,7 +500,7 @@ Examples:
 const HELP_EVALUATE: &str = "Measure quality and calibration against a versioned corpus
 
 Usage:
-  argus evaluate <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]
+  argus evaluate <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|testing> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]
 
 Description:
   Evaluates one or more audit runs against a ground-truth defect corpus:
@@ -751,6 +752,8 @@ pub struct ProjectThresholdConfig {
     pub maintainability: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conformance: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub testing: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -794,6 +797,7 @@ fn resolve_thresholds_path(
             Some(Pipeline::Optimization) => thresh_cfg.optimization.as_deref(),
             Some(Pipeline::Maintainability) => thresh_cfg.maintainability.as_deref(),
             Some(Pipeline::Conformance) => thresh_cfg.conformance.as_deref(),
+            Some(Pipeline::Testing) => thresh_cfg.testing.as_deref(),
             Some(Pipeline::InternalDocumentation) | None => None,
         };
         if let Some(cfg_path) = configured {
@@ -2164,7 +2168,7 @@ fn audit_command(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_AUDIT.to_owned());
     }
-    let usage = "usage: argus audit --pipeline <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|full> [--preset <local|ci>] [--ci] [--ci-lite] [--baseline <ref|run-id>] [--incremental] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
+    let usage = "usage: argus audit --pipeline <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|testing|full> [--preset <local|ci>] [--ci] [--ci-lite] [--baseline <ref|run-id>] [--incremental] [--base <ref> | --diff <ref> | --since <ref>] [--changed-only]";
     let mut iter = args.into_iter().peekable();
     let mut pipeline = None;
     let mut adapter_filter = None;
@@ -2379,6 +2383,8 @@ fn audit_command(
         ),
     };
 
+    // The testing pipeline starts from the maintainability budget (design decision D8).
+    let testing_budget = maint_budget.clone();
     let evidence_store = argus_evidence::EvidenceStore::open(root.join(".argus/state/evidence"))?;
 
     let plan_documentation = |internal: bool| -> Result<String, argus_core::ArgusError> {
@@ -2747,6 +2753,106 @@ fn audit_command(
         inventory::describe(&inventory)
     );
 
+    let plan_testing = || -> Result<String, argus_core::ArgusError> {
+        // Findings already recorded by upstream pipelines in this run become evidence.
+        let records = queue.run_records(&run.id)?;
+        let upstream = Pipeline::present_in(&records)
+            .into_iter()
+            .filter(|pipeline| !pipeline.is_downstream())
+            .collect::<Vec<_>>();
+        let mut signals = Vec::new();
+        for pipeline in &upstream {
+            signals.extend(
+                pipeline::PipelineReport::load(*pipeline, &queue, &run.id)?.upstream_signals(),
+            );
+        }
+        let pending_upstream = records
+            .work
+            .iter()
+            .filter(|work| {
+                matches!(
+                    work.state,
+                    argus_storage::QueueState::Pending | argus_storage::QueueState::Leased
+                ) && Pipeline::of_policy(&work.coverage.policy)
+                    .is_some_and(|pipeline| !pipeline.is_downstream())
+            })
+            .count();
+        let policy = argus_policies::TestingApplicabilityPolicy::conservative();
+        let planner = argus_workflow::TestingReviewPlanner::new(
+            &policy,
+            argus_core::PolicyId::derive([b"testing-conservative-v1".as_slice()]),
+            Pipeline::Testing.policy_version(),
+        )?;
+        // Linking tests to code needs the whole inventory; change filters narrow the units.
+        let mut plan = planner.plan(
+            &run.snapshot,
+            &run.configuration,
+            &inventory.targets,
+            &inventory.evidence,
+            &inventory.relations,
+            &signals,
+            &testing_budget,
+        )?;
+        if change_filter_active {
+            plan.units.retain(|unit| {
+                unit.scope_targets
+                    .iter()
+                    .any(|target| targets_to_plan_ids.contains(target))
+            });
+            let kept = plan
+                .units
+                .iter()
+                .flat_map(|unit| unit.evidence.iter().cloned())
+                .collect::<BTreeSet<_>>();
+            plan.evidence.retain(|record| kept.contains(&record.id));
+        }
+        let applicable = plan
+            .units
+            .iter()
+            .filter(|unit| unit.applicability.state == argus_core::ApplicabilityState::Applicable)
+            .count();
+        let not_applicable = plan.units.len() - applicable;
+        let catalog = argus_workflow::TestingEvidenceCatalog::ingest(
+            &evidence_store,
+            &run.snapshot,
+            argus_evidence::DataClassification::Internal,
+            &plan.evidence,
+        )?;
+        let batch = plan.materialize_admissible(
+            &evidence_store,
+            &catalog,
+            &run.snapshot,
+            &run.configuration,
+            &testing_budget,
+            argus_evidence::DataClassification::Internal,
+        )?;
+        let admitted = batch.admit(
+            &queue,
+            &run.id,
+            &run.snapshot,
+            &run.configuration,
+            "workspace",
+            now_millis()?,
+        )?;
+        pipeline::clear_deferred(root, &run.id)?;
+        let partial = if pending_upstream == 0 {
+            String::new()
+        } else {
+            format!(
+                "; {pending_upstream} upstream work item(s) were still pending, so upstream signals are partial"
+            )
+        };
+        Ok(format!(
+            "Testing plan for run {}: {} applicable, {} not applicable, 0 pending; {} newly admitted; {} upstream finding signal(s) from {} pipeline(s){partial}",
+            run.id,
+            applicable,
+            not_applicable,
+            admitted,
+            signals.len(),
+            upstream.len()
+        ))
+    };
+
     let plan = |pipeline: Pipeline| match pipeline {
         Pipeline::Documentation => plan_documentation(false),
         Pipeline::InternalDocumentation => plan_documentation(true),
@@ -2755,15 +2861,52 @@ fn audit_command(
         Pipeline::Optimization => plan_optimization(),
         Pipeline::Maintainability => plan_maintainability(),
         Pipeline::Conformance => plan_conformance(),
+        Pipeline::Testing => plan_testing(),
     };
-    let selected = match Pipeline::parse(&pipeline) {
-        Some(pipeline) => vec![pipeline],
-        None => Pipeline::ALL.to_vec(),
-    };
-    let messages = selected
-        .into_iter()
-        .map(plan)
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut messages = Vec::new();
+    if let Some(pipeline) = Pipeline::parse(&pipeline) {
+        messages.push(plan(pipeline)?);
+    } else {
+        // `full`: downstream pipelines wait for upstream findings and are admitted by `work`.
+        for pipeline in Pipeline::ALL {
+            if !pipeline.is_downstream() {
+                messages.push(plan(pipeline)?);
+                continue;
+            }
+            let mut audit_args = Vec::new();
+            if let Some(adapter) = &adapter_filter {
+                audit_args.extend(["--adapter".to_owned(), adapter.clone()]);
+            }
+            if matches!(preset, PipelinePreset::Ci) {
+                audit_args.extend(["--preset".to_owned(), "ci".to_owned()]);
+            }
+            if ci_lite {
+                audit_args.push("--ci-lite".to_owned());
+            }
+            if incremental {
+                audit_args.push("--incremental".to_owned());
+            }
+            if let Some(base) = &base_ref {
+                audit_args.extend(["--base".to_owned(), base.clone()]);
+            }
+            if changed_only {
+                audit_args.push("--changed-only".to_owned());
+            }
+            pipeline::defer(
+                root,
+                &run.id,
+                &pipeline::DeferredAdmission {
+                    pipeline: pipeline.name().to_owned(),
+                    audit_args,
+                },
+            )?;
+            messages.push(format!(
+                "{} plan for run {} deferred: it is admitted by 'argus work' once upstream review work completes",
+                pipeline.label(),
+                run.id
+            ));
+        }
+    }
     Ok(format!("{preset_note}{}{next_step}", messages.join("\n")))
 }
 
@@ -2784,7 +2927,7 @@ fn work_command_with_env(
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_WORK.to_owned());
     }
-    let usage = "usage: argus work [documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
+    let usage = "usage: argus work [documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|testing|all] [--preset <local|ci>] [--ci] [--provider <name[:model]>] [--limit <integer> | --no-limit] [-j | --concurrency <integer>] [--fail-fast] [--config <path>]";
     let mut iter = args.into_iter().peekable();
     let policy_arg = if iter.peek().is_some_and(|a| !a.starts_with('-')) {
         iter.next().map(|arg| arg.to_lowercase())
@@ -3744,6 +3887,9 @@ async fn execute_pipeline_work(
         Pipeline::Conformance => {
             execute_conformance_work(root, profile, limit, concurrency, fail_fast).await
         }
+        Pipeline::Testing => {
+            execute_testing_work(root, profile, limit, concurrency, fail_fast).await
+        }
     }
 }
 
@@ -3757,7 +3903,7 @@ fn check_unadmitted_run_warning(
         tracing::warn!(
             run_id = %run_id,
             policy = policy_name,
-            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|full>'?"
+            "No admitted work found for current run {run_id}. Have you run 'argus audit --pipeline <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|testing|full>'?"
         );
     }
     Ok(())
@@ -4320,6 +4466,161 @@ async fn execute_maintainability_work(
         fail_fast,
     )
     .await
+}
+
+/// State of a testing admission deferred by `audit --pipeline full`.
+enum DeferredTesting {
+    /// Nothing was deferred.
+    None,
+    /// Upstream work items are still pending.
+    Waiting(usize),
+    /// The deferred admission ran; holds the audit output.
+    Admitted(String),
+}
+
+/// Admits deferred testing work once every upstream work item has settled.
+fn admit_deferred_testing(
+    root: &std::path::Path,
+    run_id: &argus_core::RunId,
+) -> Result<DeferredTesting, argus_core::ArgusError> {
+    let Some(deferred) = pipeline::deferred(root, run_id)? else {
+        return Ok(DeferredTesting::None);
+    };
+    // A short-lived handle: the queue cannot be opened twice in one process.
+    let pending_upstream = working_queue(root)?
+        .run_records(run_id)?
+        .work
+        .iter()
+        .filter(|work| {
+            matches!(
+                work.state,
+                argus_storage::QueueState::Pending | argus_storage::QueueState::Leased
+            ) && Pipeline::of_policy(&work.coverage.policy)
+                .is_some_and(|pipeline| !pipeline.is_downstream())
+        })
+        .count();
+    if pending_upstream > 0 {
+        return Ok(DeferredTesting::Waiting(pending_upstream));
+    }
+    let mut audit_args = vec!["--pipeline".to_owned(), deferred.pipeline];
+    audit_args.extend(deferred.audit_args);
+    audit_command(root, audit_args.into_iter()).map(DeferredTesting::Admitted)
+}
+
+#[allow(clippy::too_many_lines)]
+async fn execute_testing_work(
+    root: &std::path::Path,
+    profile: argus_provider::ProviderRuntimeProfile,
+    limit: Option<usize>,
+    concurrency: usize,
+    fail_fast: bool,
+) -> Result<String, argus_core::ArgusError> {
+    let run_id = current_run(root)?;
+    let admission_note = match admit_deferred_testing(root, &run_id)? {
+        DeferredTesting::None => String::new(),
+        DeferredTesting::Admitted(note) => format!("{note}\n"),
+        DeferredTesting::Waiting(pending_upstream) => {
+            return Ok(format!(
+                "Testing work deferred: {pending_upstream} upstream work item(s) remain; run 'argus work' again once they complete, or 'argus audit --pipeline testing' to admit with partial upstream signals."
+            ));
+        }
+    };
+    let queue = std::sync::Arc::new(working_queue(root)?);
+    let run = queue
+        .get_run(&run_id)?
+        .ok_or_else(|| argus_core::ArgusError::invariant("current run is missing"))?;
+    if run.state != argus_storage::RunState::Active || run.finalized_at_millis.is_some() {
+        return Err(argus_core::ArgusError::invariant(
+            "testing work requires an active current run",
+        ));
+    }
+    check_unadmitted_run_warning(&queue, &run_id, "testing")?;
+    let built = profile.build_from_environment().map_err(|error| {
+        argus_core::ArgusError::invalid_input("cannot build provider runtime").with_source(error)
+    })?;
+    let session_id = format!("worker-{}-{}", std::process::id(), now_millis()?);
+    let telemetry = std::sync::Arc::new(argus_storage::DurableProviderTelemetryPublisher::new(
+        queue.clone(),
+        session_id,
+    )?);
+    let executor = std::sync::Arc::new(
+        argus_provider::ProviderExecutor::new(
+            built.provider,
+            profile.capabilities.identity.clone(),
+            profile.policy.clone(),
+            profile.repair,
+            std::sync::Arc::new(argus_workflow::TestingReviewTransportValidator),
+        )
+        .map_err(|error| {
+            argus_core::ArgusError::invalid_input("cannot configure provider executor")
+                .with_source(error)
+        })?
+        .with_telemetry_sink(telemetry),
+    );
+    let state_directory = root.join(".argus/state/workflow");
+    let workflow_data = std::sync::Arc::new(
+        argus_workflow::WorkflowDataStore::open(&state_directory).map_err(|error| {
+            argus_core::ArgusError::invariant("cannot open workflow data").with_source(error)
+        })?,
+    );
+    let provider_identity = profile.capabilities.identity.clone();
+    let max_output_tokens = profile.capabilities.max_output_tokens;
+    let worker = std::sync::Arc::new(argus_workflow::TestingWorker::new(
+        queue.clone(),
+        workflow_data,
+        argus_workflow::documentation_worker_runtime(executor, built.adapter),
+        argus_workflow::TestingWorkerConfig {
+            state_directory,
+            identity: argus_workflow::TestingRuntimeIdentity {
+                audit_snapshot: run.snapshot.clone(),
+                audit_run: run.id,
+                provenance: argus_workflow::OutcomeProvenance {
+                    prompt_version: "testing-review@1".to_owned(),
+                    actor_id: "argus.review".to_owned(),
+                    actor_version: "1.0.0".to_owned(),
+                    workflow_id: argus_workflow::TARGET_REVIEW_WORKFLOW_ID.to_owned(),
+                    workflow_version: argus_workflow::TARGET_REVIEW_WORKFLOW_VERSION.to_owned(),
+                    provider: provider_identity.clone(),
+                },
+                max_output_tokens,
+            },
+            adapter: "workspace".to_owned(),
+            policy: "testing-conservative@1".to_owned(),
+            lease_duration_millis: 120_000,
+            maximum_attempts: 3,
+        },
+    )?);
+
+    let catalog = std::sync::Arc::new(TargetCatalog::load(root, Some(&run.snapshot.to_string())));
+    let work = execute_concurrent_worker_pool(
+        "testing",
+        "Testing",
+        concurrency,
+        limit,
+        &provider_identity.provider,
+        &provider_identity.model,
+        queue,
+        &run_id,
+        catalog,
+        worker,
+        |w| async move {
+            match w.run_next(now_millis()?).await? {
+                argus_workflow::TestingWorkerResult::Idle => Ok(WorkerStepResult::Idle),
+                argus_workflow::TestingWorkerResult::Succeeded { work_id } => {
+                    Ok(WorkerStepResult::Succeeded { work_id })
+                }
+                argus_workflow::TestingWorkerResult::RetryScheduled { work_id, error } => {
+                    Ok(WorkerStepResult::RetryScheduled { work_id, error })
+                }
+                argus_workflow::TestingWorkerResult::Failed { work_id, error } => {
+                    Ok(WorkerStepResult::Failed { work_id, error })
+                }
+            }
+        },
+        fail_fast,
+    )
+    .await?;
+    Ok(format!("{admission_note}{work}"))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -6268,7 +6569,7 @@ fn evaluate_command(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
 ) -> Result<String, argus_core::ArgusError> {
-    let usage = "usage: argus evaluate <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]";
+    let usage = "usage: argus evaluate <documentation|internal-documentation|correctness|architecture|optimization|maintainability|conformance|testing> --corpus <path> [--thresholds <path>] [--format <markdown|json>] [--ci] [-c|--config <path>] <run-id> [<run-id> ...]";
     let first = args.next();
     if is_help_flag(first.as_deref()) {
         return Ok(HELP_EVALUATE.to_owned());
@@ -6477,6 +6778,14 @@ fn evaluate_command(
             argus_report::ConformanceEvaluationThresholds,
             argus_report::conformance_report_from_queue,
             argus_report::evaluate_conformance
+        ),
+        Pipeline::Testing => evaluate_pipeline!(
+            "testing",
+            "Testing",
+            argus_report::TestingEvaluationCorpus,
+            argus_report::TestingEvaluationThresholds,
+            argus_report::testing_report_from_queue,
+            argus_report::evaluate_testing
         ),
     }
 }
@@ -12137,6 +12446,145 @@ public class App {
         )
         .unwrap();
         assert!(backlog_out.contains("# Project Backlog & Gap Tracking"));
+    }
+
+    fn testing_fixture() -> tempfile::TempDir {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temporary.path().join("Cargo.toml"),
+            b"[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temporary.path().join("src")).unwrap();
+        std::fs::write(
+            temporary.path().join("src/lib.rs"),
+            b"pub fn clamp(v: i32) -> i32 { v.max(0) }\npub fn add(a: i32, b: i32) -> i32 { a + b }\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() { assert_eq!(super::add(1, 2), 3); }\n}\n",
+        )
+        .unwrap();
+        temporary
+    }
+
+    fn prime_rust(root: &std::path::Path) -> String {
+        let primed = run(
+            ["prime", "--adapter", "rust"]
+                .map(str::to_owned)
+                .into_iter(),
+            root,
+        )
+        .unwrap();
+        primed.split_whitespace().nth(2).unwrap().to_owned()
+    }
+
+    #[test]
+    fn testing_pipeline_audit_finalize_and_report() {
+        let temporary = testing_fixture();
+        let run_id = prime_rust(temporary.path());
+
+        let audit_out = run(
+            ["audit", "--pipeline", "testing"]
+                .map(str::to_owned)
+                .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(audit_out.contains("Testing plan for run"), "{audit_out}");
+        assert!(
+            audit_out.contains("0 upstream finding signal(s) from 0 pipeline(s)"),
+            "{audit_out}"
+        );
+        let queue = working_queue(temporary.path()).unwrap();
+        let records = queue.run_records(&run_id.parse().unwrap()).unwrap();
+        let kinds = records
+            .work
+            .iter()
+            .filter(|work| work.coverage.policy == "testing-conservative@1")
+            .map(|work| work.coverage.target_kind.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        drop(queue);
+        for kind in ["module", "package", "project"] {
+            assert!(kinds.contains(kind), "no {kind} unit admitted: {kinds:?}");
+        }
+
+        run(
+            ["cancel".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        let finalize_out = run(
+            ["finalize".to_owned(), run_id.clone()].into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(
+            finalize_out.contains("testing assessments"),
+            "{finalize_out}"
+        );
+        for name in [
+            "testing-report.json",
+            "testing-report.jsonl",
+            "testing-report.md",
+        ] {
+            assert!(
+                temporary
+                    .path()
+                    .join(".argus/reviews")
+                    .join(&run_id)
+                    .join(name)
+                    .is_file(),
+                "{name} missing"
+            );
+        }
+        let report_out = run(["report".to_owned(), run_id].into_iter(), temporary.path()).unwrap();
+        assert!(report_out.contains("Testing Review Report"), "{report_out}");
+    }
+
+    #[test]
+    fn full_audit_defers_testing_until_it_is_admitted() {
+        let temporary = testing_fixture();
+        let run_id = prime_rust(temporary.path());
+
+        let audit_out = run(
+            ["audit", "--pipeline", "full"]
+                .map(str::to_owned)
+                .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(audit_out.contains("Testing plan for run"), "{audit_out}");
+        assert!(audit_out.contains("deferred"), "{audit_out}");
+        let run: argus_core::RunId = run_id.parse().unwrap();
+        let deferred = pipeline::deferred(temporary.path(), &run).unwrap().unwrap();
+        assert_eq!(deferred.pipeline, "testing");
+        let admitted_testing = |root: &std::path::Path| {
+            working_queue(root)
+                .unwrap()
+                .run_records(&run)
+                .unwrap()
+                .work
+                .iter()
+                .filter(|work| work.coverage.policy == "testing-conservative@1")
+                .count()
+        };
+        assert_eq!(admitted_testing(temporary.path()), 0);
+
+        // Explicit admission accepts partial upstream signals and clears the deferral.
+        let audit_out = super::run(
+            ["audit", "--pipeline", "testing"]
+                .map(str::to_owned)
+                .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+        assert!(
+            audit_out.contains("upstream signals are partial"),
+            "{audit_out}"
+        );
+        assert!(admitted_testing(temporary.path()) > 0);
+        assert!(
+            pipeline::deferred(temporary.path(), &run)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

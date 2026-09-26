@@ -1,6 +1,6 @@
 # Testing Pipeline Design
 
-Status: Proposed
+Status: Implemented (see §17 for deviations)
 Pipeline name: `testing`
 Policy identifier: `testing-conservative@1`
 Prompt version: `testing-review@1`
@@ -476,3 +476,15 @@ exists.
 | D8 | Trim and split thresholds, signal caps | Start from the maintainability budgets (local: 400,000 bytes / 80,000 tokens / 32 items; CI: 250,000 bytes / 50,000 tokens / 16 items) and tune against the evaluation corpus. |
 | D9 | Severity of accepted upstream findings with no regression test | Always **High**, whatever severity the model assigns. Enforced in validation, not only in the prompt. |
 | D10 | Pipeline registry before this work | Yes. Phase 0 replaces the string-matched pipeline switch points in `argus-cli` with a `Pipeline` enum, so adding `testing` is checked by the compiler rather than found by grep. |
+
+## 17. Implementation Notes and Deviations
+
+| Area | Design | As built | Reason |
+|------|--------|----------|--------|
+| Deferred state | Stored on the run record | `.argus/state/deferred/<run-id>.json`, written atomically, holding the pipeline and the original audit arguments (`--preset`, `--base`, `--changed-only`, and so on) | `RunRecord` is built with struct literals in 19 places; a file keeps storage schemas untouched. Replaying the audit arguments keeps the deferred admission in the same scope as the original `full` audit. |
+| Signal coverage | Recorded per unit | Reported per run in the audit output (upstream finding count, contributing pipelines, and pending upstream work when signals are partial) | The per-unit form adds a persisted field for no reviewer-facing gain yet. |
+| `work testing` with pending upstream work | Fails | Returns a "deferred" message naming the pending count | The same path serves `work all` and `run --limit`, where failing would abort the whole command. |
+| Evidence granularity | Rows per evidence kind (§6) | Each unit's evidence is synthesized into a few records (member index, source, linked tests, benchmarks, upstream signals), each trimmed to a byte share | The evidence package's item cap (16 in CI) would otherwise drop members of large modules silently. |
+| Project unit | Adapter `Workspace` targets | One synthesized project target per run (§4.2) | The architecture planner rejects inventories with more than one `Workspace` target. |
+| Backlog | Not specified | New `MissingTests` backlog category; every test need is a backlog item | The keyword classifier used for other pipelines would drop most test needs. |
+| Evaluation corpus | Seeded corpus and thresholds (§11) | `argus evaluate testing` and the evaluation types exist; the seeded corpus and thresholds file are not yet written | Follow-up work. |

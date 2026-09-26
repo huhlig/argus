@@ -29,11 +29,13 @@ pub(crate) enum Pipeline {
     Optimization,
     Maintainability,
     Conformance,
+    /// Downstream: admitted after upstream work so their findings become evidence.
+    Testing,
 }
 
 impl Pipeline {
     /// Every pipeline, in `full` admission and `work all` execution order.
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Documentation,
         Self::InternalDocumentation,
         Self::Correctness,
@@ -41,6 +43,7 @@ impl Pipeline {
         Self::Optimization,
         Self::Maintainability,
         Self::Conformance,
+        Self::Testing,
     ];
 
     /// Parses a user-supplied pipeline name, accepting `performance` as an alias.
@@ -63,6 +66,7 @@ impl Pipeline {
             Self::Optimization => "optimization",
             Self::Maintainability => "maintainability",
             Self::Conformance => "conformance",
+            Self::Testing => "testing",
         }
     }
 
@@ -76,6 +80,7 @@ impl Pipeline {
             Self::Optimization => "Optimization",
             Self::Maintainability => "Maintainability",
             Self::Conformance => "Conformance",
+            Self::Testing => "Testing",
         }
     }
 
@@ -89,7 +94,13 @@ impl Pipeline {
             Self::Optimization => "optimization-conservative@1",
             Self::Maintainability => "maintainability-conservative@1",
             Self::Conformance => "conformance-design-aligned@1",
+            Self::Testing => "testing-conservative@1",
         }
+    }
+
+    /// Whether this pipeline is admitted only after the other pipelines' work completes.
+    pub(crate) const fn is_downstream(self) -> bool {
+        matches!(self, Self::Testing)
     }
 
     /// Whether a work item's coverage policy belongs to this pipeline.
@@ -130,6 +141,7 @@ enum Report {
     Optimization(argus_report::OptimizationReport),
     Maintainability(argus_report::MaintainabilityReport),
     Conformance(argus_report::ConformanceReport),
+    Testing(argus_report::TestingReport),
 }
 
 /// Evaluates `$body` with `$report` bound to whichever concrete report is loaded.
@@ -142,6 +154,7 @@ macro_rules! with_report {
             Report::Optimization($report) => $body,
             Report::Maintainability($report) => $body,
             Report::Conformance($report) => $body,
+            Report::Testing($report) => $body,
         }
     };
 }
@@ -200,6 +213,9 @@ impl PipelineReport {
             Pipeline::Conformance => Report::Conformance(
                 argus_report::conformance_report_from_queue(queue, run_id, version)?,
             ),
+            Pipeline::Testing => Report::Testing(argus_report::testing_report_from_queue(
+                queue, run_id, version,
+            )?),
         };
         Ok(Self { pipeline, report })
     }
@@ -231,6 +247,11 @@ impl PipelineReport {
             Pipeline::Conformance => Report::Conformance(
                 argus_report::write_conformance_bundle_reports(destination, run_id, version)?,
             ),
+            Pipeline::Testing => Report::Testing(argus_report::write_testing_bundle_reports(
+                destination,
+                run_id,
+                version,
+            )?),
         };
         Ok(Self { pipeline, report })
     }
@@ -265,6 +286,11 @@ impl PipelineReport {
                 report.summary.unadjudicated_findings,
             ),
             Report::Conformance(report) => (
+                report.assessments.len(),
+                report.summary.candidate_findings,
+                report.summary.unadjudicated_findings,
+            ),
+            Report::Testing(report) => (
                 report.assessments.len(),
                 report.summary.candidate_findings,
                 report.summary.unadjudicated_findings,
@@ -383,6 +409,13 @@ impl PipelineReport {
                 dimension,
                 severity
             ),
+            Report::Testing(report) => retain_clusters!(
+                report,
+                argus_policies::TestingDimension,
+                "testing",
+                dimension,
+                severity
+            ),
         }
         Ok(())
     }
@@ -448,6 +481,10 @@ impl PipelineReport {
                 None,
                 Some(report),
             ),
+            Report::Testing(report) => argus_report::BacklogReport {
+                run_id,
+                items: argus_report::extract_testing_backlog_items(report),
+            },
         };
         let mut items = backlog.items;
         if self.pipeline == Pipeline::InternalDocumentation {
@@ -457,11 +494,164 @@ impl PipelineReport {
         }
         items
     }
+
+    /// Findings normalized as upstream signals for the testing pipeline.
+    ///
+    /// Findings a human rejected, and architecture findings verification rejected, are
+    /// excluded. A finding on several targets yields one signal per target.
+    pub(crate) fn upstream_signals(&self) -> Vec<argus_workflow::UpstreamSignal> {
+        use argus_core::AdjudicationState;
+        let policy = self.pipeline.policy_version();
+        macro_rules! from_clusters {
+            ($report:expr) => {
+                $report
+                    .finding_clusters
+                    .iter()
+                    .filter(|cluster| cluster.adjudication != AdjudicationState::Rejected)
+                    .flat_map(|cluster| {
+                        cluster
+                            .occurrences
+                            .iter()
+                            .map(|occurrence| occurrence.target.clone())
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .map(move |target| argus_workflow::UpstreamSignal {
+                                finding: cluster.id.clone(),
+                                policy_version: policy.to_owned(),
+                                target,
+                                category: first_dimension(&cluster.representative.dimensions),
+                                severity: cluster.representative.severity,
+                                confidence: cluster.representative.confidence,
+                                title: cluster.representative.title.clone(),
+                                summary: bounded(&cluster.representative.description),
+                                accepted: cluster.adjudication == AdjudicationState::Accepted,
+                            })
+                    })
+                    .collect()
+            };
+        }
+        match &self.report {
+            Report::Documentation(report) => from_clusters!(report),
+            Report::Correctness(report) => from_clusters!(report),
+            Report::Optimization(report) => from_clusters!(report),
+            Report::Maintainability(report) => from_clusters!(report),
+            Report::Conformance(report) => from_clusters!(report),
+            Report::Architecture(report) => report
+                .finding_clusters
+                .iter()
+                .filter(|cluster| {
+                    cluster.adjudication != AdjudicationState::Rejected
+                        && cluster.verification
+                            != argus_policies::ArchitectureVerificationStatus::Rejected
+                })
+                .map(|cluster| argus_workflow::UpstreamSignal {
+                    finding: cluster.id.clone(),
+                    policy_version: policy.to_owned(),
+                    target: cluster.representative.target.clone(),
+                    category: first_dimension(&cluster.representative.dimensions),
+                    severity: cluster.representative.severity,
+                    confidence: cluster.representative.confidence,
+                    title: format!("{:?}", cluster.representative.defect_kind),
+                    summary: bounded(&cluster.representative.explanation),
+                    accepted: cluster.adjudication == AdjudicationState::Accepted,
+                })
+                .collect(),
+            // Testing is downstream of every other pipeline and never feeds itself.
+            Report::Testing(_) => Vec::new(),
+        }
+    }
+}
+
+/// Serialized name of a finding's first dimension, used as its signal category.
+fn first_dimension<D: serde::Serialize>(dimensions: &std::collections::BTreeSet<D>) -> String {
+    dimensions
+        .iter()
+        .next()
+        .and_then(|dimension| serde_json::to_value(dimension).ok())
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Finding description bounded for use as signal evidence.
+fn bounded(text: &str) -> String {
+    const LIMIT: usize = 300;
+    match text.char_indices().nth(LIMIT) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_owned(),
+    }
+}
+
+/// A downstream pipeline deferred by `audit --pipeline full` until upstream work completes.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DeferredAdmission {
+    pub(crate) pipeline: String,
+    /// Audit arguments to replay, without `--pipeline`, so admission keeps the same scope.
+    pub(crate) audit_args: Vec<String>,
+}
+
+fn deferred_path(root: &std::path::Path, run: &argus_core::RunId) -> std::path::PathBuf {
+    root.join(".argus/state/deferred")
+        .join(format!("{}.json", run.as_str()))
+}
+
+/// Records that a downstream pipeline awaits upstream completion for a run.
+pub(crate) fn defer(
+    root: &std::path::Path,
+    run: &argus_core::RunId,
+    admission: &DeferredAdmission,
+) -> Result<(), argus_core::ArgusError> {
+    let path = deferred_path(root, run);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            argus_core::ArgusError::invariant("cannot create deferred admission directory")
+                .with_source(error)
+        })?;
+    }
+    let bytes = serde_json::to_vec_pretty(admission).map_err(|error| {
+        argus_core::ArgusError::invariant("cannot serialize deferred admission").with_source(error)
+    })?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, bytes)
+        .and_then(|()| std::fs::rename(&temporary, &path))
+        .map_err(|error| {
+            argus_core::ArgusError::invariant("cannot write deferred admission").with_source(error)
+        })
+}
+
+/// The deferred downstream admission for a run, if any.
+pub(crate) fn deferred(
+    root: &std::path::Path,
+    run: &argus_core::RunId,
+) -> Result<Option<DeferredAdmission>, argus_core::ArgusError> {
+    match std::fs::read(deferred_path(root, run)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+            argus_core::ArgusError::invalid_input("deferred admission record is invalid")
+                .with_source(error)
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(
+            argus_core::ArgusError::invariant("cannot read deferred admission").with_source(error),
+        ),
+    }
+}
+
+/// Clears a run's deferred admission once the downstream pipeline is admitted.
+pub(crate) fn clear_deferred(
+    root: &std::path::Path,
+    run: &argus_core::RunId,
+) -> Result<(), argus_core::ArgusError> {
+    match std::fs::remove_file(deferred_path(root, run)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(
+            argus_core::ArgusError::invariant("cannot clear deferred admission").with_source(error),
+        ),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Pipeline;
+    use super::{Pipeline, PipelineReport, Report};
 
     #[test]
     fn names_round_trip_and_alias_resolves() {
@@ -482,6 +672,81 @@ mod tests {
             );
         }
         assert_eq!(Pipeline::of_policy("unknown@1"), None);
+    }
+
+    #[test]
+    fn upstream_signals_skip_rejected_and_flag_accepted_findings() {
+        use argus_core::{AdjudicationState, Confidence, FindingId, RunId, Severity, TargetId};
+        let cluster =
+            |name: &str, targets: &[&str], adjudication| argus_report::CorrectnessFindingCluster {
+                id: FindingId::derive([name.as_bytes()]),
+                representative: argus_policies::CorrectnessCandidate {
+                    title: format!("{name} title"),
+                    description: "d".repeat(400),
+                    defect_kind: argus_policies::CorrectnessDefectKind::DemonstratedDefect,
+                    failure_path: "a -> b".to_owned(),
+                    severity: Severity::High,
+                    confidence: Confidence::from_basis_points(9_000).unwrap(),
+                    dimensions: std::collections::BTreeSet::from([
+                        argus_policies::CorrectnessDimension::BoundaryConditions,
+                    ]),
+                    citations: Vec::new(),
+                },
+                occurrences: targets
+                    .iter()
+                    .map(|target| argus_report::CorrectnessFindingOccurrence {
+                        work_item: argus_core::WorkItemId::derive([target.as_bytes()]),
+                        target: TargetId::derive([target.as_bytes()]),
+                        finding_index: 0,
+                        severity: Severity::High,
+                        confidence: Confidence::from_basis_points(9_000).unwrap(),
+                    })
+                    .collect(),
+                adjudication,
+            };
+        let report = PipelineReport {
+            pipeline: Pipeline::Correctness,
+            report: Report::Correctness(argus_report::CorrectnessReport {
+                schema_version: 1,
+                run_id: RunId::derive([b"run".as_slice()]),
+                policy_version: Pipeline::Correctness.policy_version().to_owned(),
+                summary: argus_report::CorrectnessReportSummary::default(),
+                finding_clusters: vec![
+                    cluster("accepted", &["a", "b"], AdjudicationState::Accepted),
+                    cluster("rejected", &["c"], AdjudicationState::Rejected),
+                    cluster("open", &["d"], AdjudicationState::Unreviewed),
+                ],
+                assessments: Vec::new(),
+            }),
+        };
+        let signals = report.upstream_signals();
+        let targets = signals
+            .iter()
+            .map(|signal| signal.target.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            signals.len(),
+            3,
+            "one signal per target; rejected findings dropped"
+        );
+        assert!(!targets.contains(&TargetId::derive([b"c".as_slice()])));
+        let accepted = signals.iter().filter(|signal| signal.accepted).count();
+        assert_eq!(accepted, 2);
+        assert!(
+            signals
+                .iter()
+                .all(|signal| signal.category == "boundary_conditions")
+        );
+        assert!(
+            signals
+                .iter()
+                .all(|signal| signal.summary.chars().count() <= 301)
+        );
+        assert!(
+            signals
+                .iter()
+                .all(|signal| signal.policy_version == "correctness-conservative@1")
+        );
     }
 
     #[test]

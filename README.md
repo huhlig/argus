@@ -69,6 +69,7 @@ Argus can be run directly using `cargo run` during development or installed glob
    # Or select a specific policy:
    # argus audit --pipeline documentation
    ```
+   *`full` defers the `testing` pipeline: `argus work` admits it once the other pipelines' work completes, so their findings become evidence for which code needs tests. Run `argus audit --pipeline testing` to admit it immediately with whatever findings exist.*
 
 6. **Execute review work using a configured provider**:
    ```bash

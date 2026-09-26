@@ -332,7 +332,7 @@ pub fn handle_json_rpc(root: &Path, request_json: &str) -> Option<String> {
                     serde_json::to_string(&response).ok()
                 }
                 "argus://policies" => {
-                    let policies_md = "# Argus Review Policies\n\n- `documentation`: Public API doc comment completeness and accuracy\n- `correctness`: Logic correctness, boundary invariant enforcement, and memory safety\n- `architecture`: Layer boundary enforcement and dependency isolation\n- `conformance`: Normative adherence to governing design documents (ADR, PRD)\n- `maintainability`: Complexity, cohesion, and anti-pattern analysis\n- `optimization`: Algorithmic efficiency, allocations, and resource utilization\n";
+                    let policies_md = "# Argus Review Policies\n\n- `documentation`: Public API doc comment completeness and accuracy\n- `correctness`: Logic correctness, boundary invariant enforcement, and memory safety\n- `architecture`: Layer boundary enforcement and dependency isolation\n- `conformance`: Normative adherence to governing design documents (ADR, PRD)\n- `maintainability`: Complexity, cohesion, and anti-pattern analysis\n- `optimization`: Algorithmic efficiency, allocations, and resource utilization\n- `testing`: Code that needs tests at unit, library, and project level, informed by the other pipelines' findings\n";
                     let response = JsonRpcResponse {
                         jsonrpc: "2.0".to_owned(),
                         id,
