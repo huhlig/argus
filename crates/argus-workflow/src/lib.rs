@@ -56,6 +56,9 @@ mod outcome;
 mod outcome_actor;
 mod recovery;
 mod review_actor;
+mod testing_plan;
+mod testing_review;
+mod testing_scope;
 mod workflow_data;
 
 use langchart_model::{validation::CompiledWorkflow, workflow::WorkflowDocument};
@@ -195,6 +198,13 @@ pub use review_actor::{
     PolicyAssessmentContract, PolicyReviewDecisionValidator, PrimaryReviewActor,
     ReviewDecisionValidator, review_decision_schema, review_decision_schema_for,
 };
+pub use testing_plan::{
+    TESTING_EVIDENCE_PACKAGE_ARTIFACT_KIND, TESTING_REVIEW_CONTEXT_ARTIFACT_KIND,
+    TESTING_REVIEW_PLAN_SCHEMA_VERSION, TestingEvidenceCatalog, TestingReviewAdmission,
+    TestingReviewBatch, TestingReviewMaterialization, TestingReviewPlan, TestingReviewPlanner,
+    TestingReviewUnit, UpstreamSignal,
+};
+pub use testing_review::{TestingAssessmentContract, testing_assessment_draft_schema};
 pub use workflow_data::{
     CandidateFindingRecord, EvidenceExpansionRecord, EvidenceRequestDecision,
     EvidenceRequestDisposition, PrimaryReviewDecision, ReviewWorkflowData,

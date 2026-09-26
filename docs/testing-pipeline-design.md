@@ -83,18 +83,20 @@ TypeScript, and one per file or inline `mod` in Rust, without double counting a
 Rust `mod x;` declaration and the file it points to.
 
 1. Collect the members assigned to the module, excluding test code.
-2. Build the unit evidence (§6.1). If it fits the evidence budget, admit one
-   module unit.
-3. If it does not fit, trim in this order, recording every omission in the
-   package so the model and the report can see it:
-   1. Drop bodies of trivial members (accessors, constructors, fewer than N
-      lines), keeping signatures.
-   2. Drop test bodies, keeping test names and locations.
-   3. Drop bodies of private members that have no upstream signal.
-4. If it still does not fit, split: admit one **callable unit** for each member
-   that has an upstream signal or is public, plus one module unit containing
-   only signatures. The work item records `split_from: <module target>` so
-   reports group them.
+2. Build the unit evidence (§6.1) as a few synthesized records, each trimmed to
+   a share of the unit's byte budget (member index 15%, source 45%, linked tests
+   30%, upstream signals 10%). Trimmed text ends with a note of how much was
+   omitted. The byte budget is `min(max_bytes, max_tokens × 4)` less a tenth for
+   envelope overhead.
+3. If the module's source does not fit its share, split: admit one **member
+   unit** for each member that is public or has an upstream signal, and keep the
+   module unit with member signatures in place of source. Member units record
+   `split_from: <module target>` so reports group them. Private members without
+   signals are reviewed only through their signature in the module unit.
+
+Aggregating evidence into a few records matters because the evidence package
+limits the number of items (32 locally, 16 in CI). One record per member would
+silently drop members from large modules.
 
 Modules with no non-test members are `NotApplicable`.
 
