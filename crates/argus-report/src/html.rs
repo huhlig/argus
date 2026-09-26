@@ -767,6 +767,7 @@ pub fn render_findings_html_report(
           <span class="pill" data-filter-type="policy" data-filter-val="conformance">Conformance</span>
           <span class="pill" data-filter-type="policy" data-filter-val="maintainability">Maintainability</span>
           <span class="pill" data-filter-type="policy" data-filter-val="optimization">Optimization</span>
+          <span class="pill" data-filter-type="policy" data-filter-val="testing">Testing</span>
         </div>
       </div>
 

@@ -21,9 +21,9 @@
 
 use crate::{
     ArchitectureReport, ConformanceReport, CorrectnessReport, DocumentationReport,
-    MaintainabilityReport, OptimizationReport, architecture_report_from_queue,
+    MaintainabilityReport, OptimizationReport, TestingReport, architecture_report_from_queue,
     conformance_report_from_queue, correctness_report_from_queue, documentation_report_from_queue,
-    maintainability_report_from_queue, optimization_report_from_queue,
+    maintainability_report_from_queue, optimization_report_from_queue, testing_report_from_queue,
 };
 use argus_core::{
     AdjudicationState, Confidence, FindingId, RunId, Severity, SourceLocation, TargetId,
@@ -705,6 +705,53 @@ pub fn extract_maintainability_findings(
         .collect()
 }
 
+/// Extract normalized differential findings from a testing report.
+#[must_use]
+pub fn extract_testing_findings(report: &TestingReport) -> Vec<DifferentialFinding> {
+    report
+        .finding_clusters
+        .iter()
+        .map(|cluster| {
+            let targets = std::iter::once(cluster.representative.subject.clone())
+                .chain(cluster.occurrences.iter().map(|o| o.target.clone()))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let locs = cluster
+                .representative
+                .citations
+                .iter()
+                .filter_map(|c| c.location.as_ref().map(format_loc))
+                .collect::<BTreeSet<_>>();
+            let primary_location = if !locs.is_empty() {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
+            } else {
+                None
+            };
+            let dimensions = cluster
+                .representative
+                .dimensions
+                .iter()
+                .map(|d| format!("{d:?}").to_lowercase())
+                .collect();
+            DifferentialFinding {
+                id: cluster.id.clone(),
+                policy: "testing".to_owned(),
+                title: cluster.representative.title.clone(),
+                severity: cluster.representative.severity,
+                confidence: cluster.representative.confidence,
+                targets,
+                primary_location,
+                description: cluster.representative.description.clone(),
+                dimensions,
+                category: FindingCategory::New,
+                adjudication: cluster.adjudication,
+                baseline_id: None,
+            }
+        })
+        .collect()
+}
+
 /// Extract normalized differential findings from an optimization report.
 #[must_use]
 pub fn extract_optimization_findings(report: &OptimizationReport) -> Vec<DifferentialFinding> {
@@ -979,6 +1026,16 @@ pub fn extract_all_findings_from_queue(
             findings.extend(extract_optimization_findings(&rep));
         }
     }
+    if records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("testing"))
+    {
+        if let Ok(rep) = testing_report_from_queue(queue, run_id.clone(), "testing-conservative@1")
+        {
+            findings.extend(extract_testing_findings(&rep));
+        }
+    }
 
     Ok(findings)
 }
@@ -1066,6 +1123,15 @@ pub fn extract_all_findings_from_bundle(
         }
     }
 
+    let testing_json = bundle.join("testing-report.json");
+    if testing_json.is_file() {
+        if let Ok(content) = fs::read_to_string(&testing_json) {
+            if let Ok(rep) = serde_json::from_str::<TestingReport>(&content) {
+                findings.extend(extract_testing_findings(&rep));
+            }
+        }
+    }
+
     let opt_json = bundle.join("optimization-report.json");
     if opt_json.is_file() {
         if let Ok(content) = fs::read_to_string(&opt_json) {
@@ -1125,6 +1191,11 @@ pub fn extract_all_findings_from_bundle(
             "optimization-conservative@1",
         ) {
             findings.extend(extract_optimization_findings(&rep));
+        }
+        if let Ok(rep) =
+            crate::write_testing_bundle_reports(bundle, run_id.clone(), "testing-conservative@1")
+        {
+            findings.extend(extract_testing_findings(&rep));
         }
     }
 

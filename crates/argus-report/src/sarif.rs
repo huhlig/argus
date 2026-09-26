@@ -380,6 +380,21 @@ pub fn build_rule_catalog() -> Vec<SarifRule> {
             help_uri: Some("https://github.com/huhlig/argus/tree/main/docs/policies#maintainability".to_owned()),
         },
         SarifRule {
+            id: "argus/testing".to_owned(),
+            name: "ArgusTestingReview".to_owned(),
+            short_description: SarifMultiformatMessageString {
+                text: "Identifies code that needs tests to protect correctness and performance".to_owned(),
+            },
+            full_description: Some(SarifMultiformatMessageString {
+                text: "Surfaces untested behaviour at unit, library, and project level, including upstream findings without regression tests."
+                    .to_owned(),
+            }),
+            default_configuration: Some(SarifReportingConfiguration {
+                level: SarifLevel::Note,
+            }),
+            help_uri: Some("https://github.com/huhlig/argus/tree/main/docs/testing-pipeline-design.md".to_owned()),
+        },
+        SarifRule {
             id: "argus/optimization".to_owned(),
             name: "ArgusOptimizationReview".to_owned(),
             short_description: SarifMultiformatMessageString {

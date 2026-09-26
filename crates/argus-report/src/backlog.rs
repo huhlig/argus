@@ -17,7 +17,7 @@
 
 use crate::{
     ArchitectureReport, ConformanceReport, CorrectnessReport, DocumentationReport,
-    MaintainabilityReport, OptimizationReport,
+    MaintainabilityReport, OptimizationReport, TestingReport,
 };
 use argus_core::{Confidence, FindingId, RunId, Severity, SourceLocation, TargetId};
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,8 @@ pub enum BacklogCategory {
     MissingTodo,
     /// General implementation or coverage gap.
     GeneralGap,
+    /// Code identified by the testing pipeline as needing tests.
+    MissingTests,
 }
 
 impl BacklogCategory {
@@ -47,6 +49,7 @@ impl BacklogCategory {
             Self::ScopeGap => "Scope Gaps & Invariants",
             Self::MissingTodo => "Documented Gaps Missing TODO Comments",
             Self::GeneralGap => "Implementation Gaps",
+            Self::MissingTests => "Missing Tests",
         }
     }
 }
@@ -513,6 +516,55 @@ pub fn extract_maintainability_backlog_items(report: &MaintainabilityReport) -> 
                 targets,
                 location,
                 policy: "maintainability".to_owned(),
+                description: cluster.representative.description.clone(),
+                dimensions,
+            });
+        }
+    }
+    items
+}
+
+/// Extract backlog items from testing report clusters.
+#[must_use]
+pub fn extract_testing_backlog_items(report: &TestingReport) -> Vec<BacklogItem> {
+    let mut items = Vec::new();
+    for cluster in &report.finding_clusters {
+        let dimensions: Vec<String> = cluster
+            .representative
+            .dimensions
+            .iter()
+            .map(|d| format!("{d:?}").to_lowercase())
+            .collect();
+
+        // Every test need is a backlog item; no keyword classification is needed.
+        {
+            let category = BacklogCategory::MissingTests;
+            let locs = cluster
+                .representative
+                .citations
+                .iter()
+                .filter_map(|c| c.location.as_ref().map(format_loc))
+                .collect::<BTreeSet<_>>();
+            let location = if !locs.is_empty() {
+                locs.into_iter().collect::<Vec<_>>().join(", ")
+            } else {
+                "none".to_owned()
+            };
+            let targets = std::iter::once(cluster.representative.subject.clone())
+                .chain(cluster.occurrences.iter().map(|o| o.target.clone()))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+
+            items.push(BacklogItem {
+                cluster_id: cluster.id.clone(),
+                title: cluster.representative.title.clone(),
+                category,
+                severity: cluster.representative.severity,
+                confidence: cluster.representative.confidence,
+                targets,
+                location,
+                policy: "testing".to_owned(),
                 description: cluster.representative.description.clone(),
                 dimensions,
             });

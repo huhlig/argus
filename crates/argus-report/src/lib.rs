@@ -30,6 +30,7 @@ mod optimization;
 mod optimization_evaluation;
 pub mod publish;
 pub mod sarif;
+mod testing;
 
 pub use architecture::{
     ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ARCHITECTURE_REPORT_SCHEMA_VERSION,
@@ -44,7 +45,7 @@ pub use architecture_evaluation::{
 };
 pub use backlog::{
     BacklogCategory, BacklogItem, BacklogReport, classify_backlog_finding, extract_backlog_report,
-    extract_conformance_backlog_items,
+    extract_conformance_backlog_items, extract_testing_backlog_items,
 };
 pub use conformance::{
     CONFORMANCE_ASSESSMENT_ARTIFACT_KIND, CONFORMANCE_REPORT_SCHEMA_VERSION,
@@ -75,7 +76,7 @@ pub use differential::{
     differential_report_from_queue, extract_all_findings_from_bundle,
     extract_all_findings_from_queue, extract_architecture_findings, extract_conformance_findings,
     extract_correctness_findings, extract_documentation_findings, extract_maintainability_findings,
-    extract_optimization_findings,
+    extract_optimization_findings, extract_testing_findings,
 };
 pub use evaluation::{
     DOCUMENTATION_CORPUS_SCHEMA_VERSION, DOCUMENTATION_EVALUATION_SCHEMA_VERSION,
@@ -118,6 +119,11 @@ pub use sarif::{
     SarifMessage, SarifMultiformatMessageString, SarifPhysicalLocation, SarifRegion, SarifReport,
     SarifReportingConfiguration, SarifResult, SarifRule, SarifRun, SarifTool, build_rule_catalog,
     parse_sarif_location, render_differential_sarif_report, render_sarif_report,
+};
+pub use testing::{
+    TESTING_ASSESSMENT_ARTIFACT_KIND, TESTING_REPORT_SCHEMA_VERSION, TestingFindingCluster,
+    TestingFindingOccurrence, TestingReport, TestingReportAssessment, TestingReportSummary,
+    testing_report_from_queue, write_testing_bundle_reports,
 };
 
 use argus_core::{
