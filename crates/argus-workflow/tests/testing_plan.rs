@@ -141,6 +141,26 @@ fn fixture(body_padding: usize) -> Fixture {
     fx.target(Callable, "noop", "src/lib.rs", Some("src/lib.rs"), Private);
     fx.target(Module, "tests", "src/lib.rs", Some("src/lib.rs"), Private);
     fx.target(Test, "add_works", "src/lib.rs", Some("tests"), Private);
+    fx.targets.push(Target {
+        id: id("api"),
+        kind: TargetKind::LanguageSpecific {
+            language: "rust".to_owned(),
+            kind: "cargo_target:test".to_owned(),
+        },
+        visibility: Public,
+        name: "api".to_owned(),
+        parent: Some(id("calc")),
+        location: Some(SourceLocation {
+            path: SourcePath::new("tests/api.rs").unwrap(),
+            bytes: ByteSpan::new(0, 0).unwrap(),
+            start: None,
+            end: None,
+        }),
+        inventory: InventoryState::Represented,
+        capabilities: Vec::new(),
+        diagnostic: None,
+    });
+    fx.target(File, "tests/api.rs", "tests/api.rs", Some("api"), Public);
     fx.target(File, "src/parser.rs", "src/parser.rs", Some("calc"), Public);
     fx.target(
         Callable,
@@ -289,6 +309,13 @@ fn module_unit_carries_members_linked_tests_and_signals() {
         vec![FindingId::derive([b"clamp-finding".as_slice()])]
     );
     assert_eq!(lib.accepted_signals, lib.upstream_signals);
+
+    let project = unit(
+        &plan,
+        &TargetId::derive([b"argus".as_slice(), b"testing-project-v1".as_slice()]),
+    );
+    let inventory = section(&plan, project, EvidenceKind::Test);
+    assert_eq!(inventory.matches("tests/api.rs").count(), 1, "{inventory}");
 
     let package = unit(&plan, &id("calc"));
     let summary = section(&plan, package, EvidenceKind::StaticAnalysis);

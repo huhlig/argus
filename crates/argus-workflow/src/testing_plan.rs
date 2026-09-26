@@ -1130,9 +1130,12 @@ impl<'a> PlanBuilder<'_, 'a> {
 
     fn inventory(&self, files: &[&Target], benchmarks: bool) -> String {
         let scope = &self.context.scope;
+        // A build target and its root file share a path; list each path once.
+        let mut paths = BTreeSet::new();
         let selected = files
             .iter()
             .filter(|file| scope.is_benchmark(&file.id) == benchmarks)
+            .filter(|file| paths.insert(location_text(file)))
             .collect::<Vec<_>>();
         if selected.is_empty() {
             return if benchmarks {
