@@ -23,6 +23,9 @@ use std::{
 
 mod inventory;
 mod mcp;
+mod pipeline;
+
+use pipeline::Pipeline;
 
 const HELP: &str = "Argus repository source intelligence
 
@@ -784,14 +787,14 @@ fn resolve_thresholds_path(
     }
 
     if let Some(ref thresh_cfg) = project_config.thresholds {
-        let configured = match pipeline {
-            "documentation" => thresh_cfg.documentation.as_deref(),
-            "correctness" => thresh_cfg.correctness.as_deref(),
-            "architecture" => thresh_cfg.architecture.as_deref(),
-            "optimization" | "performance" => thresh_cfg.optimization.as_deref(),
-            "maintainability" => thresh_cfg.maintainability.as_deref(),
-            "conformance" => thresh_cfg.conformance.as_deref(),
-            _ => None,
+        let configured = match Pipeline::parse(pipeline) {
+            Some(Pipeline::Documentation) => thresh_cfg.documentation.as_deref(),
+            Some(Pipeline::Correctness) => thresh_cfg.correctness.as_deref(),
+            Some(Pipeline::Architecture) => thresh_cfg.architecture.as_deref(),
+            Some(Pipeline::Optimization) => thresh_cfg.optimization.as_deref(),
+            Some(Pipeline::Maintainability) => thresh_cfg.maintainability.as_deref(),
+            Some(Pipeline::Conformance) => thresh_cfg.conformance.as_deref(),
+            Some(Pipeline::InternalDocumentation) | None => None,
         };
         if let Some(cfg_path) = configured {
             let p = std::path::PathBuf::from(cfg_path);
@@ -2182,18 +2185,7 @@ fn audit_command(
                 let val = iter
                     .next()
                     .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
-                if !matches!(
-                    val.as_str(),
-                    "documentation"
-                        | "internal-documentation"
-                        | "correctness"
-                        | "architecture"
-                        | "optimization"
-                        | "performance"
-                        | "maintainability"
-                        | "conformance"
-                        | "full"
-                ) {
+                if val != "full" && Pipeline::parse(&val).is_none() {
                     return Err(argus_core::ArgusError::invalid_input(usage));
                 }
                 pipeline = Some(val);
@@ -2755,36 +2747,24 @@ fn audit_command(
         inventory::describe(&inventory)
     );
 
-    match pipeline.as_str() {
-        "internal-documentation" => {
-            plan_documentation(true).map(|msg| format!("{preset_note}{msg}{next_step}"))
-        }
-        "documentation" => {
-            plan_documentation(false).map(|msg| format!("{preset_note}{msg}{next_step}"))
-        }
-        "correctness" => plan_correctness().map(|msg| format!("{preset_note}{msg}{next_step}")),
-        "architecture" => plan_architecture().map(|msg| format!("{preset_note}{msg}{next_step}")),
-        "optimization" | "performance" => {
-            plan_optimization().map(|msg| format!("{preset_note}{msg}{next_step}"))
-        }
-        "maintainability" => {
-            plan_maintainability().map(|msg| format!("{preset_note}{msg}{next_step}"))
-        }
-        "conformance" => plan_conformance().map(|msg| format!("{preset_note}{msg}{next_step}")),
-        "full" => {
-            let doc_msg = plan_documentation(false)?;
-            let internal_doc_msg = plan_documentation(true)?;
-            let corr_msg = plan_correctness()?;
-            let arch_msg = plan_architecture()?;
-            let opt_msg = plan_optimization()?;
-            let maint_msg = plan_maintainability()?;
-            let conf_msg = plan_conformance()?;
-            Ok(format!(
-                "{preset_note}{doc_msg}\n{internal_doc_msg}\n{corr_msg}\n{arch_msg}\n{opt_msg}\n{maint_msg}\n{conf_msg}{next_step}"
-            ))
-        }
-        _ => unreachable!(),
-    }
+    let plan = |pipeline: Pipeline| match pipeline {
+        Pipeline::Documentation => plan_documentation(false),
+        Pipeline::InternalDocumentation => plan_documentation(true),
+        Pipeline::Correctness => plan_correctness(),
+        Pipeline::Architecture => plan_architecture(),
+        Pipeline::Optimization => plan_optimization(),
+        Pipeline::Maintainability => plan_maintainability(),
+        Pipeline::Conformance => plan_conformance(),
+    };
+    let selected = match Pipeline::parse(&pipeline) {
+        Some(pipeline) => vec![pipeline],
+        None => Pipeline::ALL.to_vec(),
+    };
+    let messages = selected
+        .into_iter()
+        .map(plan)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(format!("{preset_note}{}{next_step}", messages.join("\n")))
 }
 
 fn work_command(
@@ -2812,17 +2792,13 @@ fn work_command_with_env(
         None
     };
 
-    let policy_name = match policy_arg.as_deref() {
-        Some("documentation") => "documentation",
-        Some("internal-documentation") => "internal-documentation",
-        Some("correctness") => "correctness",
-        Some("architecture") => "architecture",
-        Some("optimization") | Some("performance") => "optimization",
-        Some("maintainability") => "maintainability",
-        Some("conformance") => "conformance",
-        Some("all") | None => "all",
-        _ => return Err(argus_core::ArgusError::invalid_input(usage)),
+    let selected = match policy_arg.as_deref() {
+        Some("all") | None => None,
+        Some(name) => Some(
+            Pipeline::parse(name).ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?,
+        ),
     };
+    let policy_name = selected.map_or("all", Pipeline::name);
     let mut preset = PipelinePreset::Local;
     let mut profile_name = None;
     let mut limit: Option<usize> = Some(1);
@@ -2984,65 +2960,22 @@ fn work_command_with_env(
         }
     }
 
-    let work_result = match policy_name {
-        "internal-documentation" => runtime.block_on(execute_documentation_policy_work(
-            root,
-            profile,
-            limit,
-            concurrency,
-            fail_fast,
-            true,
-        ))?,
-        "documentation" => runtime.block_on(execute_documentation_work(
+    let work_result = match selected {
+        Some(pipeline) => runtime.block_on(execute_pipeline_work(
+            pipeline,
             root,
             profile,
             limit,
             concurrency,
             fail_fast,
         ))?,
-        "correctness" => runtime.block_on(execute_correctness_work(
+        None => runtime.block_on(execute_all_work(
             root,
             profile,
             limit,
             concurrency,
             fail_fast,
         ))?,
-        "architecture" => runtime.block_on(execute_architecture_work(
-            root,
-            profile,
-            limit,
-            concurrency,
-            fail_fast,
-        ))?,
-        "optimization" => runtime.block_on(execute_optimization_work(
-            root,
-            profile,
-            limit,
-            concurrency,
-            fail_fast,
-        ))?,
-        "maintainability" => runtime.block_on(execute_maintainability_work(
-            root,
-            profile,
-            limit,
-            concurrency,
-            fail_fast,
-        ))?,
-        "conformance" => runtime.block_on(execute_conformance_work(
-            root,
-            profile,
-            limit,
-            concurrency,
-            fail_fast,
-        ))?,
-        "all" => runtime.block_on(execute_all_work(
-            root,
-            profile,
-            limit,
-            concurrency,
-            fail_fast,
-        ))?,
-        _ => unreachable!(),
     };
 
     Ok(format!("{cache_prefix}{work_result}"))
@@ -3763,29 +3696,55 @@ async fn execute_all_work(
     concurrency: usize,
     fail_fast: bool,
 ) -> Result<String, argus_core::ArgusError> {
-    let doc_res =
-        execute_documentation_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
-    let internal_res = execute_documentation_policy_work(
-        root,
-        profile.clone(),
-        limit,
-        concurrency,
-        fail_fast,
-        true,
-    )
-    .await?;
-    let corr_res =
-        execute_correctness_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
-    let arch_res =
-        execute_architecture_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
-    let opt_res =
-        execute_optimization_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
-    let maint_res =
-        execute_maintainability_work(root, profile.clone(), limit, concurrency, fail_fast).await?;
-    let conf_res = execute_conformance_work(root, profile, limit, concurrency, fail_fast).await?;
-    Ok(format!(
-        "{doc_res}\n{internal_res}\n{corr_res}\n{arch_res}\n{opt_res}\n{maint_res}\n{conf_res}"
-    ))
+    let mut results = Vec::with_capacity(Pipeline::ALL.len());
+    for pipeline in Pipeline::ALL {
+        results.push(
+            execute_pipeline_work(
+                pipeline,
+                root,
+                profile.clone(),
+                limit,
+                concurrency,
+                fail_fast,
+            )
+            .await?,
+        );
+    }
+    Ok(results.join("\n"))
+}
+
+async fn execute_pipeline_work(
+    pipeline: Pipeline,
+    root: &std::path::Path,
+    profile: argus_provider::ProviderRuntimeProfile,
+    limit: Option<usize>,
+    concurrency: usize,
+    fail_fast: bool,
+) -> Result<String, argus_core::ArgusError> {
+    match pipeline {
+        Pipeline::Documentation => {
+            execute_documentation_work(root, profile, limit, concurrency, fail_fast).await
+        }
+        Pipeline::InternalDocumentation => {
+            execute_documentation_policy_work(root, profile, limit, concurrency, fail_fast, true)
+                .await
+        }
+        Pipeline::Correctness => {
+            execute_correctness_work(root, profile, limit, concurrency, fail_fast).await
+        }
+        Pipeline::Architecture => {
+            execute_architecture_work(root, profile, limit, concurrency, fail_fast).await
+        }
+        Pipeline::Optimization => {
+            execute_optimization_work(root, profile, limit, concurrency, fail_fast).await
+        }
+        Pipeline::Maintainability => {
+            execute_maintainability_work(root, profile, limit, concurrency, fail_fast).await
+        }
+        Pipeline::Conformance => {
+            execute_conformance_work(root, profile, limit, concurrency, fail_fast).await
+        }
+    }
 }
 
 fn check_unadmitted_run_warning(
@@ -5256,34 +5215,7 @@ fn finalize_command(
     let destination = root.join(".argus/reviews").join(id.as_str());
     let manifest = argus_storage::finalize_run_bundle(&queue, &id, &destination, now_millis()?)?;
 
-    let is_architecture = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("architecture"));
-    let is_correctness = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("correctness"));
-    let is_documentation = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy == "documentation-public-api@1");
-    let is_internal_documentation = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy == "documentation-internal@1");
-    let is_optimization = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("optimization"));
-    let is_maintainability = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("maintainability"));
-    let is_conformance = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("conformance"));
+    let present = Pipeline::present_in(&records);
 
     if inventory::has_run(root, &id) {
         let selected = inventory::for_run(root, &id, None)?;
@@ -5301,102 +5233,19 @@ fn finalize_command(
         )
         .map_err(io_error("cannot write inventory coverage"))?;
     }
-    let mut report_summaries = Vec::new();
-    if is_internal_documentation {
-        let report = argus_report::write_documentation_bundle_reports(
-            &destination,
-            id.clone(),
-            "documentation-internal@1",
-        )?;
-        report_summaries.push(format!(
-            "{} internal documentation assessments",
-            report.assessments.len()
-        ));
-    }
-    if is_documentation
-        || (!is_internal_documentation
-            && !is_architecture
-            && !is_correctness
-            && !is_optimization
-            && !is_maintainability
-            && !is_conformance)
+    // The public documentation report is the default bundle when no other pipeline ran.
+    let mut bundled = present;
+    if bundled
+        .iter()
+        .all(|pipeline| *pipeline == Pipeline::Documentation)
     {
-        let report = argus_report::write_documentation_bundle_reports(
-            &destination,
-            id.clone(),
-            "documentation-public-api@1",
-        )?;
-        report_summaries.push(format!(
-            "{} documentation assessments ({} candidates, {} unadjudicated)",
-            report.assessments.len(),
-            report.summary.candidate_findings,
-            report.summary.unadjudicated_findings,
-        ));
+        bundled.insert(Pipeline::Documentation);
     }
-    if is_correctness {
-        let report = argus_report::write_correctness_bundle_reports(
-            &destination,
-            id.clone(),
-            "correctness-conservative@1",
-        )?;
-        report_summaries.push(format!(
-            "{} correctness assessments ({} candidates, {} unadjudicated)",
-            report.assessments.len(),
-            report.summary.candidate_findings,
-            report.summary.unadjudicated_findings,
-        ));
-    }
-    if is_architecture {
-        let report = argus_report::write_architecture_bundle_reports(
-            &destination,
-            id.clone(),
-            "architecture-code-derived@1",
-        )?;
-        report_summaries.push(format!(
-            "{} architecture assessments ({} candidates, {} unadjudicated)",
-            report.assessments.len(),
-            report.summary.candidate_assessments,
-            report.summary.unadjudicated_findings,
-        ));
-    }
-    if is_optimization {
-        let report = argus_report::write_optimization_bundle_reports(
-            &destination,
-            id.clone(),
-            "optimization-conservative@1",
-        )?;
-        report_summaries.push(format!(
-            "{} optimization assessments ({} candidates, {} unadjudicated)",
-            report.assessments.len(),
-            report.summary.candidate_findings,
-            report.summary.unadjudicated_findings,
-        ));
-    }
-    if is_maintainability {
-        let report = argus_report::write_maintainability_bundle_reports(
-            &destination,
-            id.clone(),
-            "maintainability-conservative@1",
-        )?;
-        report_summaries.push(format!(
-            "{} maintainability assessments ({} candidates, {} unadjudicated)",
-            report.assessments.len(),
-            report.summary.candidate_findings,
-            report.summary.unadjudicated_findings,
-        ));
-    }
-    if is_conformance {
-        let report = argus_report::write_conformance_bundle_reports(
-            &destination,
-            id.clone(),
-            "conformance-design-aligned@1",
-        )?;
-        report_summaries.push(format!(
-            "{} conformance assessments ({} candidates, {} unadjudicated)",
-            report.assessments.len(),
-            report.summary.candidate_findings,
-            report.summary.unadjudicated_findings,
-        ));
+    let mut report_summaries = Vec::new();
+    for pipeline in bundled {
+        report_summaries.push(
+            pipeline::PipelineReport::write_bundle(pipeline, &destination, &id)?.bundle_summary(),
+        );
     }
     let msg = format!(
         "Finalized run {id} ({} work, {} outcomes, {} artifacts, {} adjudications, {} events; {})",
@@ -6030,131 +5879,16 @@ fn report_command_inner(
         }
     }
     let records = queue.run_records(&id)?;
-    let is_architecture = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("architecture"));
-    let is_correctness = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("correctness"));
-    let is_documentation = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy == "documentation-public-api@1");
-    let is_internal_documentation = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy == "documentation-internal@1");
-    let is_optimization = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("optimization"));
-    let is_maintainability = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("maintainability"));
-    let is_conformance = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("conformance"));
-    let internal_documentation = is_internal_documentation
-        .then(|| {
-            argus_report::documentation_report_from_queue(
-                &queue,
-                id.clone(),
-                "documentation-internal@1",
-            )
-        })
-        .transpose()?;
-    let policy_count = usize::from(is_architecture)
-        + usize::from(is_correctness)
-        + usize::from(is_documentation)
-        + usize::from(is_internal_documentation)
-        + usize::from(is_optimization)
-        + usize::from(is_maintainability)
-        + usize::from(is_conformance);
+    let present = Pipeline::present_in(&records);
+    let load = |pipeline: Pipeline| pipeline::PipelineReport::load(pipeline, &queue, &id);
 
     if format == "backlog" || format == "beads" || gaps_only {
-        let documentation = is_documentation
-            .then(|| {
-                argus_report::documentation_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "documentation-public-api@1",
-                )
-            })
-            .transpose()?;
-        let correctness = is_correctness
-            .then(|| {
-                argus_report::correctness_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "correctness-conservative@1",
-                )
-            })
-            .transpose()?;
-        let architecture = is_architecture
-            .then(|| {
-                argus_report::architecture_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "architecture-code-derived@1",
-                )
-            })
-            .transpose()?;
-        let optimization = is_optimization
-            .then(|| {
-                argus_report::optimization_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "optimization-conservative@1",
-                )
-            })
-            .transpose()?;
-        let maintainability = is_maintainability
-            .then(|| {
-                argus_report::maintainability_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "maintainability-conservative@1",
-                )
-            })
-            .transpose()?;
-        let conformance = is_conformance
-            .then(|| {
-                argus_report::conformance_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "conformance-design-aligned@1",
-                )
-            })
-            .transpose()?;
-
-        let mut backlog = argus_report::extract_backlog_report(
-            id.clone(),
-            documentation.as_ref(),
-            correctness.as_ref(),
-            architecture.as_ref(),
-            optimization.as_ref(),
-            maintainability.as_ref(),
-            conformance.as_ref(),
-        );
-
-        if let Some(report) = &internal_documentation {
-            let mut internal = argus_report::extract_backlog_report(
-                id.clone(),
-                Some(report),
-                None,
-                None,
-                None,
-                None,
-                None,
-            );
-            for item in &mut internal.items {
-                item.policy = "internal-documentation".to_owned();
-            }
-            backlog.items.extend(internal.items);
+        let mut backlog = argus_report::BacklogReport {
+            run_id: id.clone(),
+            items: Vec::new(),
+        };
+        for pipeline in &present {
+            backlog.items.extend(load(*pipeline)?.backlog_items(&id));
         }
         if let Some(sev) = severity_filter {
             backlog.items.retain(|item| item.severity == sev);
@@ -6190,455 +5924,57 @@ fn report_command_inner(
         };
     }
 
-    if policy_count > 1 {
+    if present.len() > 1 {
         if dimension_str.is_some() || severity_filter.is_some() {
             return Err(argus_core::ArgusError::invalid_input(
                 "dimension and severity filters require a single-policy run",
             ));
         }
-        let documentation = is_documentation
-            .then(|| {
-                argus_report::documentation_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "documentation-public-api@1",
-                )
-            })
-            .transpose()?;
-        let correctness = is_correctness
-            .then(|| {
-                argus_report::correctness_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "correctness-conservative@1",
-                )
-            })
-            .transpose()?;
-        let architecture = is_architecture
-            .then(|| {
-                argus_report::architecture_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "architecture-code-derived@1",
-                )
-            })
-            .transpose()?;
-        let optimization = is_optimization
-            .then(|| {
-                argus_report::optimization_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "optimization-conservative@1",
-                )
-            })
-            .transpose()?;
-        let maintainability = is_maintainability
-            .then(|| {
-                argus_report::maintainability_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "maintainability-conservative@1",
-                )
-            })
-            .transpose()?;
-        let conformance = is_conformance
-            .then(|| {
-                argus_report::conformance_report_from_queue(
-                    &queue,
-                    id.clone(),
-                    "conformance-design-aligned@1",
-                )
-            })
-            .transpose()?;
+        let reports = present
+            .iter()
+            .map(|pipeline| load(*pipeline))
+            .collect::<Result<Vec<_>, _>>()?;
         return match format {
-            "json" => serde_json::to_string_pretty(&serde_json::json!({
-                "run_id": id,
-                "documentation": documentation,
-                "internal_documentation": internal_documentation,
-                "correctness": correctness,
-                "architecture": architecture,
-                "optimization": optimization,
-                "maintainability": maintainability,
-                "conformance": conformance,
-            }))
-            .map_err(|error| {
-                argus_core::ArgusError::invariant("cannot serialize mixed policy report")
-                    .with_source(error)
-            }),
-            "jsonl" => {
-                let mut lines = Vec::new();
-                if let Some(report) = &internal_documentation {
-                    lines.extend(report.finding_clusters.iter().map(|finding| serde_json::json!({"policy": "internal-documentation", "finding": finding})));
+            "json" => {
+                let mut object = serde_json::Map::new();
+                object.insert("run_id".to_owned(), serde_json::json!(id));
+                for pipeline in Pipeline::ALL {
+                    let value = match reports.iter().find(|report| report.pipeline == pipeline) {
+                        Some(report) => report.to_json_value()?,
+                        None => serde_json::Value::Null,
+                    };
+                    object.insert(pipeline.name().replace('-', "_"), value);
                 }
-                if let Some(report) = &documentation {
-                    lines.extend(report.finding_clusters.iter().map(|finding| {
-                        serde_json::json!({"policy": "documentation", "finding": finding})
-                    }));
-                }
-                if let Some(report) = &correctness {
-                    lines.extend(report.finding_clusters.iter().map(
-                        |finding| serde_json::json!({"policy": "correctness", "finding": finding}),
-                    ));
-                }
-                if let Some(report) = &architecture {
-                    lines.extend(report.finding_clusters.iter().map(
-                        |finding| serde_json::json!({"policy": "architecture", "finding": finding}),
-                    ));
-                }
-                if let Some(report) = &optimization {
-                    lines.extend(report.finding_clusters.iter().map(
-                        |finding| serde_json::json!({"policy": "optimization", "finding": finding}),
-                    ));
-                }
-                if let Some(report) = &maintainability {
-                    lines.extend(report.finding_clusters.iter().map(
-                        |finding| serde_json::json!({"policy": "maintainability", "finding": finding}),
-                    ));
-                }
-                if let Some(report) = &conformance {
-                    lines.extend(report.finding_clusters.iter().map(
-                        |finding| serde_json::json!({"policy": "conformance", "finding": finding}),
-                    ));
-                }
-                lines
-                    .into_iter()
-                    .map(|line| serde_json::to_string(&line))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(|lines| lines.join("\n"))
-                    .map_err(|error| {
-                        argus_core::ArgusError::invariant("cannot serialize mixed policy findings")
-                            .with_source(error)
-                    })
+                serde_json::to_string_pretty(&serde_json::Value::Object(object)).map_err(|error| {
+                    argus_core::ArgusError::invariant("cannot serialize mixed policy report")
+                        .with_source(error)
+                })
             }
-            _ => Ok([
-                documentation.map(|report| report.to_markdown()),
-                internal_documentation.map(|report| report.to_markdown()),
-                correctness.map(|report| report.to_markdown()),
-                architecture.map(|report| report.to_markdown()),
-                optimization.map(|report| report.to_markdown()),
-                maintainability.map(|report| report.to_markdown()),
-                conformance.map(|report| report.to_markdown()),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("\n\n---\n\n")),
+            "jsonl" => reports
+                .iter()
+                .flat_map(pipeline::PipelineReport::tagged_findings)
+                .map(|line| serde_json::to_string(&line))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|lines| lines.join("\n"))
+                .map_err(|error| {
+                    argus_core::ArgusError::invariant("cannot serialize mixed policy findings")
+                        .with_source(error)
+                }),
+            _ => Ok(reports
+                .iter()
+                .map(pipeline::PipelineReport::to_markdown)
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n")),
         };
     }
 
-    if is_architecture {
-        let mut report = argus_report::architecture_report_from_queue(
-            &queue,
-            id,
-            "architecture-code-derived@1",
-        )?;
-
-        if let Some(dim_name) = dimension_str {
-            let dim: argus_policies::ArchitectureDimension = serde_json::from_value(
-                serde_json::Value::String(dim_name.clone()),
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input(format!(
-                    "unknown architecture dimension `{dim_name}`"
-                ))
-                .with_source(error)
-            })?;
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.dimensions.contains(&dim));
-        }
-        if let Some(sev) = severity_filter {
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.severity == sev);
-        }
-
-        match format {
-            "json" => {
-                let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
-                    argus_core::ArgusError::invariant("cannot serialize architecture report")
-                        .with_source(error)
-                })?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in serialized report")
-                        .with_source(error)
-                })
-            }
-            "jsonl" => {
-                let mut out = String::new();
-                for cluster in &report.finding_clusters {
-                    let line = serde_json::to_string(cluster).map_err(|error| {
-                        argus_core::ArgusError::invariant("cannot serialize finding cluster")
-                            .with_source(error)
-                    })?;
-                    out.push_str(&line);
-                    out.push('\n');
-                }
-                Ok(out.trim_end().to_owned())
-            }
-            _ => Ok(report.to_markdown()),
-        }
-    } else if is_correctness {
-        let mut report =
-            argus_report::correctness_report_from_queue(&queue, id, "correctness-conservative@1")?;
-
-        if let Some(dim_name) = dimension_str {
-            let dim: argus_policies::CorrectnessDimension = serde_json::from_value(
-                serde_json::Value::String(dim_name.clone()),
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input(format!(
-                    "unknown correctness dimension `{dim_name}`"
-                ))
-                .with_source(error)
-            })?;
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.dimensions.contains(&dim));
-        }
-        if let Some(sev) = severity_filter {
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.severity == sev);
-        }
-
-        match format {
-            "json" => {
-                let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
-                    argus_core::ArgusError::invariant("cannot serialize correctness report")
-                        .with_source(error)
-                })?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in serialized report")
-                        .with_source(error)
-                })
-            }
-            "jsonl" => {
-                let mut out = String::new();
-                for cluster in &report.finding_clusters {
-                    let line = serde_json::to_string(cluster).map_err(|error| {
-                        argus_core::ArgusError::invariant("cannot serialize finding cluster")
-                            .with_source(error)
-                    })?;
-                    out.push_str(&line);
-                    out.push('\n');
-                }
-                Ok(out.trim_end().to_owned())
-            }
-            _ => Ok(report.to_markdown()),
-        }
-    } else if is_optimization {
-        let mut report = argus_report::optimization_report_from_queue(
-            &queue,
-            id,
-            "optimization-conservative@1",
-        )?;
-
-        if let Some(dim_name) = dimension_str {
-            let dim: argus_policies::OptimizationDimension = serde_json::from_value(
-                serde_json::Value::String(dim_name.clone()),
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input(format!(
-                    "unknown optimization dimension `{dim_name}`"
-                ))
-                .with_source(error)
-            })?;
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.dimensions.contains(&dim));
-        }
-        if let Some(sev) = severity_filter {
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.severity == sev);
-        }
-
-        match format {
-            "json" => {
-                let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
-                    argus_core::ArgusError::invariant("cannot serialize optimization report")
-                        .with_source(error)
-                })?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in serialized report")
-                        .with_source(error)
-                })
-            }
-            "jsonl" => {
-                let mut out = String::new();
-                for cluster in &report.finding_clusters {
-                    let line = serde_json::to_string(cluster).map_err(|error| {
-                        argus_core::ArgusError::invariant("cannot serialize finding cluster")
-                            .with_source(error)
-                    })?;
-                    out.push_str(&line);
-                    out.push('\n');
-                }
-                Ok(out.trim_end().to_owned())
-            }
-            _ => Ok(report.to_markdown()),
-        }
-    } else if is_maintainability {
-        let mut report = argus_report::maintainability_report_from_queue(
-            &queue,
-            id,
-            "maintainability-conservative@1",
-        )?;
-
-        if let Some(dim_name) = dimension_str {
-            let dim: argus_policies::MaintainabilityDimension = serde_json::from_value(
-                serde_json::Value::String(dim_name.clone()),
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input(format!(
-                    "unknown maintainability dimension `{dim_name}`"
-                ))
-                .with_source(error)
-            })?;
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.dimensions.contains(&dim));
-        }
-        if let Some(sev) = severity_filter {
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.severity == sev);
-        }
-
-        match format {
-            "json" => {
-                let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
-                    argus_core::ArgusError::invariant("cannot serialize maintainability report")
-                        .with_source(error)
-                })?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in serialized report")
-                        .with_source(error)
-                })
-            }
-            "jsonl" => {
-                let mut out = String::new();
-                for cluster in &report.finding_clusters {
-                    let line = serde_json::to_string(cluster).map_err(|error| {
-                        argus_core::ArgusError::invariant("cannot serialize finding cluster")
-                            .with_source(error)
-                    })?;
-                    out.push_str(&line);
-                    out.push('\n');
-                }
-                Ok(out.trim_end().to_owned())
-            }
-            _ => Ok(report.to_markdown()),
-        }
-    } else if is_conformance {
-        let mut report = argus_report::conformance_report_from_queue(
-            &queue,
-            id,
-            "conformance-design-aligned@1",
-        )?;
-
-        if let Some(dim_name) = dimension_str {
-            let dim: argus_policies::ConformanceDimension = serde_json::from_value(
-                serde_json::Value::String(dim_name.clone()),
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input(format!(
-                    "unknown conformance dimension `{dim_name}`"
-                ))
-                .with_source(error)
-            })?;
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.dimensions.contains(&dim));
-        }
-        if let Some(sev) = severity_filter {
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.severity == sev);
-        }
-
-        match format {
-            "json" => {
-                let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
-                    argus_core::ArgusError::invariant("cannot serialize conformance report")
-                        .with_source(error)
-                })?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in serialized report")
-                        .with_source(error)
-                })
-            }
-            "jsonl" => {
-                let mut out = String::new();
-                for cluster in &report.finding_clusters {
-                    let line = serde_json::to_string(cluster).map_err(|error| {
-                        argus_core::ArgusError::invariant("cannot serialize finding cluster")
-                            .with_source(error)
-                    })?;
-                    out.push_str(&line);
-                    out.push('\n');
-                }
-                Ok(out.trim_end().to_owned())
-            }
-            _ => Ok(report.to_markdown()),
-        }
-    } else {
-        let mut report = argus_report::documentation_report_from_queue(
-            &queue,
-            id,
-            if is_internal_documentation {
-                "documentation-internal@1"
-            } else {
-                "documentation-public-api@1"
-            },
-        )?;
-
-        if let Some(dim_name) = dimension_str {
-            let dim: argus_policies::DocumentationDimension = serde_json::from_value(
-                serde_json::Value::String(dim_name.clone()),
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input(format!(
-                    "unknown documentation dimension `{dim_name}`"
-                ))
-                .with_source(error)
-            })?;
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.dimensions.contains(&dim));
-        }
-        if let Some(sev) = severity_filter {
-            report
-                .finding_clusters
-                .retain(|cluster| cluster.representative.severity == sev);
-        }
-
-        match format {
-            "json" => {
-                let bytes = serde_json::to_vec_pretty(&report).map_err(|error| {
-                    argus_core::ArgusError::invariant("cannot serialize documentation report")
-                        .with_source(error)
-                })?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in serialized report")
-                        .with_source(error)
-                })
-            }
-            "jsonl" => {
-                let mut out = String::new();
-                for cluster in &report.finding_clusters {
-                    let line = serde_json::to_string(cluster).map_err(|error| {
-                        argus_core::ArgusError::invariant("cannot serialize finding cluster")
-                            .with_source(error)
-                    })?;
-                    out.push_str(&line);
-                    out.push('\n');
-                }
-                Ok(out.trim_end().to_owned())
-            }
-            _ => Ok(report.to_markdown()),
-        }
+    // A run with no admitted pipeline work reports as public documentation.
+    let mut report = load(present.first().copied().unwrap_or(Pipeline::Documentation))?;
+    report.retain(dimension_str.as_deref(), severity_filter)?;
+    match format {
+        "json" => report.to_json_pretty(),
+        "jsonl" => report.to_jsonl(),
+        _ => Ok(report.to_markdown()),
     }
 }
 
@@ -6889,84 +6225,17 @@ pub(crate) fn adjudicate_command(
 
     let queue = working_queue(root)?;
     let records = queue.run_records(&run_id)?;
-    let is_architecture = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("architecture"));
-    let is_correctness = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("correctness"));
-    let is_optimization = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("optimization"));
-    let is_maintainability = records
-        .work
-        .iter()
-        .any(|w| w.coverage.policy.starts_with("maintainability"));
-
-    let finding_exists = if is_architecture {
-        let report = argus_report::architecture_report_from_queue(
-            &queue,
-            run_id.clone(),
-            "architecture-code-derived@1",
-        )?;
-        report
-            .finding_clusters
-            .iter()
-            .any(|cluster| cluster.id == finding)
-    } else if is_correctness {
-        let report = argus_report::correctness_report_from_queue(
-            &queue,
-            run_id.clone(),
-            "correctness-conservative@1",
-        )?;
-        report
-            .finding_clusters
-            .iter()
-            .any(|cluster| cluster.id == finding)
-    } else if is_optimization {
-        let report = argus_report::optimization_report_from_queue(
-            &queue,
-            run_id.clone(),
-            "optimization-conservative@1",
-        )?;
-        report
-            .finding_clusters
-            .iter()
-            .any(|cluster| cluster.id == finding)
-    } else if is_maintainability {
-        let report = argus_report::maintainability_report_from_queue(
-            &queue,
-            run_id.clone(),
-            "maintainability-conservative@1",
-        )?;
-        report
-            .finding_clusters
-            .iter()
-            .any(|cluster| cluster.id == finding)
-    } else {
-        let report = argus_report::documentation_report_from_queue(
-            &queue,
-            run_id.clone(),
-            "documentation-public-api@1",
-        )?;
-        report
-            .finding_clusters
-            .iter()
-            .any(|cluster| cluster.id == finding)
-    };
-
-    let finding_exists = finding_exists
-        || argus_report::documentation_report_from_queue(
-            &queue,
-            run_id.clone(),
-            "documentation-internal@1",
-        )?
-        .finding_clusters
-        .iter()
-        .any(|cluster| cluster.id == finding);
+    // Documentation reports are always searched, matching the default report fallback.
+    let mut searched = Pipeline::present_in(&records);
+    searched.insert(Pipeline::Documentation);
+    searched.insert(Pipeline::InternalDocumentation);
+    let mut finding_exists = false;
+    for pipeline in searched {
+        if pipeline::PipelineReport::load(pipeline, &queue, &run_id)?.contains_finding(&finding) {
+            finding_exists = true;
+            break;
+        }
+    }
     if !finding_exists {
         return Err(argus_core::ArgusError::invalid_input(
             "finding is not present in the audit report for this run",
@@ -7004,16 +6273,10 @@ fn evaluate_command(
     if is_help_flag(first.as_deref()) {
         return Ok(HELP_EVALUATE.to_owned());
     }
-    let pipeline = match first.as_deref() {
-        Some("documentation") => "documentation",
-        Some("internal-documentation") => "internal-documentation",
-        Some("correctness") => "correctness",
-        Some("architecture") => "architecture",
-        Some("optimization") | Some("performance") => "optimization",
-        Some("maintainability") => "maintainability",
-        Some("conformance") => "conformance",
-        _ => return Err(argus_core::ArgusError::invalid_input(usage)),
-    };
+    let pipeline = first
+        .as_deref()
+        .and_then(Pipeline::parse)
+        .ok_or_else(|| argus_core::ArgusError::invalid_input(usage))?;
     let mut corpus_path = None;
     let mut thresholds_path = None;
     let mut format = "markdown";
@@ -7093,138 +6356,50 @@ fn evaluate_command(
 
     let explicit_config = config_path.as_deref().map(std::path::Path::new);
     let project_config = load_project_config(root, explicit_config)?;
-    let resolved_thresholds =
-        resolve_thresholds_path(root, pipeline, thresholds_path.as_deref(), &project_config);
+    let resolved_thresholds = resolve_thresholds_path(
+        root,
+        pipeline.name(),
+        thresholds_path.as_deref(),
+        &project_config,
+    );
 
     if ci_mode && resolved_thresholds.is_none() {
         return Err(argus_core::ArgusError::invalid_input(format!(
-            "CI gate failure: no quality thresholds configured or found for '{pipeline}' review; supply --thresholds <path> or configure .argus/config/argus.json"
+            "CI gate failure: no quality thresholds configured or found for '{}' review; supply --thresholds <path> or configure .argus/config/argus.json",
+            pipeline.name()
         )));
     }
 
     let queue = working_queue(root)?;
 
-    if matches!(pipeline, "documentation" | "internal-documentation") {
-        let corpus: argus_report::DocumentationEvaluationCorpus = serde_json::from_slice(
-            &std::fs::read(path)
-                .map_err(io_error("cannot read documentation evaluation corpus"))?,
-        )
-        .map_err(|error| {
-            argus_core::ArgusError::invalid_input("documentation evaluation corpus is invalid")
-                .with_source(error)
-        })?;
-
-        let mut reports = Vec::with_capacity(run_ids.len());
-        let mut adjudications = Vec::new();
-        for run_id in &run_ids {
-            reports.push(argus_report::documentation_report_from_queue(
-                &queue,
-                run_id.clone(),
-                &corpus.policy_version,
-            )?);
-            adjudications.extend(queue.adjudications(run_id)?);
-        }
-        let evaluation = argus_report::evaluate_documentation(&corpus, &reports, &adjudications)?;
-
-        if let Some(ref t_path) = resolved_thresholds {
-            let thresholds: argus_report::DocumentationEvaluationThresholds =
-                serde_json::from_slice(
-                    &std::fs::read(t_path)
-                        .map_err(io_error("cannot read evaluation thresholds"))?,
-                )
-                .map_err(|error| {
-                    argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
-                        .with_source(error)
-                })?;
-            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
-                return Err(argus_core::ArgusError::invalid_input(format!(
-                    "Documentation evaluation quality thresholds unmet:\n  - {}",
-                    violations.join("\n  - ")
-                )));
-            }
-        }
-
-        match format {
-            "json" => {
-                let bytes = evaluation.to_json()?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in evaluation json")
-                        .with_source(error)
-                })
-            }
-            _ => Ok(evaluation.to_markdown()),
-        }
-    } else if pipeline == "correctness" {
-        let corpus: argus_report::CorrectnessEvaluationCorpus = serde_json::from_slice(
-            &std::fs::read(path).map_err(io_error("cannot read correctness evaluation corpus"))?,
-        )
-        .map_err(|error| {
-            argus_core::ArgusError::invalid_input("correctness evaluation corpus is invalid")
-                .with_source(error)
-        })?;
-
-        let mut reports = Vec::with_capacity(run_ids.len());
-        let mut adjudications = Vec::new();
-        for run_id in &run_ids {
-            reports.push(argus_report::correctness_report_from_queue(
-                &queue,
-                run_id.clone(),
-                &corpus.policy_version,
-            )?);
-            adjudications.extend(queue.adjudications(run_id)?);
-        }
-        let evaluation = argus_report::evaluate_correctness(&corpus, &reports, &adjudications)?;
-
-        if let Some(ref t_path) = resolved_thresholds {
-            let thresholds: argus_report::CorrectnessEvaluationThresholds = serde_json::from_slice(
-                &std::fs::read(t_path).map_err(io_error("cannot read evaluation thresholds"))?,
-            )
+    /// Scores runs against a corpus and enforces optional quality thresholds.
+    macro_rules! evaluate_pipeline {
+        ($name:literal, $label:literal, $corpus:ty, $thresholds:ty, $report_from_queue:path, $evaluate:path) => {{
+            let corpus: $corpus = serde_json::from_slice(&std::fs::read(&path).map_err(
+                io_error(concat!("cannot read ", $name, " evaluation corpus")),
+            )?)
             .map_err(|error| {
-                argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
-                    .with_source(error)
+                argus_core::ArgusError::invalid_input(concat!(
+                    $name,
+                    " evaluation corpus is invalid"
+                ))
+                .with_source(error)
             })?;
-            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
-                return Err(argus_core::ArgusError::invalid_input(format!(
-                    "Correctness evaluation quality thresholds unmet:\n  - {}",
-                    violations.join("\n  - ")
-                )));
+
+            let mut reports = Vec::with_capacity(run_ids.len());
+            let mut adjudications = Vec::new();
+            for run_id in &run_ids {
+                reports.push($report_from_queue(
+                    &queue,
+                    run_id.clone(),
+                    &corpus.policy_version,
+                )?);
+                adjudications.extend(queue.adjudications(run_id)?);
             }
-        }
+            let evaluation = $evaluate(&corpus, &reports, &adjudications)?;
 
-        match format {
-            "json" => {
-                let bytes = evaluation.to_json()?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in evaluation json")
-                        .with_source(error)
-                })
-            }
-            _ => Ok(evaluation.to_markdown()),
-        }
-    } else if pipeline == "optimization" {
-        let corpus: argus_report::OptimizationEvaluationCorpus = serde_json::from_slice(
-            &std::fs::read(path).map_err(io_error("cannot read optimization evaluation corpus"))?,
-        )
-        .map_err(|error| {
-            argus_core::ArgusError::invalid_input("optimization evaluation corpus is invalid")
-                .with_source(error)
-        })?;
-
-        let mut reports = Vec::with_capacity(run_ids.len());
-        let mut adjudications = Vec::new();
-        for run_id in &run_ids {
-            reports.push(argus_report::optimization_report_from_queue(
-                &queue,
-                run_id.clone(),
-                &corpus.policy_version,
-            )?);
-            adjudications.extend(queue.adjudications(run_id)?);
-        }
-        let evaluation = argus_report::evaluate_optimization(&corpus, &reports, &adjudications)?;
-
-        if let Some(ref t_path) = resolved_thresholds {
-            let thresholds: argus_report::OptimizationEvaluationThresholds =
-                serde_json::from_slice(
+            if let Some(ref t_path) = resolved_thresholds {
+                let thresholds: $thresholds = serde_json::from_slice(
                     &std::fs::read(t_path)
                         .map_err(io_error("cannot read evaluation thresholds"))?,
                 )
@@ -7232,170 +6407,77 @@ fn evaluate_command(
                     argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
                         .with_source(error)
                 })?;
-            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
-                return Err(argus_core::ArgusError::invalid_input(format!(
-                    "Optimization evaluation quality thresholds unmet:\n  - {}",
-                    violations.join("\n  - ")
-                )));
+                if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode)
+                {
+                    return Err(argus_core::ArgusError::invalid_input(format!(
+                        concat!($label, " evaluation quality thresholds unmet:\n  - {}"),
+                        violations.join("\n  - ")
+                    )));
+                }
             }
-        }
 
-        match format {
-            "json" => {
-                let bytes = evaluation.to_json()?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in evaluation json")
-                        .with_source(error)
-                })
+            match format {
+                "json" => {
+                    let bytes = evaluation.to_json()?;
+                    String::from_utf8(bytes).map_err(|error| {
+                        argus_core::ArgusError::invariant("invalid utf-8 in evaluation json")
+                            .with_source(error)
+                    })
+                }
+                _ => Ok(evaluation.to_markdown()),
             }
-            _ => Ok(evaluation.to_markdown()),
-        }
-    } else if pipeline == "maintainability" {
-        let corpus: argus_report::MaintainabilityEvaluationCorpus = serde_json::from_slice(
-            &std::fs::read(path)
-                .map_err(io_error("cannot read maintainability evaluation corpus"))?,
-        )
-        .map_err(|error| {
-            argus_core::ArgusError::invalid_input("maintainability evaluation corpus is invalid")
-                .with_source(error)
-        })?;
+        }};
+    }
 
-        let mut reports = Vec::with_capacity(run_ids.len());
-        let mut adjudications = Vec::new();
-        for run_id in &run_ids {
-            reports.push(argus_report::maintainability_report_from_queue(
-                &queue,
-                run_id.clone(),
-                &corpus.policy_version,
-            )?);
-            adjudications.extend(queue.adjudications(run_id)?);
-        }
-        let evaluation = argus_report::evaluate_maintainability(&corpus, &reports, &adjudications)?;
-
-        if let Some(ref t_path) = resolved_thresholds {
-            let thresholds: argus_report::MaintainabilityEvaluationThresholds =
-                serde_json::from_slice(
-                    &std::fs::read(t_path)
-                        .map_err(io_error("cannot read evaluation thresholds"))?,
-                )
-                .map_err(|error| {
-                    argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
-                        .with_source(error)
-                })?;
-            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
-                return Err(argus_core::ArgusError::invalid_input(format!(
-                    "Maintainability evaluation quality thresholds unmet:\n  - {}",
-                    violations.join("\n  - ")
-                )));
-            }
-        }
-
-        match format {
-            "json" => {
-                let bytes = evaluation.to_json()?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in evaluation json")
-                        .with_source(error)
-                })
-            }
-            _ => Ok(evaluation.to_markdown()),
-        }
-    } else if pipeline == "conformance" {
-        let corpus: argus_report::ConformanceEvaluationCorpus = serde_json::from_slice(
-            &std::fs::read(path).map_err(io_error("cannot read conformance evaluation corpus"))?,
-        )
-        .map_err(|error| {
-            argus_core::ArgusError::invalid_input("conformance evaluation corpus is invalid")
-                .with_source(error)
-        })?;
-
-        let mut reports = Vec::with_capacity(run_ids.len());
-        let mut adjudications = Vec::new();
-        for run_id in &run_ids {
-            reports.push(argus_report::conformance_report_from_queue(
-                &queue,
-                run_id.clone(),
-                &corpus.policy_version,
-            )?);
-            adjudications.extend(queue.adjudications(run_id)?);
-        }
-        let evaluation = argus_report::evaluate_conformance(&corpus, &reports, &adjudications)?;
-
-        if let Some(ref t_path) = resolved_thresholds {
-            let thresholds: argus_report::ConformanceEvaluationThresholds = serde_json::from_slice(
-                &std::fs::read(t_path).map_err(io_error("cannot read evaluation thresholds"))?,
-            )
-            .map_err(|error| {
-                argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
-                    .with_source(error)
-            })?;
-            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
-                return Err(argus_core::ArgusError::invalid_input(format!(
-                    "Conformance evaluation quality thresholds unmet:\n  - {}",
-                    violations.join("\n  - ")
-                )));
-            }
-        }
-
-        match format {
-            "json" => {
-                let bytes = evaluation.to_json()?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in evaluation json")
-                        .with_source(error)
-                })
-            }
-            _ => Ok(evaluation.to_markdown()),
-        }
-    } else {
-        let corpus: argus_report::ArchitectureEvaluationCorpus = serde_json::from_slice(
-            &std::fs::read(path).map_err(io_error("cannot read architecture evaluation corpus"))?,
-        )
-        .map_err(|error| {
-            argus_core::ArgusError::invalid_input("architecture evaluation corpus is invalid")
-                .with_source(error)
-        })?;
-
-        let mut reports = Vec::with_capacity(run_ids.len());
-        let mut adjudications = Vec::new();
-        for run_id in &run_ids {
-            reports.push(argus_report::architecture_report_from_queue(
-                &queue,
-                run_id.clone(),
-                &corpus.policy_version,
-            )?);
-            adjudications.extend(queue.adjudications(run_id)?);
-        }
-        let evaluation = argus_report::evaluate_architecture(&corpus, &reports, &adjudications)?;
-
-        if let Some(ref t_path) = resolved_thresholds {
-            let thresholds: argus_report::ArchitectureEvaluationThresholds =
-                serde_json::from_slice(
-                    &std::fs::read(t_path)
-                        .map_err(io_error("cannot read evaluation thresholds"))?,
-                )
-                .map_err(|error| {
-                    argus_core::ArgusError::invalid_input("evaluation thresholds file is invalid")
-                        .with_source(error)
-                })?;
-            if let Err(violations) = evaluation.check_thresholds_with_mode(&thresholds, ci_mode) {
-                return Err(argus_core::ArgusError::invalid_input(format!(
-                    "Architecture evaluation quality thresholds unmet:\n  - {}",
-                    violations.join("\n  - ")
-                )));
-            }
-        }
-
-        match format {
-            "json" => {
-                let bytes = evaluation.to_json()?;
-                String::from_utf8(bytes).map_err(|error| {
-                    argus_core::ArgusError::invariant("invalid utf-8 in evaluation json")
-                        .with_source(error)
-                })
-            }
-            _ => Ok(evaluation.to_markdown()),
-        }
+    match pipeline {
+        Pipeline::Documentation | Pipeline::InternalDocumentation => evaluate_pipeline!(
+            "documentation",
+            "Documentation",
+            argus_report::DocumentationEvaluationCorpus,
+            argus_report::DocumentationEvaluationThresholds,
+            argus_report::documentation_report_from_queue,
+            argus_report::evaluate_documentation
+        ),
+        Pipeline::Correctness => evaluate_pipeline!(
+            "correctness",
+            "Correctness",
+            argus_report::CorrectnessEvaluationCorpus,
+            argus_report::CorrectnessEvaluationThresholds,
+            argus_report::correctness_report_from_queue,
+            argus_report::evaluate_correctness
+        ),
+        Pipeline::Architecture => evaluate_pipeline!(
+            "architecture",
+            "Architecture",
+            argus_report::ArchitectureEvaluationCorpus,
+            argus_report::ArchitectureEvaluationThresholds,
+            argus_report::architecture_report_from_queue,
+            argus_report::evaluate_architecture
+        ),
+        Pipeline::Optimization => evaluate_pipeline!(
+            "optimization",
+            "Optimization",
+            argus_report::OptimizationEvaluationCorpus,
+            argus_report::OptimizationEvaluationThresholds,
+            argus_report::optimization_report_from_queue,
+            argus_report::evaluate_optimization
+        ),
+        Pipeline::Maintainability => evaluate_pipeline!(
+            "maintainability",
+            "Maintainability",
+            argus_report::MaintainabilityEvaluationCorpus,
+            argus_report::MaintainabilityEvaluationThresholds,
+            argus_report::maintainability_report_from_queue,
+            argus_report::evaluate_maintainability
+        ),
+        Pipeline::Conformance => evaluate_pipeline!(
+            "conformance",
+            "Conformance",
+            argus_report::ConformanceEvaluationCorpus,
+            argus_report::ConformanceEvaluationThresholds,
+            argus_report::conformance_report_from_queue,
+            argus_report::evaluate_conformance
+        ),
     }
 }
 
@@ -7857,21 +6939,8 @@ fn append_review_workflows_status(
     writeln!(output, "\nReview workflows:").expect("writing to a String cannot fail");
 
     for (policy, counts) in &counts_by_policy {
-        let label = if policy.starts_with("documentation") {
-            "Documentation"
-        } else if policy.starts_with("correctness") {
-            "Correctness"
-        } else if policy.starts_with("architecture") {
-            "Architecture"
-        } else if policy.starts_with("optimization") {
-            "Optimization"
-        } else if policy.starts_with("maintainability") {
-            "Maintainability"
-        } else if policy.starts_with("conformance") {
-            "Conformance"
-        } else {
-            policy.as_str()
-        };
+        let label =
+            Pipeline::of_policy(policy).map_or(policy.as_str(), |pipeline| pipeline.label());
         let cancelled_str = if counts.cancelled > 0 {
             format!(" cancelled={}", counts.cancelled)
         } else {

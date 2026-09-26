@@ -421,14 +421,13 @@ exists.
   normalized signal key.
 - **Path heuristics**: they may misclassify unusual layouts. The conventions are
   in one table, and the model may override them with a stated reason.
-- **main.rs growth**: the change adds roughly 15 more match sites. A pipeline
-  registry would reduce this, but it is out of scope and noted as follow-up
-  work.
+- **main.rs growth**: addressed by the Phase 0 pipeline registry (D10).
 
 ## 15. Implementation Phases
 
 | Phase | Work | Verification |
 |-------|------|--------------|
+| 0 | CLI pipeline registry (`Pipeline` enum, exhaustive matches replacing string switches) | Existing CLI tests pass unchanged; a test checks every pipeline name appears in each usage and help string |
 | 1 | `EvidenceKind::ReviewFinding`; Rust `Workspace` target | `cargo test -p argus-core -p argus-rust`; inventory tests updated |
 | 2 | Policy `testing.rs` (classes, applicability, dimensions) | Unit tests for applicability and level mapping |
 | 3 | Test-code recognition and test linking | Tests with Rust, Java, Python, and TypeScript fixtures, including the two-hop helper case and path-only external tests |
@@ -439,11 +438,10 @@ exists.
 | 8 | Report, format hooks, evaluation corpus, thresholds | `argus-report` tests; evaluation run meets thresholds |
 | 9 | CLI and MCP wiring, docs | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` |
 
-## 16. Open Questions
+## 16. Resolved Questions
 
-1. Trim and split thresholds (the N in §4.1, signal caps in §7.3): start from
-   the maintainability budget and tune against the corpus?
-2. Should accepted (human-adjudicated) upstream findings with no regression test
-   always be reported as High, whatever the model's severity?
-3. Should the pipeline registry refactor (§14) come before this work, to avoid
-   adding more match sites to `main.rs`?
+| # | Question | Decision |
+|---|----------|----------|
+| D8 | Trim and split thresholds, signal caps | Start from the maintainability budgets (local: 400,000 bytes / 80,000 tokens / 32 items; CI: 250,000 bytes / 50,000 tokens / 16 items) and tune against the evaluation corpus. |
+| D9 | Severity of accepted upstream findings with no regression test | Always **High**, whatever severity the model assigns. Enforced in validation, not only in the prompt. |
+| D10 | Pipeline registry before this work | Yes. Phase 0 replaces the string-matched pipeline switch points in `argus-cli` with a `Pipeline` enum, so adding `testing` is checked by the compiler rather than found by grep. |
