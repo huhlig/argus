@@ -75,8 +75,14 @@ the testing pipeline, not a review unit".
 
 ### 4.1 Per-module units and fallback
 
-1. Collect the module's direct members through `core:contains` (callables,
-   types, constants), excluding test code.
+A **module scope** is a `File` or `Module` target (or a language-specific
+module/namespace kind). Every production member (callable, type, constant) is
+assigned to its nearest module-scope ancestor along its `parent` chain, passing
+through types and impl blocks. This gives one unit per file in Python, Java, and
+TypeScript, and one per file or inline `mod` in Rust, without double counting a
+Rust `mod x;` declaration and the file it points to.
+
+1. Collect the members assigned to the module, excluding test code.
 2. Build the unit evidence (§6.1). If it fits the evidence budget, admit one
    module unit.
 3. If it does not fit, trim in this order, recording every omission in the
@@ -121,9 +127,11 @@ A target is **test code** if any of the following holds:
    - Directories: `tests/`, `test/`, `__tests__/`, `spec/`, `src/test/`, `testing/`
    - File names: `*_test.*`, `*_tests.*`, `test_*.py`, `*Test.java`, `*Tests.java`,
      `*IT.java`, `*.test.{js,ts,jsx,tsx}`, `*.spec.{js,ts,jsx,tsx}`, `conftest.py`
-3. It is contained, through `core:contains`, by a target that is test code
-   (for example Rust `mod tests` under `#[cfg(test)]` once the module is
-   classified, or a test class in Java).
+3. It is a module (not a file or package) that directly contains an
+   adapter-classified test target. This catches Rust `mod tests` blocks, whose
+   `#[tokio::test]` and similar functions the adapter reports as ordinary
+   callables.
+4. Its `parent` chain passes through a target that is test code.
 
 A target is **benchmark code** if it is test code and its path or kind indicates
 benchmarks: `benches/`, `bench/`, `benchmark(s)/`, `*_bench.*`, `*Benchmark.java`,
@@ -136,9 +144,22 @@ model may reclassify code when the source clearly contradicts the label.
 ### 5.1 Linking tests to code
 
 For a production target `T`, its **exercising tests** are test-code targets
-`S` with a relation `S --*:calls--> T` (any namespace ending in `:calls`),
-followed backward up to two hops through non-test helpers
-(`test -> helper -> T`).
+`S` linked to `T` by:
+
+- a `*:calls` or `*:references` relation `S -> T`, followed backward up to two
+  hops through non-test helpers (`test -> helper -> T`); or
+- a file-level `*:imports` relation from a test file to the file containing `T`.
+
+What adapters emit today (checked against a multi-language sample):
+
+| Adapter | Test-to-code links |
+|---------|--------------------|
+| Rust | `rust:calls` and `rust:references` (inferred), including from `tests/` into the crate |
+| Java | `java:calls` (exact) |
+| TypeScript | File-level `core:imports` only; `describe`/`it` callbacks are not captured as targets |
+| Python | None for cross-file test calls |
+
+Where no link exists, the test-file inventory by path (below) is the only signal.
 
 Known blind spots, stated in the prompt so "no linked tests" is treated as a
 signal and not proof:
@@ -344,13 +365,15 @@ evidence package. This uses the existing repair loop.
 
 `crates/argus-policies/src/testing.rs`:
 
-- `TestingTargetClass { Module, Callable (fallback only), Package, Project, TestCode, Unknown }`
+- `TestingTargetClass { Module, Member, Package, Project, Workspace, TestCode, Unknown }`
+  (`Member` covers callables, types, and constants; it is applicable only when
+  split out of an oversized module)
 - `TestingTargetProfile::from_target(target, is_test_code)`: `is_test_code` is
   computed by the planner (§5), keeping path heuristics out of the policy crate.
 - `TestingApplicabilityPolicy::conservative()`:
   - `Module`, `Package`, `Project` → `Applicable`
-  - `Callable` → `Applicable` only when created by the §4.1 split
-  - `TestCode`, `Unknown` → `NotApplicable`
+  - `Member` → `Applicable` only when created by the §4.1 split
+  - `Workspace`, `TestCode`, `Unknown` → `NotApplicable`
 - `TestingDimension` and `ALL_TESTING_DIMENSIONS`, with a level mapping.
 
 ## 10. Workflow Components
