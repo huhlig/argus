@@ -349,7 +349,13 @@ impl TargetCollector<'_> {
                 self.collect_variable(var_decl, parent_id, prefix, exported, Some(outer_start))?;
             }
             Statement::ExportDeclaration(export_decl) => {
-                self.collect_declaration(&export_decl.declaration, parent_id, prefix, true, Some(outer_start))?;
+                self.collect_declaration(
+                    &export_decl.declaration,
+                    parent_id,
+                    prefix,
+                    true,
+                    Some(outer_start),
+                )?;
             }
             Statement::ExportDefaultDeclaration(export_default) => {
                 match &export_default.declaration {
