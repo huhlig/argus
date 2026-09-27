@@ -487,4 +487,17 @@ exists.
 | Evidence granularity | Rows per evidence kind (§6) | Each unit's evidence is synthesized into a few records (member index, source, linked tests, benchmarks, upstream signals), each trimmed to a byte share | The evidence package's item cap (16 in CI) would otherwise drop members of large modules silently. |
 | Project unit | Adapter `Workspace` targets | One synthesized project target per run (§4.2) | The architecture planner rejects inventories with more than one `Workspace` target. |
 | Backlog | Not specified | New `MissingTests` backlog category; every test need is a backlog item | The keyword classifier used for other pipelines would drop most test needs. |
-| Evaluation corpus | Seeded corpus and thresholds (§11) | `argus evaluate testing` and the evaluation types exist; the seeded corpus and thresholds file are not yet written | Follow-up work. |
+| Evaluation corpus | Seeded corpus per language (§11) | Rust corpus v1 with eight seeded issues across all three levels and two clean controls; see `docs/testing-evaluation.md` | Other adapters' corpora follow once their test and evidence support matures (Java first). |
+
+## 18. Follow-up Work
+
+1. **Consolidate pipeline workers.** Each pipeline has a near-verbatim copy of the worker,
+   runtime, and outcome actor (~1,000 lines each; testing added the seventh). Replace them with
+   one generic worker parameterized by the pipeline's materialization, contract, and assessment
+   types, keeping the per-pipeline artifact kinds and prompt versions. Verify with the existing
+   worker tests plus a scripted-provider run per pipeline.
+2. **Java adapter evidence and test recognition.** The Java adapter emits no source evidence, so
+   Java units cannot be judged. It should emit source evidence and classify tests under
+   `src/test/` and JUnit/TestNG-annotated methods.
+3. **Architecture planner and multiple workspace targets.** Two workspace-emitting adapters in one
+   repository fail architecture planning (§4.2).

@@ -208,7 +208,7 @@ pub use testing_plan::{
     TESTING_EVIDENCE_PACKAGE_ARTIFACT_KIND, TESTING_REVIEW_CONTEXT_ARTIFACT_KIND,
     TESTING_REVIEW_PLAN_SCHEMA_VERSION, TestingEvidenceCatalog, TestingReviewAdmission,
     TestingReviewBatch, TestingReviewMaterialization, TestingReviewPlan, TestingReviewPlanner,
-    TestingReviewUnit, UpstreamSignal,
+    TestingReviewUnit, UpstreamSignal, testing_project_target,
 };
 pub use testing_review::{
     TestingAssessmentContract, TestingReviewTransportValidator, testing_assessment_draft_schema,

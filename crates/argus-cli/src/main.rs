@@ -12475,6 +12475,98 @@ public class App {
         primed.split_whitespace().nth(2).unwrap().to_owned()
     }
 
+    fn copy_tree(source: &std::path::Path, destination: &std::path::Path) {
+        std::fs::create_dir_all(destination).unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let target = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn testing_corpus_targets_match_the_seeded_workspace() {
+        let corpus: argus_report::TestingEvaluationCorpus = serde_json::from_str(include_str!(
+            "../../../docs/evaluation/testing-corpus-v1.json"
+        ))
+        .unwrap();
+        corpus.validate().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        copy_tree(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/evaluation/testing-corpus-v1-workspace"),
+            temporary.path(),
+        );
+        let run_id: argus_core::RunId = prime_rust(temporary.path()).parse().unwrap();
+        run(
+            ["audit", "--pipeline", "testing"]
+                .map(str::to_owned)
+                .into_iter(),
+            temporary.path(),
+        )
+        .unwrap();
+
+        let project = argus_workflow::testing_project_target();
+        let inventory_ids = inventory::load(temporary.path(), None)
+            .unwrap()
+            .targets
+            .into_iter()
+            .map(|target| target.id)
+            .collect::<BTreeSet<_>>();
+        let ground_truth = corpus
+            .expected_issues
+            .iter()
+            .map(|issue| (issue.id.as_str(), &issue.target))
+            .chain(
+                corpus
+                    .known_clean_targets
+                    .iter()
+                    .map(|target| ("known-clean", target)),
+            )
+            .collect::<Vec<_>>();
+        for (issue, target) in &ground_truth {
+            assert!(
+                inventory_ids.contains(*target) || **target == project,
+                "corpus target for `{issue}` is not in the seeded workspace inventory"
+            );
+        }
+
+        // Every seeded subject must be citable by the unit that reviews it.
+        let queue = working_queue(temporary.path()).unwrap();
+        let mut citable = BTreeSet::new();
+        let mut contexts = Vec::new();
+        for work in queue.run_records(&run_id).unwrap().work {
+            let admission: argus_workflow::TestingReviewAdmission =
+                serde_json::from_slice(&work.payload).unwrap();
+            let restored =
+                argus_workflow::TestingReviewMaterialization::restore(&queue, &admission).unwrap();
+            citable.extend(admission.unit.scope_targets.iter().cloned());
+            contexts.push(String::from_utf8(restored.context.canonical_json).unwrap());
+        }
+        for (issue, target) in &ground_truth {
+            assert!(
+                citable.contains(*target),
+                "`{issue}` is not citable by any unit"
+            );
+        }
+        // Clean controls are shown with the tests that cover them.
+        let util = contexts
+            .iter()
+            .find(|context| context.contains("Members and linked tests of module src/util.rs"))
+            .expect("util module unit");
+        for name in ["clamp_percent", "is_even"] {
+            assert!(
+                util.contains(&format!("callable {name} [Public]"))
+                    && util.contains("1 linked test(s)"),
+                "{name} not shown with its linked test"
+            );
+        }
+    }
+
     #[test]
     fn testing_pipeline_audit_finalize_and_report() {
         let temporary = testing_fixture();

@@ -310,10 +310,7 @@ fn module_unit_carries_members_linked_tests_and_signals() {
     );
     assert_eq!(lib.accepted_signals, lib.upstream_signals);
 
-    let project = unit(
-        &plan,
-        &TargetId::derive([b"argus".as_slice(), b"testing-project-v1".as_slice()]),
-    );
+    let project = unit(&plan, &argus_workflow::testing_project_target());
     let inventory = section(&plan, project, EvidenceKind::Test);
     assert_eq!(inventory.matches("tests/api.rs").count(), 1, "{inventory}");
 

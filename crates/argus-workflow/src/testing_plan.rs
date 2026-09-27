@@ -57,6 +57,12 @@ const LIBRARY_SIGNAL_POLICIES: [&str; 3] = ["architecture", "optimization", "cor
 /// Upstream pipelines whose findings inform project-level test needs.
 const PROJECT_SIGNAL_POLICIES: [&str; 2] = ["architecture", "conformance"];
 
+/// Identity of the synthesized repository-wide project unit, the same in every run.
+#[must_use]
+pub fn testing_project_target() -> TargetId {
+    TargetId::derive([b"argus".as_slice(), b"testing-project-v1".as_slice()])
+}
+
 /// A finding from another pipeline in the same run, normalized for use as evidence.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UpstreamSignal {
@@ -860,7 +866,7 @@ impl<'a> PlanBuilder<'_, 'a> {
     fn project_unit(&mut self, targets: &[Target]) {
         let scope = &self.context.scope;
         let share = |percent: usize| self.context.unit_bytes / 100 * percent;
-        let project = TargetId::derive([b"argus".as_slice(), b"testing-project-v1".as_slice()]);
+        let project = testing_project_target();
         let profile = TestingTargetProfile::project(project.clone(), "project".to_owned());
         let packages = targets
             .iter()

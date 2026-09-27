@@ -1,0 +1,14 @@
+[package]
+name = "argus-testing-corpus-v1"
+version = "1.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "inventory-cli"
+path = "src/main.rs"
+
+[workspace]
