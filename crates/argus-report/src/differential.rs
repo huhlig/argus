@@ -795,6 +795,10 @@ fn semantic_key(finding: &DifferentialFinding) -> (String, Option<TargetId>, Str
     (finding.policy.clone(), primary_target, normalized_title)
 }
 
+/// Unmatched baseline findings keyed by (policy, primary target, normalized title).
+type SemanticIndex =
+    BTreeMap<(String, Option<TargetId>, String), Vec<(usize, DifferentialFinding)>>;
+
 /// Compares a baseline finding collection against a current finding collection,
 /// performing two-tier matching to categorize findings into `New`, `Resolved`, and `Persistent`.
 #[must_use]
@@ -830,10 +834,7 @@ pub fn compare_findings(
     }
 
     // Tier 2: Resilient semantic matching for remaining unmatched findings
-    let mut remaining_baseline_by_semantic: BTreeMap<
-        (String, Option<TargetId>, String),
-        Vec<(usize, DifferentialFinding)>,
-    > = BTreeMap::new();
+    let mut remaining_baseline_by_semantic: SemanticIndex = BTreeMap::new();
 
     for (base_idx, base_finding) in baseline_findings.iter().enumerate() {
         if !matched_baseline_indices.contains(&base_idx) {

@@ -638,10 +638,9 @@ pub fn render_findings_html_report(
     );
 
     if let Some(ref base_id) = options.baseline_run_id {
-        let _ = write!(
+        let _ = writeln!(
             html,
-            r#"        <span class="tag">Baseline: {base_id}</span>
-"#
+            r#"        <span class="tag">Baseline: {base_id}</span>"#
         );
     }
 
@@ -838,10 +837,9 @@ pub fn render_findings_html_report(
             );
 
             if is_differential {
-                let _ = write!(
+                let _ = writeln!(
                     html,
-                    r#"            <span class="badge-cat {cat_str}">{cat_badge_text}</span>
-"#
+                    r#"            <span class="badge-cat {cat_str}">{cat_badge_text}</span>"#
                 );
             }
 
@@ -856,10 +854,9 @@ pub fn render_findings_html_report(
             );
 
             if let Some(ref loc) = finding.primary_location {
-                let _ = write!(
+                let _ = writeln!(
                     html,
-                    r#"          <span class="finding-location-preview">{}</span>
-"#,
+                    r#"          <span class="finding-location-preview">{}</span>"#,
                     escape_html(loc)
                 );
             }
@@ -905,16 +902,14 @@ pub fn render_findings_html_report(
             }
 
             if !finding.targets.is_empty() {
-                let targets_tags = finding
-                    .targets
-                    .iter()
-                    .map(|t| {
-                        format!(
-                            r#"<span class="pill-tag">{}</span>"#,
-                            escape_html(t.as_str())
-                        )
-                    })
-                    .collect::<String>();
+                let targets_tags = finding.targets.iter().fold(String::new(), |mut tags, t| {
+                    let _ = write!(
+                        tags,
+                        r#"<span class="pill-tag">{}</span>"#,
+                        escape_html(t.as_str())
+                    );
+                    tags
+                });
                 let _ = write!(
                     html,
                     r#"            <div class="meta-item">
@@ -929,8 +924,10 @@ pub fn render_findings_html_report(
                 let dim_tags = finding
                     .dimensions
                     .iter()
-                    .map(|d| format!(r#"<span class="pill-tag">{}</span>"#, escape_html(d)))
-                    .collect::<String>();
+                    .fold(String::new(), |mut tags, d| {
+                        let _ = write!(tags, r#"<span class="pill-tag">{}</span>"#, escape_html(d));
+                        tags
+                    });
                 let _ = write!(
                     html,
                     r#"            <div class="meta-item">

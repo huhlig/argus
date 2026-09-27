@@ -75,9 +75,9 @@ impl NativeRustRelationshipProvider {
             if !sources.contains_key(&location.path) {
                 sources.insert(location.path.clone(), source.read(&location.path)?);
             }
-            let bytes = sources
-                .get(&location.path)
-                .expect("relationship source was inserted");
+            let bytes = sources.get(&location.path).ok_or_else(|| {
+                argus_core::ArgusError::invariant("relationship source was not loaded")
+            })?;
             let start = usize::try_from(location.bytes.start).map_err(|error| {
                 argus_core::ArgusError::invariant(
                     "native relationship source start exceeds platform limits",

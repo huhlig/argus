@@ -1119,6 +1119,58 @@ fn dependency_cycles(
     scope_targets: &BTreeSet<TargetId>,
     relations: &[Relation],
 ) -> Vec<Vec<TargetId>> {
+    struct Tarjan<'a> {
+        adjacency: &'a BTreeMap<TargetId, Vec<TargetId>>,
+        next_index: usize,
+        stack: Vec<TargetId>,
+        on_stack: BTreeSet<TargetId>,
+        indices: BTreeMap<TargetId, usize>,
+        lowlinks: BTreeMap<TargetId, usize>,
+        cycles: Vec<Vec<TargetId>>,
+    }
+    impl Tarjan<'_> {
+        fn visit(&mut self, node: &TargetId) {
+            let index = self.next_index;
+            self.next_index += 1;
+            self.indices.insert(node.clone(), index);
+            self.lowlinks.insert(node.clone(), index);
+            self.stack.push(node.clone());
+            self.on_stack.insert(node.clone());
+
+            for neighbor in self.adjacency.get(node).cloned().unwrap_or_default() {
+                if !self.indices.contains_key(&neighbor) {
+                    self.visit(&neighbor);
+                    let lowlink = self.lowlinks[node].min(self.lowlinks[&neighbor]);
+                    self.lowlinks.insert(node.clone(), lowlink);
+                } else if self.on_stack.contains(&neighbor) {
+                    let lowlink = self.lowlinks[node].min(self.indices[&neighbor]);
+                    self.lowlinks.insert(node.clone(), lowlink);
+                }
+            }
+
+            if self.lowlinks[node] == self.indices[node] {
+                let mut component = Vec::new();
+                loop {
+                    let item = self.stack.pop().expect("Tarjan stack contains its root");
+                    self.on_stack.remove(&item);
+                    component.push(item.clone());
+                    if item == *node {
+                        break;
+                    }
+                }
+                component.sort();
+                let self_cycle = component.len() == 1
+                    && self
+                        .adjacency
+                        .get(&component[0])
+                        .is_some_and(|neighbors| neighbors.contains(&component[0]));
+                if component.len() > 1 || self_cycle {
+                    self.cycles.push(component);
+                }
+            }
+        }
+    }
+
     let mut adjacency = scope_targets
         .iter()
         .cloned()
@@ -1139,58 +1191,6 @@ fn dependency_cycles(
         targets.dedup();
     }
 
-    struct Tarjan<'a> {
-        adjacency: &'a BTreeMap<TargetId, Vec<TargetId>>,
-        next_index: usize,
-        stack: Vec<TargetId>,
-        on_stack: BTreeSet<TargetId>,
-        indices: BTreeMap<TargetId, usize>,
-        lowlinks: BTreeMap<TargetId, usize>,
-        cycles: Vec<Vec<TargetId>>,
-    }
-    impl Tarjan<'_> {
-        fn visit(&mut self, node: TargetId) {
-            let index = self.next_index;
-            self.next_index += 1;
-            self.indices.insert(node.clone(), index);
-            self.lowlinks.insert(node.clone(), index);
-            self.stack.push(node.clone());
-            self.on_stack.insert(node.clone());
-
-            for neighbor in self.adjacency.get(&node).cloned().unwrap_or_default() {
-                if !self.indices.contains_key(&neighbor) {
-                    self.visit(neighbor.clone());
-                    let lowlink = self.lowlinks[&node].min(self.lowlinks[&neighbor]);
-                    self.lowlinks.insert(node.clone(), lowlink);
-                } else if self.on_stack.contains(&neighbor) {
-                    let lowlink = self.lowlinks[&node].min(self.indices[&neighbor]);
-                    self.lowlinks.insert(node.clone(), lowlink);
-                }
-            }
-
-            if self.lowlinks[&node] == self.indices[&node] {
-                let mut component = Vec::new();
-                loop {
-                    let item = self.stack.pop().expect("Tarjan stack contains its root");
-                    self.on_stack.remove(&item);
-                    component.push(item.clone());
-                    if item == node {
-                        break;
-                    }
-                }
-                component.sort();
-                let self_cycle = component.len() == 1
-                    && self
-                        .adjacency
-                        .get(&component[0])
-                        .is_some_and(|neighbors| neighbors.contains(&component[0]));
-                if component.len() > 1 || self_cycle {
-                    self.cycles.push(component);
-                }
-            }
-        }
-    }
-
     let mut tarjan = Tarjan {
         adjacency: &adjacency,
         next_index: 0,
@@ -1202,7 +1202,7 @@ fn dependency_cycles(
     };
     for node in adjacency.keys() {
         if !tarjan.indices.contains_key(node) {
-            tarjan.visit(node.clone());
+            tarjan.visit(node);
         }
     }
     tarjan.cycles.sort();

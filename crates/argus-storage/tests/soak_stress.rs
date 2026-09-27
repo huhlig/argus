@@ -282,13 +282,8 @@ fn soak_storage_growth_and_memory_stability() {
         let run_id = audit_run.id.clone();
 
         worker_handles.push(thread::spawn(move || {
-            loop {
-                // Fixed nominal lease time so items are acquired and not expired while in flight
-                let leased = match q.lease_next(10_000, 60_000).unwrap() {
-                    Some(item) => item,
-                    None => break,
-                };
-
+            // Fixed nominal lease time so items are acquired and not expired while in flight
+            while let Some(leased) = q.lease_next(10_000, 60_000).unwrap() {
                 let done_now = c.fetch_add(10, Ordering::SeqCst);
                 let effective_key = format!("effective-{}", leased.id);
                 q.complete(&leased.id, &effective_key, b"pass").unwrap();

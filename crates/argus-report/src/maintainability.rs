@@ -289,9 +289,9 @@ impl MaintainabilityReport {
         let json_bytes = self.to_json()?;
         write_reconciled(&json_path, &json_bytes)?;
 
-        let jsonl_path = directory.join("maintainability-report.jsonl");
-        let jsonl_bytes = self.to_jsonl()?;
-        write_reconciled(&jsonl_path, &jsonl_bytes)?;
+        let lines_path = directory.join("maintainability-report.jsonl");
+        let lines_bytes = self.to_jsonl()?;
+        write_reconciled(&lines_path, &lines_bytes)?;
 
         let md_path = directory.join("maintainability-report.md");
         let md_bytes = self.to_markdown().into_bytes();

@@ -310,7 +310,9 @@ fn callable_spans_cover_exactly_their_declaration() {
             .find(|target| target.name == name)
             .and_then(|target| target.location.clone())
             .unwrap();
-        JAVA_SPANS[location.bytes.start as usize..location.bytes.end as usize].to_owned()
+        JAVA_SPANS[usize::try_from(location.bytes.start).unwrap()
+            ..usize::try_from(location.bytes.end).unwrap()]
+            .to_owned()
     };
     let first = text_of("first");
     assert!(first.starts_with("String first(String input) {"), "{first}");
@@ -332,7 +334,10 @@ fn callable_spans_cover_exactly_their_declaration() {
         .iter()
         .filter(|target| target.name == "Range")
         .filter_map(|target| target.location.clone())
-        .map(|location| &JAVA_SPANS[location.bytes.start as usize..location.bytes.end as usize])
+        .map(|location| {
+            &JAVA_SPANS[usize::try_from(location.bytes.start).unwrap()
+                ..usize::try_from(location.bytes.end).unwrap()]
+        })
         .find(|text| !text.contains("record"))
         .unwrap();
     assert!(constructor.trim_end().ends_with('}'), "{constructor}");

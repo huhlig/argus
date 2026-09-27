@@ -116,7 +116,8 @@ pub async fn discover_models(
     match kind {
         DiscoveredProviderKind::Lemonade
         | DiscoveredProviderKind::LmStudio
-        | DiscoveredProviderKind::Openai => {
+        | DiscoveredProviderKind::Openai
+        | DiscoveredProviderKind::Bedrock => {
             discover_openai_compatible_models(&client, endpoint, api_key).await
         }
         DiscoveredProviderKind::Ollama => discover_ollama_models(&client, endpoint).await,
@@ -128,9 +129,6 @@ pub async fn discover_models(
                 )
             })?;
             discover_anthropic_models(&client, endpoint, key).await
-        }
-        DiscoveredProviderKind::Bedrock => {
-            discover_openai_compatible_models(&client, endpoint, api_key).await
         }
         DiscoveredProviderKind::Watsonx => {
             discover_watsonx_models(&client, endpoint, api_key).await

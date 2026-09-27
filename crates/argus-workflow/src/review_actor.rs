@@ -43,6 +43,10 @@ pub trait PolicyAssessmentContract: Send + Sync {
     fn schema(&self) -> Value;
     fn validate(&self, event_type: &str, assessment: &Value) -> Result<(), String>;
     fn candidates(&self, assessment: &Value) -> Result<Vec<Value>, String>;
+    #[allow(
+        clippy::unnecessary_literal_bound,
+        reason = "implementations return per-contract instructions borrowed from `self`"
+    )]
     fn instructions(&self) -> &str {
         ""
     }
@@ -1118,12 +1122,6 @@ pub(crate) fn validate_candidate_draft(candidate: &Value) -> Result<(), String> 
 }
 
 fn review_event(output: &Value) -> Result<(&str, &Value), String> {
-    let object = output
-        .as_object()
-        .ok_or_else(|| "review output must be an object".to_owned())?;
-    if !object.contains_key("event_type") || !object.contains_key("payload") {
-        return Err("review output must contain only `event_type` and `payload`".to_owned());
-    }
     const ALLOWED_ROOT_KEYS: &[&str] = &[
         "event_type",
         "payload",
@@ -1134,6 +1132,12 @@ fn review_event(output: &Value) -> Result<(&str, &Value), String> {
         "reasoning",
         "$schema",
     ];
+    let object = output
+        .as_object()
+        .ok_or_else(|| "review output must be an object".to_owned())?;
+    if !object.contains_key("event_type") || !object.contains_key("payload") {
+        return Err("review output must contain only `event_type` and `payload`".to_owned());
+    }
     if object
         .keys()
         .any(|key| !ALLOWED_ROOT_KEYS.contains(&key.as_str()))
