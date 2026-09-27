@@ -105,6 +105,7 @@ impl ArchitectureAssessmentContract {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn from_context(
         work_item: WorkItemId,
         target: ArchitectureTargetProfile,

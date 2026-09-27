@@ -1094,6 +1094,7 @@ fn resolve_provider_profile_with_env(
     resolve_provider_profile_with_env_and_model(root, name_or_path, None, env_config_dir)
 }
 
+#[allow(clippy::too_many_lines)]
 fn resolve_provider_profile_with_env_and_model(
     root: &std::path::Path,
     name_or_path: &str,
@@ -2919,6 +2920,7 @@ fn work_command(
     work_command_with_env(root, args, env_config.as_deref())
 }
 
+#[allow(clippy::too_many_lines)]
 fn work_command_with_env(
     root: &std::path::Path,
     args: impl Iterator<Item = String>,
@@ -3514,6 +3516,7 @@ const CIRCUIT_BREAKER_CONSECUTIVE_FAILURES: usize = 5;
 /// that never yields back to the executor.
 const WORK_ITEM_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(3600);
 
+#[allow(clippy::too_many_lines)]
 async fn execute_concurrent_worker_pool<W, F, Fut>(
     category: &'static str,
     category_title: &'static str,
@@ -3923,6 +3926,7 @@ async fn execute_documentation_work(
     execute_documentation_policy_work(root, profile, limit, concurrency, fail_fast, false).await
 }
 
+#[allow(clippy::too_many_lines)]
 async fn execute_documentation_policy_work(
     root: &std::path::Path,
     profile: argus_provider::ProviderRuntimeProfile,
@@ -5027,6 +5031,7 @@ fn run_command(
     Ok(output)
 }
 
+#[allow(clippy::too_many_lines)]
 fn prime_command(
     root: &std::path::Path,
     args: impl Iterator<Item = String>,
@@ -5983,6 +5988,7 @@ pub(crate) fn report_command(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn report_command_inner(
     root: &std::path::Path,
     mut args: impl Iterator<Item = String>,
@@ -6990,6 +6996,7 @@ pub(crate) fn status_command(root: &std::path::Path) -> Result<String, argus_cor
     status_command_with_adapter(root, None)
 }
 
+#[allow(clippy::too_many_lines)]
 fn status_command_with_adapter(
     root: &std::path::Path,
     adapter: Option<&str>,
@@ -7584,6 +7591,7 @@ fn provider_command_with_env(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn provider_discover_command(
     _root: &std::path::Path,
     args: &[String],
@@ -7986,6 +7994,7 @@ fn provider_discover_command(
     Ok(output)
 }
 
+#[allow(clippy::too_many_lines)]
 fn provider_list_command(
     _root: &std::path::Path,
     args: &[String],
@@ -8420,6 +8429,7 @@ fn load_provider_spec(
     )))
 }
 
+#[allow(clippy::too_many_lines)]
 fn provider_test_command(
     root: &std::path::Path,
     args: &[String],
@@ -10654,6 +10664,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn audit_and_report_and_evaluate_architecture_pipeline() {
         let temporary = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -10985,6 +10996,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn work_command_supports_concurrency_flag_and_capacity_validation() {
         let temporary = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -11248,6 +11260,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn provider_test_offline_bedrock_success_and_json() {
         let temporary = tempfile::tempdir().unwrap();
         let providers_dir = temporary.path().join("providers");
@@ -11468,6 +11481,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn audit_and_report_backlog_and_gaps_pipeline() {
         let temporary = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -11715,6 +11729,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn worker_pool_shutdown_and_restart_recovery_validation() {
         let temporary = tempfile::tempdir().unwrap();
         let queue = std::sync::Arc::new(

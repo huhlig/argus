@@ -281,6 +281,7 @@ impl DifferentialReport {
 
     /// Render developer and PR friendly Markdown summary.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "# Argus Differential Review Report\n");
@@ -1046,6 +1047,7 @@ pub fn differential_report_from_queue(
 }
 
 /// Extract all findings from a review bundle directory (reading JSON reports or constructing them).
+#[allow(clippy::too_many_lines)]
 pub fn extract_all_findings_from_bundle(
     bundle: &Path,
     run_id: &RunId,

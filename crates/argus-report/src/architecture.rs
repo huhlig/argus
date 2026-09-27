@@ -585,6 +585,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn unadjudicated_and_adjudicated_architecture_findings_demarcation() {
         let run_id = RunId::derive([b"arch-adj-run".as_slice()]);
         let target_id = TargetId::derive([b"target-arch-1".as_slice()]);

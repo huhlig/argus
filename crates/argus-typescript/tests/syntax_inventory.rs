@@ -43,6 +43,7 @@ impl SourceAccess for MemorySource {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn extracts_all_typescript_syntax_symbols_and_jsdoc() {
     let source_code = r#"
 /**

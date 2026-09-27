@@ -301,6 +301,7 @@ pub fn parse_sarif_location(loc_str: &str) -> Option<SarifLocation> {
 
 /// Build standard rule catalog for Argus policies.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn build_rule_catalog() -> Vec<SarifRule> {
     vec![
         SarifRule {

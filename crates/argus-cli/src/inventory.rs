@@ -363,6 +363,7 @@ fn merge<K: Ord, T: PartialEq>(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn assemble(root: &Path, manifest: Manifest) -> Result<WorkspaceInventory, ArgusError> {
     let repository = argus_snapshot::SnapshotRepository::open(root.join(".argus/state/sources"))?;
     let snapshot = repository.load_manifest(&manifest.snapshot)?;

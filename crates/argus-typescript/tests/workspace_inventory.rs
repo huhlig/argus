@@ -42,6 +42,7 @@ impl SourceAccess for MemorySource {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn end_to_end_workspace_inventory_normalization_and_idempotency() {
     let pkg_json = r#"{
         "name": "sample-app",

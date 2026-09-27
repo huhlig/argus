@@ -109,6 +109,7 @@ impl MaintainabilityEvaluation {
         self.check_thresholds_with_mode(thresholds, false)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn check_thresholds_with_mode(
         &self,
         thresholds: &MaintainabilityEvaluationThresholds,
@@ -271,6 +272,7 @@ impl MaintainabilityEvaluationCorpus {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn evaluate_maintainability(
     corpus: &MaintainabilityEvaluationCorpus,
     reports: &[MaintainabilityReport],

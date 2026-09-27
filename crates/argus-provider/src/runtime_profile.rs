@@ -360,6 +360,7 @@ impl ProviderRuntimeProfile {
     ///
     /// Returns [`ProviderError`] if required secrets are missing, capabilities fail validation,
     /// or transport initialization fails.
+    #[allow(clippy::too_many_lines)]
     pub fn build_with_secrets(
         &self,
         mut read_secret: impl FnMut(&str) -> Option<String>,
@@ -533,13 +534,9 @@ impl ProviderTransportProfile {
     #[must_use]
     pub fn infer_deployment_mode(&self) -> DeploymentMode {
         match self {
-            Self::Ollama { base_url } => base_url
-                .as_deref()
-                .map_or(DeploymentMode::Local, crate::infer_deployment_mode),
-            Self::Lemonade { base_url, .. } => base_url
-                .as_deref()
-                .map_or(DeploymentMode::Local, crate::infer_deployment_mode),
-            Self::LmStudio { base_url, .. } => base_url
+            Self::Ollama { base_url }
+            | Self::Lemonade { base_url, .. }
+            | Self::LmStudio { base_url, .. } => base_url
                 .as_deref()
                 .map_or(DeploymentMode::Local, crate::infer_deployment_mode),
             Self::Anthropic { .. }

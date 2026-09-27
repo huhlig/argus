@@ -217,6 +217,7 @@ impl PrimaryReviewActor {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[async_trait]
 impl AgentActor for PrimaryReviewActor {
     async fn run(

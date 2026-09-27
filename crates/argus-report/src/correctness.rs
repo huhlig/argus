@@ -298,6 +298,7 @@ impl CorrectnessReport {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "# Correctness audit: {}\n", self.run_id);
@@ -592,6 +593,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn unadjudicated_and_adjudicated_correctness_findings_demarcation() {
         let run_id = RunId::derive([b"correctness-adj-run".as_slice()]);
         let target_id = TargetId::derive([b"target-1".as_slice()]);

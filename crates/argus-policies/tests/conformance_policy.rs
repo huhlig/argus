@@ -86,6 +86,7 @@ fn applicability_evaluation() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn assessment_draft_binding_and_validation() {
     let target = sample_target(PortableTargetKind::Type, TargetVisibility::Public);
     let profile = ConformanceTargetProfile::from_target(&target);

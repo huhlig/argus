@@ -120,6 +120,7 @@ impl MaintainabilityReport {
         Self::build_with_adjudications(run_id, policy_version, work, outcomes, artifacts, &[])
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn build_with_adjudications(
         run_id: RunId,
         policy_version: &str,
@@ -321,6 +322,7 @@ impl MaintainabilityReport {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(

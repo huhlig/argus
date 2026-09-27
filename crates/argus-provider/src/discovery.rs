@@ -20,6 +20,7 @@ use crate::{
     runtime_profile::{PROVIDER_CONFIG_SCHEMA_VERSION, PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION},
 };
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::{collections::BTreeSet, str::FromStr};
 use url::Url;
 
@@ -137,6 +138,7 @@ pub async fn discover_models(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn discover_watsonx_models(
     client: &reqwest::Client,
     base_url: &str,
@@ -215,7 +217,7 @@ async fn discover_watsonx_models(
         format!("{base_clean}/ml/v1/foundation_model_specs?version=2023-05-29")
     };
     if let Some(pid) = effective_pid.as_deref().filter(|p| !p.trim().is_empty()) {
-        url.push_str(&format!("&project_id={}", pid.trim()));
+        let _ = write!(url, "&project_id={}", pid.trim());
     }
 
     let response = client
@@ -481,7 +483,13 @@ pub fn infer_deployment_mode(endpoint: &str) -> DeploymentMode {
             }
         }
 
-        if host.ends_with(".local") || host.ends_with(".lan") || host.ends_with(".internal") {
+        // Host names are case-insensitive; `Url` lowercases only special schemes.
+        let private_suffix = host.rsplit_once('.').is_some_and(|(_, suffix)| {
+            ["local", "lan", "internal"]
+                .iter()
+                .any(|private| suffix.eq_ignore_ascii_case(private))
+        });
+        if private_suffix {
             return DeploymentMode::SameNetwork;
         }
     }
@@ -490,6 +498,7 @@ pub fn infer_deployment_mode(endpoint: &str) -> DeploymentMode {
 }
 
 /// Builds a complete `ProviderRuntimeProfile` for a discovered model.
+#[allow(clippy::too_many_lines)]
 pub fn generate_runtime_profile(
     kind: DiscoveredProviderKind,
     endpoint: &str,
@@ -715,6 +724,7 @@ pub fn slugify_model_alias(model_id: &str) -> String {
 }
 
 /// Generates a complete `ProviderConfig` containing all discovered models with aliases.
+#[allow(clippy::too_many_lines)]
 pub fn generate_provider_config(
     kind: DiscoveredProviderKind,
     endpoint: Option<&str>,

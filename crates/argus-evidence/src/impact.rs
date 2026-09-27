@@ -306,7 +306,9 @@ impl ImpactAnalysisReport {
         for (target, details) in &self.impact_details {
             for detail in details {
                 let reason = match detail.propagation_kind {
-                    ImpactPropagationKind::Direct => InvalidationReason::DirectModification,
+                    ImpactPropagationKind::Direct | ImpactPropagationKind::DesignLinkage => {
+                        InvalidationReason::DirectModification
+                    }
                     ImpactPropagationKind::DependencyForward => {
                         InvalidationReason::DownstreamDependencyModified {
                             dependency: detail.root_change.clone(),
@@ -322,7 +324,6 @@ impl ImpactAnalysisReport {
                             child: detail.root_change.clone(),
                         }
                     }
-                    ImpactPropagationKind::DesignLinkage => InvalidationReason::DirectModification,
                     ImpactPropagationKind::ConservativePartition => {
                         InvalidationReason::ConservativeIncompleteResolution {
                             partition: detail.root_change.clone(),

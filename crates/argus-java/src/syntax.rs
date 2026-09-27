@@ -507,6 +507,7 @@ impl JavaSyntaxProvider {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     fn extract_record(
         &self,
         path: &SourcePath,

@@ -493,6 +493,7 @@ impl<'a> ArchitectureReviewPlanner<'a> {
         Ok(self)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn plan(
         &self,
         snapshot: &SnapshotId,
@@ -722,6 +723,7 @@ fn normalize_architecture_targets(
     Ok(normalized)
 }
 
+#[allow(clippy::too_many_lines)]
 fn synthesize_scope_evidence(
     target: &Target,
     scope: ArchitectureScope,
@@ -1285,6 +1287,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn planner_creates_units_for_modules_packages_and_workspace() {
         let temporary = tempfile::tempdir().unwrap();
         let cache_directory = temporary.path().join("architecture-cache");

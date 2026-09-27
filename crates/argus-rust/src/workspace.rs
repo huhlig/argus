@@ -47,6 +47,7 @@ impl RustWorkspaceAdapter {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn emit_inventory(
         &self,
         source: &dyn SourceAccess,

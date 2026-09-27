@@ -96,6 +96,7 @@ impl DocumentationEvaluation {
         self.check_thresholds_with_mode(thresholds, false)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn check_thresholds_with_mode(
         &self,
         thresholds: &DocumentationEvaluationThresholds,
