@@ -1001,7 +1001,7 @@ fn prune_unreferenced_artifacts_removes_only_unreferenced() {
             &leased.id,
             "logical-1",
             b"payload-1",
-            &[art1.reference.clone()],
+            std::slice::from_ref(&art1.reference),
         )
         .unwrap();
 

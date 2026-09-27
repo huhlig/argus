@@ -5,8 +5,9 @@ use argus_language::{AdapterIdentity, AdapterInventory, InventorySink, SourceAcc
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     fs::File,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -56,11 +57,30 @@ pub(super) fn lock(root: &Path) -> Result<File, ArgusError> {
         .write(true)
         .open(dir.join("publication.lock"))
         .map_err(io_error("cannot open inventory lock"))?;
-    fs2::FileExt::try_lock_exclusive(&file).map_err(io_error(
-        "another inventory operation is active; retry when it finishes",
-    ))?;
-    Ok(file)
+    // A child process spawned by another thread (for example `cargo metadata`) briefly holds
+    // copies of every open descriptor until it execs, which keeps a just-released `flock`
+    // held. Retry for a short, bounded time before reporting a concurrent operation.
+    let deadline = std::time::Instant::now() + LOCK_RETRY_WINDOW;
+    loop {
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => return Ok(file),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => {
+                return Err(io_error(
+                    "another inventory operation is active; retry when it finishes",
+                )(error));
+            }
+        }
+    }
 }
+
+/// How long [`lock`] waits for a lock held only transiently before failing.
+const LOCK_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ArgusError> {
     let parent = path.parent().expect("inventory file has a parent");
@@ -102,16 +122,7 @@ fn read_manifest(path: &Path) -> Result<Manifest, ArgusError> {
 fn hash_file(path: &Path) -> Result<ContentHash, ArgusError> {
     let mut file = File::open(path).map_err(io_error("cannot hash inventory stream"))?;
     let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0_u8; 65536];
-    loop {
-        let size = file
-            .read(&mut buffer)
-            .map_err(io_error("cannot hash inventory stream"))?;
-        if size == 0 {
-            break;
-        }
-        hasher.update(&buffer[..size]);
-    }
+    std::io::copy(&mut file, &mut hasher).map_err(io_error("cannot hash inventory stream"))?;
     ContentHash::parse(hasher.finalize().to_hex().to_string())
 }
 
@@ -140,7 +151,7 @@ impl<'a> Publication<'a> {
     pub fn new(
         root: &'a Path,
         source: &'a dyn SourceAccess,
-        configuration: ConfigurationId,
+        configuration: &ConfigurationId,
     ) -> Result<Self, ArgusError> {
         let dir = directory(root, source.snapshot_id());
         std::fs::create_dir_all(&dir)
@@ -155,7 +166,7 @@ impl<'a> Publication<'a> {
                 adapters: BTreeMap::new(),
             }
         };
-        if manifest.snapshot != *source.snapshot_id() || manifest.configuration != configuration {
+        if manifest.snapshot != *source.snapshot_id() || manifest.configuration != *configuration {
             return Err(ArgusError::invariant(
                 "inventory manifest snapshot/configuration mismatch",
             ));
@@ -185,12 +196,12 @@ impl<'a> Publication<'a> {
             ContentHash::digest(semantic),
             selection,
         ))?);
-        if let Some(old) = self.manifest.adapters.get(&name) {
-            if old.input != input {
-                return Err(ArgusError::invalid_input(format!(
-                    "adapter {name} version/options/semantic inputs changed for this snapshot; rebuild its inventory with fresh state"
-                )));
-            }
+        if let Some(old) = self.manifest.adapters.get(&name)
+            && old.input != input
+        {
+            return Err(ArgusError::invalid_input(format!(
+                "adapter {name} version/options/semantic inputs changed for this snapshot; rebuild its inventory with fresh state"
+            )));
         }
         let mut sink = JsonLinesInventorySink::new(self.staged.path(), self.source, &name)?;
         sink.begin(inventory.adapter.clone(), inventory.snapshot.clone())?;
@@ -363,6 +374,7 @@ fn merge<K: Ord, T: PartialEq>(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn assemble(root: &Path, manifest: Manifest) -> Result<WorkspaceInventory, ArgusError> {
     let repository = argus_snapshot::SnapshotRepository::open(root.join(".argus/state/sources"))?;
     let snapshot = repository.load_manifest(&manifest.snapshot)?;
@@ -481,8 +493,14 @@ fn assemble(root: &Path, manifest: Manifest) -> Result<WorkspaceInventory, Argus
             partition.diagnostic.as_deref().unwrap_or("")
         ));
     }
-    let _ = atomic_write(&root.join(".argus/state/inventory/partitions.log"), log_content.as_bytes());
-    let _ = atomic_write(&directory(root, &manifest.snapshot).join("partitions.log"), log_content.as_bytes());
+    let _ = atomic_write(
+        &root.join(".argus/state/inventory/partitions.log"),
+        log_content.as_bytes(),
+    );
+    let _ = atomic_write(
+        &directory(root, &manifest.snapshot).join("partitions.log"),
+        log_content.as_bytes(),
+    );
 
     Ok(WorkspaceInventory {
         snapshot: manifest.snapshot.clone(),
@@ -500,8 +518,14 @@ fn assemble(root: &Path, manifest: Manifest) -> Result<WorkspaceInventory, Argus
 }
 
 fn compact_diagnostic(diag: Option<&str>) -> String {
-    let Some(diag) = diag else { return String::new() };
-    let parts: Vec<&str> = diag.split(';').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let Some(diag) = diag else {
+        return String::new();
+    };
+    let parts: Vec<&str> = diag
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
     if parts.is_empty() {
         return String::new();
     }
@@ -548,7 +572,17 @@ pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
         inventory.relations.len()
     );
     for (name, entry) in &inventory.manifest.adapters {
-        output.push_str(&format!("Adapter: {name}@{} targets={} evidence={} relations={} conflicts={} stream_bytes={} elapsed_millis={}\n", entry.adapter.version, entry.metrics.targets, entry.metrics.evidence, entry.metrics.relations, entry.metrics.conflicts, entry.metrics.stream_bytes, entry.metrics.elapsed_millis));
+        let _ = writeln!(
+            output,
+            "Adapter: {name}@{} targets={} evidence={} relations={} conflicts={} stream_bytes={} elapsed_millis={}",
+            entry.adapter.version,
+            entry.metrics.targets,
+            entry.metrics.evidence,
+            entry.metrics.relations,
+            entry.metrics.conflicts,
+            entry.metrics.stream_bytes,
+            entry.metrics.elapsed_millis
+        );
     }
     let mut counts = BTreeMap::<String, usize>::new();
     for target in &inventory.targets {
@@ -561,7 +595,7 @@ pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
             .or_default() += 1;
     }
     for (class, count) in counts {
-        output.push_str(&format!("{class}: {count}\n"));
+        let _ = writeln!(output, "{class}: {count}");
     }
     let mut complete_partitions = 0;
     let mut incomplete = Vec::new();
@@ -581,13 +615,14 @@ pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
                 let diag = compact_diagnostic(partition.diagnostic.as_deref());
                 output.push_str(&format!(
                     "{name}/{}\t{:?}\t{}\n",
-                    partition.name,
-                    partition.status,
-                    diag
+                    partition.name, partition.status, diag
                 ));
             }
         } else {
-            output.push_str(&format!("Partitions with limitations: {}\n", incomplete.len()));
+            output.push_str(&format!(
+                "Partitions with limitations: {}\n",
+                incomplete.len()
+            ));
             let mut issue_counts = BTreeMap::<String, usize>::new();
             for (_, partition) in &incomplete {
                 if let Some(ref d) = partition.diagnostic {
@@ -611,9 +646,7 @@ pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
                 let diag = compact_diagnostic(partition.diagnostic.as_deref());
                 output.push_str(&format!(
                     "  * {name}/{}\t{:?}\t{}\n",
-                    partition.name,
-                    partition.status,
-                    diag
+                    partition.name, partition.status, diag
                 ));
             }
             output.push_str(&format!(
@@ -623,16 +656,18 @@ pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
         }
     }
     for (name, conflict) in &inventory.conflicts {
-        output.push_str(&format!(
-            "Conflict {name}/{}: {}\n",
+        let _ = writeln!(
+            output,
+            "Conflict {name}/{}: {}",
             conflict.subject, conflict.detail
-        ));
+        );
     }
     if !inventory.missing_adapters.is_empty() {
-        output.push_str(&format!(
-            "Source languages outside selected inventory (detected by extension): {}\n",
+        let _ = writeln!(
+            output,
+            "Source languages outside selected inventory (detected by extension): {}",
             inventory.missing_adapters.join(", ")
-        ));
+        );
     }
     output.push_str("Discovery scope: captured snapshot files; adapter dependency/build exclusions and capability partitions apply. Counts are declarations, not source lines.\n");
     if !inventory.capture_issues.is_empty() {
@@ -701,15 +736,16 @@ pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
             ));
         }
     }
-    output.push_str(&format!(
-        "Retained identifiers: {}\n",
+    let _ = writeln!(
+        output,
+        "Retained identifiers: {}",
         inventory
             .manifest
             .adapters
             .values()
             .map(|e| e.metrics.retained_identifiers)
             .sum::<usize>()
-    ));
+    );
     output.trim_end().to_owned()
 }
 
@@ -811,6 +847,7 @@ mod tests {
 
     #[test]
     fn locks_release_and_unpublished_staging_is_invisible() {
+        use argus_language::LanguageAdapter;
         let dir = workspace();
         prime(dir.path(), "rust");
         let guard = lock(dir.path()).unwrap();
@@ -822,12 +859,11 @@ mod tests {
         let snapshot = repository.load_manifest(&loaded.snapshot).unwrap();
         let source = SnapshotSource(repository.reader(snapshot.clone()));
         let mut publication =
-            Publication::new(dir.path(), &source, snapshot.configuration.id.clone()).unwrap();
+            Publication::new(dir.path(), &source, &snapshot.configuration.id).unwrap();
         let adapter = argus_typescript::TypeScriptWorkspaceAdapter::new(
             snapshot.configuration.id,
             snapshot.files.keys().cloned().collect(),
         );
-        use argus_language::LanguageAdapter;
         publication
             .add(adapter.inventory(&source).unwrap(), &[], "default")
             .unwrap();
@@ -858,7 +894,7 @@ mod tests {
         let snapshot = repository.load_manifest(&loaded.snapshot).unwrap();
         let source = SnapshotSource(repository.reader(snapshot.clone()));
         let mut publication =
-            Publication::new(dir.path(), &source, snapshot.configuration.id).unwrap();
+            Publication::new(dir.path(), &source, &snapshot.configuration.id).unwrap();
         let inventory = super::super::read_inventory_stream(&path).unwrap();
         assert!(
             publication
@@ -1015,12 +1051,14 @@ mod tests {
         let mut inventory = load(dir.path(), None).unwrap();
         for i in 0..5 {
             inventory.excluded_typescript.push(
-                argus_core::SourcePath::new(format!("console/node_modules/pkg_a/file{i}.js")).unwrap(),
+                argus_core::SourcePath::new(format!("console/node_modules/pkg_a/file{i}.js"))
+                    .unwrap(),
             );
         }
         for i in 0..3 {
             inventory.excluded_typescript.push(
-                argus_core::SourcePath::new(format!("console/node_modules/pkg_b/file{i}.js")).unwrap(),
+                argus_core::SourcePath::new(format!("console/node_modules/pkg_b/file{i}.js"))
+                    .unwrap(),
             );
         }
         let desc = describe(&inventory);
@@ -1078,7 +1116,9 @@ mod tests {
         assert!(desc.contains("unknown character escape (16x)"));
         assert!(desc.contains("macro expansions are not represented (8x)"));
         assert!(desc.contains("Sample partitions with limitations:"));
-        assert!(desc.contains("unknown character escape (2x); macro expansions are not represented"));
+        assert!(
+            desc.contains("unknown character escape (2x); macro expansions are not represented")
+        );
         assert!(desc.contains("... and 3 additional partitions with limitations (logged to .argus/state/inventory/partitions.log)"));
     }
 }

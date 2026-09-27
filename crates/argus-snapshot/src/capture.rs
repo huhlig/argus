@@ -86,7 +86,15 @@ pub fn capture_snapshot(
     let ignore = crate::SnapshotIgnore::new(&root, &options.ignore)?;
     let mut files = BTreeMap::new();
     let mut issues = BTreeMap::new();
-    walk(&root, &root, options, &ignore, &repository, &mut files, &mut issues)?;
+    walk(
+        &root,
+        &root,
+        options,
+        &ignore,
+        &repository,
+        &mut files,
+        &mut issues,
+    )?;
     let vcs = vcs_state(&root);
     let mut manifest = SnapshotManifest {
         schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -228,7 +236,10 @@ fn capture_file(
         }
     };
     let mut is_binary = class == FileClass::Binary;
-    if !is_binary && (class == FileClass::Unsupported || class == FileClass::Source) && bytes.iter().take(8192).any(|&b| b == 0) {
+    if !is_binary
+        && (class == FileClass::Unsupported || class == FileClass::Source)
+        && bytes.iter().take(8192).any(|&b| b == 0)
+    {
         is_binary = true;
         class = FileClass::Binary;
     }
@@ -442,10 +453,10 @@ pub fn git_diff_delta(
                             if let Ok(old_p) = SourcePath::new(first_path) {
                                 delta.removed.insert(old_p);
                             }
-                            if let Some(new_file) = parts.next() {
-                                if let Ok(new_p) = SourcePath::new(new_file) {
-                                    delta.added.insert(new_p);
-                                }
+                            if let Some(new_file) = parts.next()
+                                && let Ok(new_p) = SourcePath::new(new_file)
+                            {
+                                delta.added.insert(new_p);
                             }
                         }
                         _ => {
@@ -496,10 +507,10 @@ pub fn git_diff_delta(
                 if let Ok(p) = SourcePath::new(file_path) {
                     delta.removed.insert(p);
                 }
-            } else if let Ok(p) = SourcePath::new(file_path) {
-                if !delta.added.contains(&p) {
-                    delta.modified.insert(p);
-                }
+            } else if let Ok(p) = SourcePath::new(file_path)
+                && !delta.added.contains(&p)
+            {
+                delta.modified.insert(p);
             }
         }
     }

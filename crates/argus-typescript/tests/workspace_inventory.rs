@@ -42,6 +42,7 @@ impl SourceAccess for MemorySource {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn end_to_end_workspace_inventory_normalization_and_idempotency() {
     let pkg_json = r#"{
         "name": "sample-app",
@@ -71,7 +72,7 @@ export class AppService {
 }
 "#;
 
-    let logger_ts = r#"
+    let logger_ts = r"
 /**
  * Application logger.
  */
@@ -80,7 +81,7 @@ export class Logger {
         console.log(msg);
     }
 }
-"#;
+";
 
     let pkg_path = SourcePath::new("package.json").unwrap();
     let index_path = SourcePath::new("src/index.ts").unwrap();

@@ -82,10 +82,9 @@ impl TypeScriptRelationshipProvider {
                 TargetKind::Portable {
                     kind: PortableTargetKind::File
                 }
-            ) {
-                if let Some(loc) = &target.location {
-                    file_targets.insert(loc.path.clone(), target);
-                }
+            ) && let Some(loc) = &target.location
+            {
+                file_targets.insert(loc.path.clone(), target);
             }
         }
 
@@ -102,27 +101,27 @@ impl TypeScriptRelationshipProvider {
 
         // 2. Inheritance and implementation links
         for inh in inheritances {
-            if let Some(super_target) = unique_symbols.get(inh.super_name.as_str()) {
-                if super_target.id != inh.sub_target_id {
-                    let kind = if inh.is_implements {
-                        "typescript:implements"
-                    } else {
-                        "typescript:extends"
-                    };
-                    let verb = if inh.is_implements {
-                        "implements"
-                    } else {
-                        "extends"
-                    };
-                    insert_relation(
-                        &mut relations,
-                        inh.sub_target_id.clone(),
-                        super_target.id.clone(),
-                        kind,
-                        &self.configuration,
-                        Some(format!("`{}` {verb} `{}`", inh.sub_name, inh.super_name)),
-                    );
-                }
+            if let Some(super_target) = unique_symbols.get(inh.super_name.as_str())
+                && super_target.id != inh.sub_target_id
+            {
+                let kind = if inh.is_implements {
+                    "typescript:implements"
+                } else {
+                    "typescript:extends"
+                };
+                let verb = if inh.is_implements {
+                    "implements"
+                } else {
+                    "extends"
+                };
+                insert_relation(
+                    &mut relations,
+                    inh.sub_target_id.clone(),
+                    super_target.id.clone(),
+                    kind,
+                    &self.configuration,
+                    Some(format!("`{}` {verb} `{}`", inh.sub_name, inh.super_name)),
+                );
             }
         }
 
@@ -132,23 +131,20 @@ impl TypeScriptRelationshipProvider {
                 // External npm module import, skip internal file edge
                 continue;
             }
-            if let Some(from_file_target) = file_targets.get(&imp.file_path) {
-                if let Some(resolved_path) =
+            if let Some(from_file_target) = file_targets.get(&imp.file_path)
+                && let Some(resolved_path) =
                     resolve_relative_import(source, &imp.file_path, &imp.source_module)
-                {
-                    if let Some(to_file_target) = file_targets.get(&resolved_path) {
-                        if from_file_target.id != to_file_target.id {
-                            insert_relation(
-                                &mut relations,
-                                from_file_target.id.clone(),
-                                to_file_target.id.clone(),
-                                "core:imports",
-                                &self.configuration,
-                                Some(format!("relative import `{}`", imp.source_module)),
-                            );
-                        }
-                    }
-                }
+                && let Some(to_file_target) = file_targets.get(&resolved_path)
+                && from_file_target.id != to_file_target.id
+            {
+                insert_relation(
+                    &mut relations,
+                    from_file_target.id.clone(),
+                    to_file_target.id.clone(),
+                    "core:imports",
+                    &self.configuration,
+                    Some(format!("relative import `{}`", imp.source_module)),
+                );
             }
         }
 
@@ -346,10 +342,10 @@ pub fn resolve_relative_import(
     for ext in extensions {
         let candidate_str = format!("{}{ext}", joined.to_string_lossy().replace('\\', "/"));
         let cleaned = normalize_clean_path(&candidate_str);
-        if let Ok(source_path) = SourcePath::new(cleaned) {
-            if source.contains(&source_path) {
-                return Some(source_path);
-            }
+        if let Ok(source_path) = SourcePath::new(cleaned)
+            && source.contains(&source_path)
+        {
+            return Some(source_path);
         }
     }
     None

@@ -57,6 +57,7 @@ impl SourceAccess for MemorySourceAccess {
 }
 
 #[test]
+#[allow(clippy::similar_names)]
 fn test_all_13_languages_extracted_and_normalized() {
     let cfg = ConfigurationId::derive([b"test-config".as_slice()]);
     let snap = SnapshotId::derive([b"test-snapshot".as_slice()]);

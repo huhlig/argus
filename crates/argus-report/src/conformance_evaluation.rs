@@ -116,30 +116,30 @@ impl ConformanceEvaluation {
         ci_mode: bool,
     ) -> Result<(), Vec<String>> {
         let mut violations = Vec::new();
-        if let Some(min_runs) = thresholds.min_runs {
-            if self.runs < min_runs {
-                violations.push(format!(
-                    "evaluated runs ({}) below minimum required ({min_runs})",
-                    self.runs
-                ));
-            }
+        if let Some(min_runs) = thresholds.min_runs
+            && self.runs < min_runs
+        {
+            violations.push(format!(
+                "evaluated runs ({}) below minimum required ({min_runs})",
+                self.runs
+            ));
         }
         let adjudicated = self.accepted_findings + self.rejected_findings + self.deferred_findings;
         if !(ci_mode && adjudicated == 0) {
-            if let Some(min_adjudicated) = thresholds.min_adjudicated_findings {
-                if adjudicated < min_adjudicated {
-                    violations.push(format!(
+            if let Some(min_adjudicated) = thresholds.min_adjudicated_findings
+                && adjudicated < min_adjudicated
+            {
+                violations.push(format!(
                         "adjudicated findings ({adjudicated}) below minimum required ({min_adjudicated})"
                     ));
-                }
             }
-            if let Some(max_unadjudicated) = thresholds.max_unadjudicated_findings {
-                if self.unadjudicated_findings > max_unadjudicated {
-                    violations.push(format!(
-                        "unadjudicated findings ({}) exceeds maximum threshold ({max_unadjudicated})",
-                        self.unadjudicated_findings
-                    ));
-                }
+            if let Some(max_unadjudicated) = thresholds.max_unadjudicated_findings
+                && self.unadjudicated_findings > max_unadjudicated
+            {
+                violations.push(format!(
+                    "unadjudicated findings ({}) exceeds maximum threshold ({max_unadjudicated})",
+                    self.unadjudicated_findings
+                ));
             }
         }
         if let Some(min_precision) = thresholds.min_precision_basis_points {
@@ -159,36 +159,34 @@ impl ConformanceEvaluation {
                 _ => {}
             }
         }
-        if let Some(min_recall) = thresholds.min_recall_basis_points {
-            if self.recall.basis_points < min_recall {
-                violations.push(format!(
-                    "recall {:.2}% is below threshold {:.2}%",
-                    f64::from(self.recall.basis_points) / 100.0,
-                    f64::from(min_recall) / 100.0
-                ));
-            }
+        if let Some(min_recall) = thresholds.min_recall_basis_points
+            && self.recall.basis_points < min_recall
+        {
+            violations.push(format!(
+                "recall {:.2}% is below threshold {:.2}%",
+                f64::from(self.recall.basis_points) / 100.0,
+                f64::from(min_recall) / 100.0
+            ));
         }
-        if let Some(max_dup) = thresholds.max_duplicate_rate_basis_points {
-            if let Some(dup) = self.duplicate_rate {
-                if dup.basis_points > max_dup {
-                    violations.push(format!(
-                        "duplicate rate {:.2}% exceeds maximum threshold {:.2}%",
-                        f64::from(dup.basis_points) / 100.0,
-                        f64::from(max_dup) / 100.0
-                    ));
-                }
-            }
+        if let Some(max_dup) = thresholds.max_duplicate_rate_basis_points
+            && let Some(dup) = self.duplicate_rate
+            && dup.basis_points > max_dup
+        {
+            violations.push(format!(
+                "duplicate rate {:.2}% exceeds maximum threshold {:.2}%",
+                f64::from(dup.basis_points) / 100.0,
+                f64::from(max_dup) / 100.0
+            ));
         }
-        if let Some(max_utv) = thresholds.max_unable_to_verify_rate_basis_points {
-            if let Some(utv) = self.unable_to_verify_rate {
-                if utv.basis_points > max_utv {
-                    violations.push(format!(
-                        "unable-to-verify rate {:.2}% exceeds maximum threshold {:.2}%",
-                        f64::from(utv.basis_points) / 100.0,
-                        f64::from(max_utv) / 100.0
-                    ));
-                }
-            }
+        if let Some(max_utv) = thresholds.max_unable_to_verify_rate_basis_points
+            && let Some(utv) = self.unable_to_verify_rate
+            && utv.basis_points > max_utv
+        {
+            violations.push(format!(
+                "unable-to-verify rate {:.2}% exceeds maximum threshold {:.2}%",
+                f64::from(utv.basis_points) / 100.0,
+                f64::from(max_utv) / 100.0
+            ));
         }
         if violations.is_empty() {
             Ok(())
@@ -262,10 +260,10 @@ pub fn evaluate_conformance(
                 Some(adjudication) => match adjudication.state {
                     AdjudicationState::Accepted => {
                         accepted_findings += 1;
-                        if let Some(ref issue_id) = adjudication.expected_issue {
-                            if expected_issue_ids.contains(issue_id.as_str()) {
-                                accepted_issues.insert((report.run_id.clone(), issue_id.clone()));
-                            }
+                        if let Some(ref issue_id) = adjudication.expected_issue
+                            && expected_issue_ids.contains(issue_id.as_str())
+                        {
+                            accepted_issues.insert((report.run_id.clone(), issue_id.clone()));
                         }
                     }
                     AdjudicationState::Rejected => rejected_findings += 1,

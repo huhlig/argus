@@ -171,10 +171,11 @@ impl DesignLinkageIndex {
         let mut results = Vec::new();
         if let Some(ids) = self.by_target.get(target_id) {
             for id in ids {
-                if let Some(link) = self.links.get(id) {
-                    if link.kind == DesignLinkKind::Governs && seen.insert(&link.artifact_id) {
-                        results.push(&link.artifact_id);
-                    }
+                if let Some(link) = self.links.get(id)
+                    && link.kind == DesignLinkKind::Governs
+                    && seen.insert(&link.artifact_id)
+                {
+                    results.push(&link.artifact_id);
                 }
             }
         }
@@ -188,10 +189,11 @@ impl DesignLinkageIndex {
         let mut results = Vec::new();
         if let Some(ids) = self.by_artifact.get(artifact_id) {
             for id in ids {
-                if let Some(link) = self.links.get(id) {
-                    if link.kind == DesignLinkKind::Governs && seen.insert(&link.target_id) {
-                        results.push(&link.target_id);
-                    }
+                if let Some(link) = self.links.get(id)
+                    && link.kind == DesignLinkKind::Governs
+                    && seen.insert(&link.target_id)
+                {
+                    results.push(&link.target_id);
                 }
             }
         }

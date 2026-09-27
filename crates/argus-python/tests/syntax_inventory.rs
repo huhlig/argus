@@ -42,6 +42,7 @@ impl SourceAccess for MemorySource {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn extracts_all_python_syntax_symbols_and_docstrings() {
     let source_code = r#""""Module level docstring documentation."""
 

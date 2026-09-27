@@ -1,6 +1,6 @@
 # Argus — Repository Source Intelligence & Automated Code Audit Engine
 
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-blue.svg)](https://www.rust-lang.org)
+[![Rust 1.96+](https://img.shields.io/badge/rust-1.96%2B-blue.svg)](https://www.rust-lang.org)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE.md)
 
 **Argus** is a high-performance, durable, content-addressed repository source intelligence and automated code/documentation review framework built in Rust. It performs snapshot-backed static target discovery, bounded evidence frame construction, policy applicability planning, durable task queueing, LLM provider orchestration, and structured review report generation.
@@ -69,6 +69,7 @@ Argus can be run directly using `cargo run` during development or installed glob
    # Or select a specific policy:
    # argus audit --pipeline documentation
    ```
+   *`full` defers the `testing` pipeline: `argus work` admits it once the other pipelines' work completes, so their findings become evidence for which code needs tests. Run `argus audit --pipeline testing` to admit it immediately with whatever findings exist.*
 
 6. **Execute review work using a configured provider**:
    ```bash

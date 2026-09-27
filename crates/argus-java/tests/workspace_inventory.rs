@@ -53,7 +53,7 @@ const POM_XML: &str = r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
     </dependencies>
 </project>"#;
 
-const BASE_JAVA: &str = r#"package com.example;
+const BASE_JAVA: &str = r"package com.example;
 
 /**
  * Base service class.
@@ -61,7 +61,7 @@ const BASE_JAVA: &str = r#"package com.example;
 public abstract class BaseService {
     public abstract void start();
 }
-"#;
+";
 
 const APP_JAVA: &str = r#"package com.example;
 

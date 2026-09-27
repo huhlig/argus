@@ -306,7 +306,9 @@ impl ImpactAnalysisReport {
         for (target, details) in &self.impact_details {
             for detail in details {
                 let reason = match detail.propagation_kind {
-                    ImpactPropagationKind::Direct => InvalidationReason::DirectModification,
+                    ImpactPropagationKind::Direct | ImpactPropagationKind::DesignLinkage => {
+                        InvalidationReason::DirectModification
+                    }
                     ImpactPropagationKind::DependencyForward => {
                         InvalidationReason::DownstreamDependencyModified {
                             dependency: detail.root_change.clone(),
@@ -322,7 +324,6 @@ impl ImpactAnalysisReport {
                             child: detail.root_change.clone(),
                         }
                     }
-                    ImpactPropagationKind::DesignLinkage => InvalidationReason::DirectModification,
                     ImpactPropagationKind::ConservativePartition => {
                         InvalidationReason::ConservativeIncompleteResolution {
                             partition: detail.root_change.clone(),
@@ -573,33 +574,34 @@ impl ImpactAnalyzer {
                 }
             }
         }
-        if let Some(base) = baseline_graph {
-            if let Some(incoming) = base.upstream_edges.get(removed) {
-                for (caller, _) in incoming {
-                    if graph.targets.contains(caller) && !directly_changed.contains(caller) {
-                        transitively_impacted.insert(caller.clone());
-                        affected_targets.insert(caller.clone());
-                        impact_details.entry(caller.clone()).or_default().push(
-                            TargetImpactDetail {
-                                target: caller.clone(),
-                                root_change: removed.clone(),
-                                propagation_kind: ImpactPropagationKind::DependencyForward,
-                                depth: 1,
-                                path: vec![removed.clone(), caller.clone()],
-                                description: format!(
-                                    "Caller `{}` depended on target `{}` removed in current revision",
-                                    caller.as_str(),
-                                    removed.as_str()
-                                ),
-                            },
-                        );
-                        queue.push_back((
-                            caller.clone(),
-                            1,
-                            removed.clone(),
-                            vec![removed.clone(), caller.clone()],
-                        ));
-                    }
+        if let Some(base) = baseline_graph
+            && let Some(incoming) = base.upstream_edges.get(removed)
+        {
+            for (caller, _) in incoming {
+                if graph.targets.contains(caller) && !directly_changed.contains(caller) {
+                    transitively_impacted.insert(caller.clone());
+                    affected_targets.insert(caller.clone());
+                    impact_details
+                        .entry(caller.clone())
+                        .or_default()
+                        .push(TargetImpactDetail {
+                            target: caller.clone(),
+                            root_change: removed.clone(),
+                            propagation_kind: ImpactPropagationKind::DependencyForward,
+                            depth: 1,
+                            path: vec![removed.clone(), caller.clone()],
+                            description: format!(
+                                "Caller `{}` depended on target `{}` removed in current revision",
+                                caller.as_str(),
+                                removed.as_str()
+                            ),
+                        });
+                    queue.push_back((
+                        caller.clone(),
+                        1,
+                        removed.clone(),
+                        vec![removed.clone(), caller.clone()],
+                    ));
                 }
             }
         }
@@ -730,30 +732,30 @@ impl ImpactAnalyzer {
         let mut visited_containment = BTreeSet::new();
 
         while let Some(child) = containment_queue.pop() {
-            if let Some(parent) = graph.parent_map.get(&child) {
-                if visited_containment.insert((child.clone(), parent.clone())) {
-                    if !directly_changed.contains(parent) {
-                        transitively_impacted.insert(parent.clone());
-                        affected_targets.insert(parent.clone());
-                    }
-
-                    impact_details
-                        .entry(parent.clone())
-                        .or_default()
-                        .push(TargetImpactDetail {
-                            target: parent.clone(),
-                            root_change: child.clone(),
-                            propagation_kind: ImpactPropagationKind::ContainmentParent,
-                            depth: 1,
-                            path: vec![child.clone(), parent.clone()],
-                            description: format!(
-                                "Container parent of modified target `{}`",
-                                child.as_str()
-                            ),
-                        });
-
-                    containment_queue.push(parent.clone());
+            if let Some(parent) = graph.parent_map.get(&child)
+                && visited_containment.insert((child.clone(), parent.clone()))
+            {
+                if !directly_changed.contains(parent) {
+                    transitively_impacted.insert(parent.clone());
+                    affected_targets.insert(parent.clone());
                 }
+
+                impact_details
+                    .entry(parent.clone())
+                    .or_default()
+                    .push(TargetImpactDetail {
+                        target: parent.clone(),
+                        root_change: child.clone(),
+                        propagation_kind: ImpactPropagationKind::ContainmentParent,
+                        depth: 1,
+                        path: vec![child.clone(), parent.clone()],
+                        description: format!(
+                            "Container parent of modified target `{}`",
+                            child.as_str()
+                        ),
+                    });
+
+                containment_queue.push(parent.clone());
             }
         }
     }

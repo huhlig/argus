@@ -63,7 +63,7 @@ pub struct RecoveryManifest {
     pub schema_version: u32,
     /// Schema version of the associated review workflow data.
     pub workflow_data_schema_version: u32,
-    /// Unique LangChart execution run identifier.
+    /// Unique `LangChart` execution run identifier.
     pub langchart_run_id: String,
     /// Snapshot identifier under audit.
     pub audit_snapshot: SnapshotId,
@@ -85,7 +85,7 @@ pub struct RecoveryManifest {
     pub prompt_version: String,
     /// Revision number of the evidence bundle.
     pub evidence_revision: u32,
-    /// Version of the LangChart runtime engine.
+    /// Version of the `LangChart` runtime engine.
     pub langchart_runtime_version: String,
 }
 
@@ -182,7 +182,7 @@ impl RecoveryStore {
         write_immutable(&self.manifest_path(&manifest.langchart_run_id), &bytes)
     }
 
-    /// Loads and validates a recovery manifest for a given LangChart run identifier.
+    /// Loads and validates a recovery manifest for a given `LangChart` run identifier.
     ///
     /// # Errors
     ///

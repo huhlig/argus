@@ -74,10 +74,10 @@ fn javac_line_diagnostics_ingestion() {
         files: BTreeMap::from([(SourcePath::new(path_str).unwrap(), file_content.to_vec())]),
     };
 
-    let javac_output = r#"
+    let javac_output = r"
 src/main/java/com/example/App.java:5: error: incompatible types: String cannot be converted to int
 src/main/java/com/example/App.java:4:17: warning: [deprecation] test() has been deprecated
-"#;
+";
 
     let provider =
         JavaDiagnosticProvider::new(ConfigurationId::derive([b"cfg".as_slice()]), None, None);

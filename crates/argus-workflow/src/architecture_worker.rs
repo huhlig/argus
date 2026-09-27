@@ -395,6 +395,7 @@ impl ArchitectureWorker {
         Ok((admission, materialized, langchart_run_id))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn attach_constituent_evidence(
         &self,
         admission: &ArchitectureReviewAdmission,

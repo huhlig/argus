@@ -236,17 +236,17 @@ impl LanguageAdapter for PackageJsonAdapter {
         // Check for duplicate package names across manifests
         let mut seen_names = BTreeSet::new();
         for pkg in &packages {
-            if let Some(name) = &pkg.manifest.name {
-                if !seen_names.insert(name) {
-                    conflicts.push(ConflictRecord {
-                        subject: name.clone(),
-                        providers: vec![PROVIDER.to_owned()],
-                        detail: format!(
-                            "multiple package.json files declare the same package name `{name}`: `{}`",
-                            pkg.manifest_path.as_str()
-                        ),
-                    });
-                }
+            if let Some(name) = &pkg.manifest.name
+                && !seen_names.insert(name)
+            {
+                conflicts.push(ConflictRecord {
+                    subject: name.clone(),
+                    providers: vec![PROVIDER.to_owned()],
+                    detail: format!(
+                        "multiple package.json files declare the same package name `{name}`: `{}`",
+                        pkg.manifest_path.as_str()
+                    ),
+                });
             }
         }
 
@@ -291,27 +291,27 @@ impl LanguageAdapter for PackageJsonAdapter {
             });
 
             // If inside workspace, add containment relation from workspace to package
-            if let Some(ws_id) = &root_target_id {
-                if !pkg.is_root {
-                    relations.push(Relation {
-                        id: RelationId::derive([
-                            ws_id.as_str().as_bytes(),
-                            pkg.target_id.as_str().as_bytes(),
-                            b"contains",
-                        ]),
-                        source: ws_id.clone(),
-                        target: pkg.target_id.clone(),
-                        kind: "core:contains".to_owned(),
-                        provenance: RelationProvenance {
-                            provider: PROVIDER.to_owned(),
-                            provider_version: PROVIDER_VERSION.to_owned(),
-                            configuration: Some(self.configuration.clone()),
-                            ingest_only: true,
-                            resolution: ResolutionQuality::Exact,
-                            detail: Some("workspace package member".to_owned()),
-                        },
-                    });
-                }
+            if let Some(ws_id) = &root_target_id
+                && !pkg.is_root
+            {
+                relations.push(Relation {
+                    id: RelationId::derive([
+                        ws_id.as_str().as_bytes(),
+                        pkg.target_id.as_str().as_bytes(),
+                        b"contains",
+                    ]),
+                    source: ws_id.clone(),
+                    target: pkg.target_id.clone(),
+                    kind: "core:contains".to_owned(),
+                    provenance: RelationProvenance {
+                        provider: PROVIDER.to_owned(),
+                        provider_version: PROVIDER_VERSION.to_owned(),
+                        configuration: Some(self.configuration.clone()),
+                        ingest_only: true,
+                        resolution: ResolutionQuality::Exact,
+                        detail: Some("workspace package member".to_owned()),
+                    },
+                });
             }
 
             // 3. Inter-package dependencies within monorepo
@@ -321,27 +321,27 @@ impl LanguageAdapter for PackageJsonAdapter {
                 .iter()
                 .chain(pkg.manifest.dev_dependencies.iter())
             {
-                if let Some(target_dep_id) = package_name_to_id.get(dep_name) {
-                    if target_dep_id != &pkg.target_id {
-                        relations.push(Relation {
-                            id: RelationId::derive([
-                                pkg.target_id.as_str().as_bytes(),
-                                target_dep_id.as_str().as_bytes(),
-                                b"depends_on",
-                            ]),
-                            source: pkg.target_id.clone(),
-                            target: target_dep_id.clone(),
-                            kind: "core:depends_on".to_owned(),
-                            provenance: RelationProvenance {
-                                provider: PROVIDER.to_owned(),
-                                provider_version: PROVIDER_VERSION.to_owned(),
-                                configuration: Some(self.configuration.clone()),
-                                ingest_only: true,
-                                resolution: ResolutionQuality::Exact,
-                                detail: Some(format!("package dependency on `{dep_name}`")),
-                            },
-                        });
-                    }
+                if let Some(target_dep_id) = package_name_to_id.get(dep_name)
+                    && target_dep_id != &pkg.target_id
+                {
+                    relations.push(Relation {
+                        id: RelationId::derive([
+                            pkg.target_id.as_str().as_bytes(),
+                            target_dep_id.as_str().as_bytes(),
+                            b"depends_on",
+                        ]),
+                        source: pkg.target_id.clone(),
+                        target: target_dep_id.clone(),
+                        kind: "core:depends_on".to_owned(),
+                        provenance: RelationProvenance {
+                            provider: PROVIDER.to_owned(),
+                            provider_version: PROVIDER_VERSION.to_owned(),
+                            configuration: Some(self.configuration.clone()),
+                            ingest_only: true,
+                            resolution: ResolutionQuality::Exact,
+                            detail: Some(format!("package dependency on `{dep_name}`")),
+                        },
+                    });
                 }
             }
         }

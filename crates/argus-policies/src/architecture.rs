@@ -471,6 +471,7 @@ impl ArchitectureAssessmentBinding {
 }
 
 impl ArchitectureAssessment {
+    #[allow(clippy::too_many_lines)]
     pub fn validate(&self) -> Result<(), argus_core::ArgusError> {
         if self.schema_version != ARCHITECTURE_ASSESSMENT_SCHEMA_VERSION {
             return Err(argus_core::ArgusError::invalid_input(

@@ -162,6 +162,7 @@ fn provider_policy(max_concurrency: u32) -> ProviderPolicy {
 /// Soak test: Validates that when a worker review takes longer than the nominal
 /// lease duration, background heartbeats renew the lease so it does not expire or fail.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn soak_workflow_heartbeat_during_slow_review() {
     let temporary = tempfile::tempdir().unwrap();
     let state = temporary.path().join("state");

@@ -135,25 +135,25 @@ impl JavaRelationshipProvider {
         // 3. Import relations
         for imp in imports {
             let possible_file_path = format!("{}.java", imp.path.replace('.', "/"));
-            if let Some(target_file) = type_targets_by_path.get(&possible_file_path) {
-                if let Some(importer_file) = targets.iter().find(|t| {
+            if let Some(target_file) = type_targets_by_path.get(&possible_file_path)
+                && let Some(importer_file) = targets.iter().find(|t| {
                     t.location.as_ref().is_some_and(|l| {
                         let lp = l.path.as_str().replace('\\', "/");
                         imp.span.start >= l.bytes.start
                             && imp.span.end <= l.bytes.end
                             && !lp.ends_with(&possible_file_path)
                     })
-                }) {
-                    insert_relation(
-                        &mut relations,
-                        importer_file.id.clone(),
-                        target_file.id.clone(),
-                        "core:imports",
-                        &self.configuration,
-                        Some(format!("imports {}", imp.path)),
-                        ResolutionQuality::Exact,
-                    );
-                }
+                })
+            {
+                insert_relation(
+                    &mut relations,
+                    importer_file.id.clone(),
+                    target_file.id.clone(),
+                    "core:imports",
+                    &self.configuration,
+                    Some(format!("imports {}", imp.path)),
+                    ResolutionQuality::Exact,
+                );
             }
         }
 

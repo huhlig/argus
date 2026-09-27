@@ -41,7 +41,7 @@ impl SourceAccess for MemorySource {
 
 #[test]
 fn infers_inheritance_and_implementation_relationships() {
-    let animal_ts = r#"
+    let animal_ts = r"
 export interface Pet {
     play(): void;
 }
@@ -52,7 +52,7 @@ export class Animal {
         this.name = name;
     }
 }
-"#;
+";
 
     let dog_ts = r#"
 import { Animal, Pet } from './animal';
@@ -133,19 +133,19 @@ export class Dog extends Animal implements Pet {
 
 #[test]
 fn infers_lexical_calls_and_references() {
-    let math_ts = r#"
+    let math_ts = r"
 export function computeTotal(base: number, tax: number): number {
     return base + tax;
 }
-"#;
+";
 
-    let checkout_ts = r#"
+    let checkout_ts = r"
 import { computeTotal } from './math';
 
 export function runCheckout(price: number): number {
     return computeTotal(price, 5);
 }
-"#;
+";
 
     let math_path = SourcePath::new("src/math.ts").unwrap();
     let checkout_path = SourcePath::new("src/checkout.ts").unwrap();

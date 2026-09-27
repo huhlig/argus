@@ -21,6 +21,7 @@ mod documentation;
 mod drift;
 mod maintainability;
 mod optimization;
+mod testing;
 
 pub use drift::{
     AcceptedDriftRecord, AcceptedDriftRegistry, ArchitecturalDriftAnalyzer,
@@ -89,4 +90,13 @@ pub use optimization::{
     OptimizationImpactAnalysis, OptimizationImpactAnalysisDraft, OptimizationResult,
     OptimizationResultDraft, OptimizationTargetClass, OptimizationTargetProfile,
     OptimizationVisibility, ProfilingEvidenceStatus,
+};
+pub use testing::{
+    LIBRARY_TESTING_DIMENSIONS, PROJECT_TESTING_DIMENSIONS, RecommendedTestLevel,
+    TESTING_ASSESSMENT_SCHEMA_VERSION, TESTING_POLICY_SCHEMA_VERSION, TestingApplicability,
+    TestingApplicabilityPolicy, TestingAssessment, TestingAssessmentDraft, TestingBindingScope,
+    TestingCandidate, TestingCandidateDraft, TestingDimension, TestingDimensionDraft,
+    TestingDimensionResult, TestingDimensionStatus, TestingEvidenceCitation, TestingLevel,
+    TestingResult, TestingResultDraft, TestingTargetClass, TestingTargetProfile,
+    UNIT_TESTING_DIMENSIONS,
 };

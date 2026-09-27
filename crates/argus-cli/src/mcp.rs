@@ -66,15 +66,14 @@ pub fn run_mcp_stdio_server(root: &Path) -> Result<(), ArgusError> {
         > 0
     {
         let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            if let Some(resp) = handle_json_rpc(root, trimmed) {
-                writeln!(writer, "{resp}").map_err(|e| {
-                    ArgusError::invariant("failed to write to stdout").with_source(e)
-                })?;
-                writer
-                    .flush()
-                    .map_err(|e| ArgusError::invariant("failed to flush stdout").with_source(e))?;
-            }
+        if !trimmed.is_empty()
+            && let Some(resp) = handle_json_rpc(root, trimmed)
+        {
+            writeln!(writer, "{resp}")
+                .map_err(|e| ArgusError::invariant("failed to write to stdout").with_source(e))?;
+            writer
+                .flush()
+                .map_err(|e| ArgusError::invariant("failed to flush stdout").with_source(e))?;
         }
         line.clear();
     }
@@ -332,7 +331,7 @@ pub fn handle_json_rpc(root: &Path, request_json: &str) -> Option<String> {
                     serde_json::to_string(&response).ok()
                 }
                 "argus://policies" => {
-                    let policies_md = "# Argus Review Policies\n\n- `documentation`: Public API doc comment completeness and accuracy\n- `correctness`: Logic correctness, boundary invariant enforcement, and memory safety\n- `architecture`: Layer boundary enforcement and dependency isolation\n- `conformance`: Normative adherence to governing design documents (ADR, PRD)\n- `maintainability`: Complexity, cohesion, and anti-pattern analysis\n- `optimization`: Algorithmic efficiency, allocations, and resource utilization\n";
+                    let policies_md = "# Argus Review Policies\n\n- `documentation`: Public API doc comment completeness and accuracy\n- `correctness`: Logic correctness, boundary invariant enforcement, and memory safety\n- `architecture`: Layer boundary enforcement and dependency isolation\n- `conformance`: Normative adherence to governing design documents (ADR, PRD)\n- `maintainability`: Complexity, cohesion, and anti-pattern analysis\n- `optimization`: Algorithmic efficiency, allocations, and resource utilization\n- `testing`: Code that needs tests at unit, library, and project level, informed by the other pipelines' findings\n";
                     let response = JsonRpcResponse {
                         jsonrpc: "2.0".to_owned(),
                         id,
@@ -422,7 +421,7 @@ fn execute_tool(root: &Path, tool_name: &str, arguments: &serde_json::Value) -> 
             let run_id = arguments
                 .get("run_id")
                 .and_then(|v| v.as_str())
-                .map(|s| s.parse::<RunId>())
+                .map(str::parse::<RunId>)
                 .transpose();
 
             let run_id = match run_id {
@@ -435,16 +434,14 @@ fn execute_tool(root: &Path, tool_name: &str, arguments: &serde_json::Value) -> 
             };
 
             let queue_res = crate::working_queue(root);
-            let findings = match queue_res {
-                Ok(queue) => argus_report::extract_all_findings_from_queue(&queue, &run_id)
-                    .or_else(|_| {
-                        let bundle_dir = root.join(".argus/reviews").join(run_id.as_str());
-                        argus_report::extract_all_findings_from_bundle(&bundle_dir, &run_id)
-                    }),
-                Err(_) => {
+            let findings = if let Ok(queue) = queue_res {
+                argus_report::extract_all_findings_from_queue(&queue, &run_id).or_else(|_| {
                     let bundle_dir = root.join(".argus/reviews").join(run_id.as_str());
                     argus_report::extract_all_findings_from_bundle(&bundle_dir, &run_id)
-                }
+                })
+            } else {
+                let bundle_dir = root.join(".argus/reviews").join(run_id.as_str());
+                argus_report::extract_all_findings_from_bundle(&bundle_dir, &run_id)
             };
 
             let findings = match findings {
@@ -469,7 +466,7 @@ fn execute_tool(root: &Path, tool_name: &str, arguments: &serde_json::Value) -> 
             let search_query = arguments
                 .get("query")
                 .and_then(|v| v.as_str())
-                .map(|q| q.to_lowercase());
+                .map(str::to_lowercase);
 
             let mut filtered = findings;
             if let Some(pol) = policy_filter {

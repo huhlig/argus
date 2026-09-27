@@ -272,12 +272,31 @@ fn hybrid_monorepo_ignores_subproject_dependencies_and_honors_argusignore() {
         capture_snapshot(&repository_root, &state_root, &CaptureOptions::default()).unwrap();
 
     // Verify first-party sources are captured
-    assert!(manifest.files.contains_key(&SourcePath::new("src/main.rs").unwrap()));
-    assert!(manifest.files.contains_key(&SourcePath::new("console/src/index.ts").unwrap()));
-    assert!(manifest.files.contains_key(&SourcePath::new("console/package.json").unwrap()));
+    assert!(
+        manifest
+            .files
+            .contains_key(&SourcePath::new("src/main.rs").unwrap())
+    );
+    assert!(
+        manifest
+            .files
+            .contains_key(&SourcePath::new("console/src/index.ts").unwrap())
+    );
+    assert!(
+        manifest
+            .files
+            .contains_key(&SourcePath::new("console/package.json").unwrap())
+    );
 
     // Verify node_modules and target/ are NOT captured
-    assert!(!manifest.files.contains_key(&SourcePath::new("console/node_modules/yallist/yallist.js").unwrap()));
-    assert!(!manifest.files.contains_key(&SourcePath::new("target/debug/app").unwrap()));
+    assert!(
+        !manifest
+            .files
+            .contains_key(&SourcePath::new("console/node_modules/yallist/yallist.js").unwrap())
+    );
+    assert!(
+        !manifest
+            .files
+            .contains_key(&SourcePath::new("target/debug/app").unwrap())
+    );
 }
-

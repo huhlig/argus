@@ -171,11 +171,11 @@ install_requires =
     sqlalchemy
 "#;
 
-    let requirements = r#"
+    let requirements = r"
 # Core requirements
 requests==2.31.0
 numpy>=1.24.0
-"#;
+";
 
     let source = MemorySource {
         snapshot: SnapshotId::derive([b"test-fallback".as_slice()]),

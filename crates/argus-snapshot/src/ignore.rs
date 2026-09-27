@@ -142,9 +142,9 @@ impl SnapshotIgnore {
             add_ignore_files(repository_root, ".argusignore", &mut builder);
         }
 
-        let matcher = builder
-            .build()
-            .map_err(|e| ArgusError::invalid_input(format!("failed to build ignore matcher: {e}")))?;
+        let matcher = builder.build().map_err(|e| {
+            ArgusError::invalid_input(format!("failed to build ignore matcher: {e}"))
+        })?;
 
         Ok(Self {
             matcher,
@@ -170,7 +170,10 @@ impl SnapshotIgnore {
         }
 
         // Use gitignore matcher (checks the path and any parent directory matches)
-        match self.matcher.matched_path_or_any_parents(relative_path, is_dir) {
+        match self
+            .matcher
+            .matched_path_or_any_parents(relative_path, is_dir)
+        {
             ignore::Match::Ignore(_) => true,
             ignore::Match::Whitelist(_) | ignore::Match::None => false,
         }
@@ -212,7 +215,11 @@ fn scan_dir(
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') || name_str == "node_modules" || name_str == "target" || name_str == "build" {
+        if name_str.starts_with('.')
+            || name_str == "node_modules"
+            || name_str == "target"
+            || name_str == "build"
+        {
             continue;
         }
         if let Ok(file_type) = entry.file_type() {
@@ -338,8 +345,14 @@ mod tests {
 
         let roots = discover_roots(root);
         assert_eq!(roots.len(), 2);
-        assert!(roots.iter().any(|r| r.relative_path == Path::new("") && r.ecosystem == Ecosystem::Rust));
-        assert!(roots.iter().any(|r| r.relative_path == Path::new("console") && r.ecosystem == Ecosystem::TypeScript));
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.relative_path == Path::new("") && r.ecosystem == Ecosystem::Rust)
+        );
+        assert!(roots.iter().any(
+            |r| r.relative_path == Path::new("console") && r.ecosystem == Ecosystem::TypeScript
+        ));
     }
 
     #[test]

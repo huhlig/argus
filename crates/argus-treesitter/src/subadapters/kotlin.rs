@@ -57,12 +57,12 @@ fn extract_kotlin_visibility(node: &tree_sitter::Node, source: &[u8]) -> TargetV
 
 fn extract_kotlin_call_target(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "simple_identifier" || child.kind() == "identifier" {
-                let text = node_text(&child, source).trim();
-                if !text.is_empty() {
-                    return Some(text.to_owned());
-                }
+        if let Some(child) = node.child(i)
+            && (child.kind() == "simple_identifier" || child.kind() == "identifier")
+        {
+            let text = node_text(&child, source).trim();
+            if !text.is_empty() {
+                return Some(text.to_owned());
             }
         }
     }
@@ -77,12 +77,12 @@ fn extract_kotlin_import_path(node: &tree_sitter::Node, source: &[u8]) -> Option
         }
     }
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "identifier" || child.kind() == "scoped_identifier" {
-                let text = node_text(&child, source).trim();
-                if !text.is_empty() {
-                    return Some(text.to_owned());
-                }
+        if let Some(child) = node.child(i)
+            && (child.kind() == "identifier" || child.kind() == "scoped_identifier")
+        {
+            let text = node_text(&child, source).trim();
+            if !text.is_empty() {
+                return Some(text.to_owned());
             }
         }
     }
