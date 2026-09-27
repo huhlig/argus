@@ -496,8 +496,9 @@ exists.
    one generic worker parameterized by the pipeline's materialization, contract, and assessment
    types, keeping the per-pipeline artifact kinds and prompt versions. Verify with the existing
    worker tests plus a scripted-provider run per pipeline.
-2. **Java adapter evidence and test recognition.** The Java adapter emits no source evidence, so
-   Java units cannot be judged. It should emit source evidence and classify tests under
-   `src/test/` and JUnit/TestNG-annotated methods.
+2. ~~**Java adapter evidence and test recognition.**~~ Done: the Java adapter emits source
+   evidence for files, types, and callables; classifies `JUnit` 4/5 and `TestNG` test methods as
+   `Test` and JMH `@Benchmark` methods as `java:benchmark`; and corrects callable spans that
+   `java-lang` 0.3.2 reports incorrectly. A Java evaluation corpus can now follow.
 3. **Architecture planner and multiple workspace targets.** Two workspace-emitting adapters in one
    repository fail architecture planning (§4.2).
