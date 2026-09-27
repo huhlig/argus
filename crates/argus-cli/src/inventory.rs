@@ -57,11 +57,30 @@ pub(super) fn lock(root: &Path) -> Result<File, ArgusError> {
         .write(true)
         .open(dir.join("publication.lock"))
         .map_err(io_error("cannot open inventory lock"))?;
-    fs2::FileExt::try_lock_exclusive(&file).map_err(io_error(
-        "another inventory operation is active; retry when it finishes",
-    ))?;
-    Ok(file)
+    // A child process spawned by another thread (for example `cargo metadata`) briefly holds
+    // copies of every open descriptor until it execs, which keeps a just-released `flock`
+    // held. Retry for a short, bounded time before reporting a concurrent operation.
+    let deadline = std::time::Instant::now() + LOCK_RETRY_WINDOW;
+    loop {
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => return Ok(file),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => {
+                return Err(io_error(
+                    "another inventory operation is active; retry when it finishes",
+                )(error));
+            }
+        }
+    }
 }
+
+/// How long [`lock`] waits for a lock held only transiently before failing.
+const LOCK_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ArgusError> {
     let parent = path.parent().expect("inventory file has a parent");
