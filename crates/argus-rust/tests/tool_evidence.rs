@@ -212,11 +212,8 @@ fn rejects_a_mismatched_active_tool_request() {
     assert!(error.to_string().contains("does not match"));
 }
 
-/// An absolute workspace root on the host platform; `C:/...` is not absolute on Unix.
+/// Absolute workspace root the tools require, derived from this crate's location so fixtures
+/// hold only relative paths and no host-specific root is hard-coded.
 fn workspace_root() -> PathBuf {
-    PathBuf::from(if cfg!(windows) {
-        "C:/workspace"
-    } else {
-        "/workspace"
-    })
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixture-workspace")
 }
