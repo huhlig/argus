@@ -148,12 +148,11 @@ impl ConformanceReport {
             else {
                 continue;
             };
-            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref) {
-                if let Ok(assessment) =
+            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref)
+                && let Ok(assessment) =
                     serde_json::from_slice::<ConformanceAssessment>(&artifact.payload)
-                {
-                    assessments_by_work.insert(effective_outcome.logical_key.work_id, assessment);
-                }
+            {
+                assessments_by_work.insert(effective_outcome.logical_key.work_id, assessment);
             }
         }
 
@@ -374,7 +373,7 @@ impl ConformanceReport {
                 let _ = writeln!(
                     out,
                     "- **Confidence**: {:.2}%",
-                    rep.confidence.basis_points() as f64 / 100.0
+                    f64::from(rep.confidence.basis_points()) / 100.0
                 );
                 let _ = writeln!(
                     out,
@@ -386,7 +385,7 @@ impl ConformanceReport {
                     let arts = rep
                         .governing_artifacts
                         .iter()
-                        .map(|a| a.to_string())
+                        .map(std::string::ToString::to_string)
                         .collect::<Vec<_>>()
                         .join(", ");
                     let _ = writeln!(out, "- **Governing Artifacts**: {arts}");

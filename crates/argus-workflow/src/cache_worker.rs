@@ -121,7 +121,7 @@ pub enum ShortCircuitCacheWorkerResult {
         /// Policy evaluated.
         policy: PolicyId,
         /// Receipt of the stored outcome.
-        outcome_receipt: OutcomeReceipt,
+        outcome_receipt: Box<OutcomeReceipt>,
     },
     /// Cache miss: assessment was missing, expired, or fingerprint differed. Lease was released.
     Miss {
@@ -263,11 +263,7 @@ impl ShortCircuitCacheWorker {
 
             match self.process_leased(&leased, now_millis).await? {
                 ShortCircuitCacheWorkerResult::Idle => break,
-                ShortCircuitCacheWorkerResult::Hit {
-                    work_id,
-                    outcome_receipt: _,
-                    ..
-                } => {
+                ShortCircuitCacheWorkerResult::Hit { work_id, .. } => {
                     summary.hits += 1;
                     summary.hit_work_ids.push(work_id);
                 }
@@ -353,7 +349,7 @@ impl ShortCircuitCacheWorker {
             work_id: leased.id.clone(),
             target,
             policy,
-            outcome_receipt: receipt,
+            outcome_receipt: Box::new(receipt),
         })
     }
 

@@ -71,11 +71,11 @@ fn test_prepare_publication_beads_and_github() {
     let (beads_receipt, beads_script) = prepare_publication(
         &run_id,
         PublicationTarget::Beads,
-        &[finding.clone()],
+        std::slice::from_ref(&finding),
         &[],
         false,
         false,
-        1700000000000,
+        1_700_000_000_000,
     );
 
     assert_eq!(beads_receipt.published_count, 1);
@@ -92,7 +92,7 @@ fn test_prepare_publication_beads_and_github() {
         &[],
         false,
         false,
-        1700000000000,
+        1_700_000_000_000,
     );
 
     assert_eq!(gh_receipt.published_count, 1);
@@ -122,11 +122,11 @@ fn test_publication_idempotency_and_force() {
     let (first_receipt, _) = prepare_publication(
         &run_id,
         PublicationTarget::Beads,
-        &[finding.clone()],
+        std::slice::from_ref(&finding),
         &[],
         false,
         false,
-        1700000000000,
+        1_700_000_000_000,
     );
     assert_eq!(first_receipt.published_count, 1);
     assert_eq!(first_receipt.skipped_count, 0);
@@ -135,11 +135,11 @@ fn test_publication_idempotency_and_force() {
     let (second_receipt, second_script) = prepare_publication(
         &run_id,
         PublicationTarget::Beads,
-        &[finding.clone()],
-        &[first_receipt.clone()],
+        std::slice::from_ref(&finding),
+        std::slice::from_ref(&first_receipt),
         false,
         false,
-        1700000001000,
+        1_700_000_001_000,
     );
     assert_eq!(second_receipt.published_count, 0);
     assert_eq!(second_receipt.skipped_count, 1);
@@ -157,7 +157,7 @@ fn test_publication_idempotency_and_force() {
         &[first_receipt],
         false,
         true, // force = true
-        1700000002000,
+        1_700_000_002_000,
     );
     assert_eq!(forced_receipt.published_count, 1);
     assert_eq!(forced_receipt.skipped_count, 0);
@@ -189,7 +189,7 @@ fn test_publication_dry_run() {
         &[],
         true, // dry_run = true
         false,
-        1700000000000,
+        1_700_000_000_000,
     );
 
     assert_eq!(receipt.published_count, 0);

@@ -15,15 +15,15 @@
 //! Differential review reporting comparing a baseline review run against a current review run.
 //!
 //! Classifies findings into `new`, `resolved`, and `persistent` categories using a two-tier
-//! comparison strategy (exact FindingId match followed by semantic attribute matching), ensuring
+//! comparison strategy (exact `FindingId` match followed by semantic attribute matching), ensuring
 //! robust tracking across pull request code evolutions and preventing false positive churn
 //! when byte ranges shift.
 
 use crate::{
     ArchitectureReport, ConformanceReport, CorrectnessReport, DocumentationReport,
-    MaintainabilityReport, OptimizationReport, architecture_report_from_queue,
+    MaintainabilityReport, OptimizationReport, TestingReport, architecture_report_from_queue,
     conformance_report_from_queue, correctness_report_from_queue, documentation_report_from_queue,
-    maintainability_report_from_queue, optimization_report_from_queue,
+    maintainability_report_from_queue, optimization_report_from_queue, testing_report_from_queue,
 };
 use argus_core::{
     AdjudicationState, Confidence, FindingId, RunId, Severity, SourceLocation, TargetId,
@@ -151,7 +151,7 @@ pub struct DifferentialSummary {
 }
 
 /// Configurable thresholds governing differential CI gate enforcement.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
 pub struct DifferentialThresholds {
     /// Maximum allowable newly introduced Critical severity findings (default: 0).
     pub max_new_critical: usize,
@@ -163,18 +163,6 @@ pub struct DifferentialThresholds {
     pub max_new_total: Option<usize>,
     /// Whether to fail the gate if any new findings remain unadjudicated.
     pub fail_on_new_unadjudicated: bool,
-}
-
-impl Default for DifferentialThresholds {
-    fn default() -> Self {
-        Self {
-            max_new_critical: 0,
-            max_new_high: 0,
-            max_new_medium: None,
-            max_new_total: None,
-            fail_on_new_unadjudicated: false,
-        }
-    }
 }
 
 /// Outcome of a differential CI gate evaluation.
@@ -257,21 +245,20 @@ impl DifferentialReport {
                 new_high, thresholds.max_new_high
             ));
         }
-        if let Some(max_med) = thresholds.max_new_medium {
-            if new_medium > max_med {
-                violations.push(format!(
-                    "New medium findings ({}) exceeded maximum allowed ({})",
-                    new_medium, max_med
-                ));
-            }
+        if let Some(max_med) = thresholds.max_new_medium
+            && new_medium > max_med
+        {
+            violations.push(format!(
+                "New medium findings ({new_medium}) exceeded maximum allowed ({max_med})"
+            ));
         }
-        if let Some(max_total) = thresholds.max_new_total {
-            if self.summary.new_count > max_total {
-                violations.push(format!(
-                    "Total new findings ({}) exceeded maximum allowed ({})",
-                    self.summary.new_count, max_total
-                ));
-            }
+        if let Some(max_total) = thresholds.max_new_total
+            && self.summary.new_count > max_total
+        {
+            violations.push(format!(
+                "Total new findings ({}) exceeded maximum allowed ({})",
+                self.summary.new_count, max_total
+            ));
         }
         if thresholds.fail_on_new_unadjudicated {
             let unadjudicated_new = self
@@ -281,8 +268,7 @@ impl DifferentialReport {
                 .count();
             if unadjudicated_new > 0 {
                 violations.push(format!(
-                    "Unadjudicated new findings ({}) not permitted under strict gate policy",
-                    unadjudicated_new
+                    "Unadjudicated new findings ({unadjudicated_new}) not permitted under strict gate policy"
                 ));
             }
         }
@@ -295,6 +281,7 @@ impl DifferentialReport {
 
     /// Render developer and PR friendly Markdown summary.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "# Argus Differential Review Report\n");
@@ -367,7 +354,10 @@ impl DifferentialReport {
         let _ = writeln!(out);
 
         // Section: New Findings
-        if !self.new_findings.is_empty() {
+        if self.new_findings.is_empty() {
+            let _ = writeln!(out, "## 🔴 Newly Introduced Findings (0)\n");
+            let _ = writeln!(out, "No new findings introduced in this revision.\n");
+        } else {
             let _ = writeln!(
                 out,
                 "## 🔴 Newly Introduced Findings ({})\n",
@@ -395,9 +385,6 @@ impl DifferentialReport {
                 );
                 let _ = writeln!(out, "\n{}\n", finding.description.trim());
             }
-        } else {
-            let _ = writeln!(out, "## 🔴 Newly Introduced Findings (0)\n");
-            let _ = writeln!(out, "No new findings introduced in this revision.\n");
         }
 
         // Section: Resolved Findings
@@ -478,10 +465,10 @@ pub fn extract_documentation_findings(report: &DocumentationReport) -> Vec<Diffe
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -532,10 +519,10 @@ pub fn extract_correctness_findings(report: &CorrectnessReport) -> Vec<Different
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -575,10 +562,10 @@ pub fn extract_architecture_findings(report: &ArchitectureReport) -> Vec<Differe
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 Some(format!("{:?}", cluster.representative.scope))
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -625,10 +612,10 @@ pub fn extract_conformance_findings(report: &ConformanceReport) -> Vec<Different
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -676,10 +663,10 @@ pub fn extract_maintainability_findings(
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -690,6 +677,53 @@ pub fn extract_maintainability_findings(
             DifferentialFinding {
                 id: cluster.id.clone(),
                 policy: "maintainability".to_owned(),
+                title: cluster.representative.title.clone(),
+                severity: cluster.representative.severity,
+                confidence: cluster.representative.confidence,
+                targets,
+                primary_location,
+                description: cluster.representative.description.clone(),
+                dimensions,
+                category: FindingCategory::New,
+                adjudication: cluster.adjudication,
+                baseline_id: None,
+            }
+        })
+        .collect()
+}
+
+/// Extract normalized differential findings from a testing report.
+#[must_use]
+pub fn extract_testing_findings(report: &TestingReport) -> Vec<DifferentialFinding> {
+    report
+        .finding_clusters
+        .iter()
+        .map(|cluster| {
+            let targets = std::iter::once(cluster.representative.subject.clone())
+                .chain(cluster.occurrences.iter().map(|o| o.target.clone()))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let locs = cluster
+                .representative
+                .citations
+                .iter()
+                .filter_map(|c| c.location.as_ref().map(format_loc))
+                .collect::<BTreeSet<_>>();
+            let primary_location = if locs.is_empty() {
+                None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
+            };
+            let dimensions = cluster
+                .representative
+                .dimensions
+                .iter()
+                .map(|d| format!("{d:?}").to_lowercase())
+                .collect();
+            DifferentialFinding {
+                id: cluster.id.clone(),
+                policy: "testing".to_owned(),
                 title: cluster.representative.title.clone(),
                 severity: cluster.representative.severity,
                 confidence: cluster.representative.confidence,
@@ -725,10 +759,10 @@ pub fn extract_optimization_findings(report: &OptimizationReport) -> Vec<Differe
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -760,6 +794,10 @@ fn semantic_key(finding: &DifferentialFinding) -> (String, Option<TargetId>, Str
     let normalized_title = finding.title.trim().to_lowercase();
     (finding.policy.clone(), primary_target, normalized_title)
 }
+
+/// Unmatched baseline findings keyed by (policy, primary target, normalized title).
+type SemanticIndex =
+    BTreeMap<(String, Option<TargetId>, String), Vec<(usize, DifferentialFinding)>>;
 
 /// Compares a baseline finding collection against a current finding collection,
 /// performing two-tier matching to categorize findings into `New`, `Resolved`, and `Persistent`.
@@ -796,10 +834,7 @@ pub fn compare_findings(
     }
 
     // Tier 2: Resilient semantic matching for remaining unmatched findings
-    let mut remaining_baseline_by_semantic: BTreeMap<
-        (String, Option<TargetId>, String),
-        Vec<(usize, DifferentialFinding)>,
-    > = BTreeMap::new();
+    let mut remaining_baseline_by_semantic: SemanticIndex = BTreeMap::new();
 
     for (base_idx, base_finding) in baseline_findings.iter().enumerate() {
         if !matched_baseline_indices.contains(&base_idx) {
@@ -816,16 +851,16 @@ pub fn compare_findings(
             continue;
         }
         let key = semantic_key(cur_finding);
-        if let Some(candidates) = remaining_baseline_by_semantic.get_mut(&key) {
-            if let Some((base_idx, base_finding)) = candidates.pop() {
-                matched_baseline_indices.insert(base_idx);
-                matched_current_indices.insert(cur_idx);
+        if let Some(candidates) = remaining_baseline_by_semantic.get_mut(&key)
+            && let Some((base_idx, base_finding)) = candidates.pop()
+        {
+            matched_baseline_indices.insert(base_idx);
+            matched_current_indices.insert(cur_idx);
 
-                let mut persistent = cur_finding.clone();
-                persistent.category = FindingCategory::Persistent;
-                persistent.baseline_id = Some(base_finding.id);
-                persistent_findings.push(persistent);
-            }
+            let mut persistent = cur_finding.clone();
+            persistent.category = FindingCategory::Persistent;
+            persistent.baseline_id = Some(base_finding.id);
+            persistent_findings.push(persistent);
         }
     }
 
@@ -926,12 +961,11 @@ pub fn extract_all_findings_from_queue(
         .iter()
         .any(|w| w.coverage.policy.starts_with("optimization"));
 
-    if is_documentation {
-        if let Ok(rep) =
+    if is_documentation
+        && let Ok(rep) =
             documentation_report_from_queue(queue, run_id.clone(), "documentation-public-api@1")
-        {
-            findings.extend(extract_documentation_findings(&rep));
-        }
+    {
+        findings.extend(extract_documentation_findings(&rep));
     }
     if records
         .work
@@ -942,42 +976,46 @@ pub fn extract_all_findings_from_queue(
             documentation_report_from_queue(queue, run_id.clone(), "documentation-internal@1")?;
         findings.extend(extract_documentation_findings(&rep));
     }
-    if is_correctness {
-        if let Ok(rep) =
+    if is_correctness
+        && let Ok(rep) =
             correctness_report_from_queue(queue, run_id.clone(), "correctness-conservative@1")
-        {
-            findings.extend(extract_correctness_findings(&rep));
-        }
+    {
+        findings.extend(extract_correctness_findings(&rep));
     }
-    if is_architecture {
-        if let Ok(rep) =
+    if is_architecture
+        && let Ok(rep) =
             architecture_report_from_queue(queue, run_id.clone(), "architecture-code-derived@1")
-        {
-            findings.extend(extract_architecture_findings(&rep));
-        }
+    {
+        findings.extend(extract_architecture_findings(&rep));
     }
-    if is_conformance {
-        if let Ok(rep) =
+    if is_conformance
+        && let Ok(rep) =
             conformance_report_from_queue(queue, run_id.clone(), "conformance-design-aligned@1")
-        {
-            findings.extend(extract_conformance_findings(&rep));
-        }
+    {
+        findings.extend(extract_conformance_findings(&rep));
     }
-    if is_maintainability {
-        if let Ok(rep) = maintainability_report_from_queue(
+    if is_maintainability
+        && let Ok(rep) = maintainability_report_from_queue(
             queue,
             run_id.clone(),
             "maintainability-conservative@1",
-        ) {
-            findings.extend(extract_maintainability_findings(&rep));
-        }
+        )
+    {
+        findings.extend(extract_maintainability_findings(&rep));
     }
-    if is_optimization {
-        if let Ok(rep) =
+    if is_optimization
+        && let Ok(rep) =
             optimization_report_from_queue(queue, run_id.clone(), "optimization-conservative@1")
-        {
-            findings.extend(extract_optimization_findings(&rep));
-        }
+    {
+        findings.extend(extract_optimization_findings(&rep));
+    }
+    if records
+        .work
+        .iter()
+        .any(|w| w.coverage.policy.starts_with("testing"))
+        && let Ok(rep) = testing_report_from_queue(queue, run_id.clone(), "testing-conservative@1")
+    {
+        findings.extend(extract_testing_findings(&rep));
     }
 
     Ok(findings)
@@ -1003,6 +1041,7 @@ pub fn differential_report_from_queue(
 }
 
 /// Extract all findings from a review bundle directory (reading JSON reports or constructing them).
+#[allow(clippy::too_many_lines)]
 pub fn extract_all_findings_from_bundle(
     bundle: &Path,
     run_id: &RunId,
@@ -1010,12 +1049,11 @@ pub fn extract_all_findings_from_bundle(
     let mut findings = Vec::new();
 
     let doc_json = bundle.join("documentation-report.json");
-    if doc_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&doc_json) {
-            if let Ok(rep) = serde_json::from_str::<DocumentationReport>(&content) {
-                findings.extend(extract_documentation_findings(&rep));
-            }
-        }
+    if doc_json.is_file()
+        && let Ok(content) = fs::read_to_string(&doc_json)
+        && let Ok(rep) = serde_json::from_str::<DocumentationReport>(&content)
+    {
+        findings.extend(extract_documentation_findings(&rep));
     }
 
     let internal_json = bundle.join("internal-documentation-report.json");
@@ -1031,48 +1069,51 @@ pub fn extract_all_findings_from_bundle(
         findings.extend(extract_documentation_findings(&report));
     }
     let corr_json = bundle.join("correctness-report.json");
-    if corr_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&corr_json) {
-            if let Ok(rep) = serde_json::from_str::<CorrectnessReport>(&content) {
-                findings.extend(extract_correctness_findings(&rep));
-            }
-        }
+    if corr_json.is_file()
+        && let Ok(content) = fs::read_to_string(&corr_json)
+        && let Ok(rep) = serde_json::from_str::<CorrectnessReport>(&content)
+    {
+        findings.extend(extract_correctness_findings(&rep));
     }
 
     let arch_json = bundle.join("architecture-report.json");
-    if arch_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&arch_json) {
-            if let Ok(rep) = serde_json::from_str::<ArchitectureReport>(&content) {
-                findings.extend(extract_architecture_findings(&rep));
-            }
-        }
+    if arch_json.is_file()
+        && let Ok(content) = fs::read_to_string(&arch_json)
+        && let Ok(rep) = serde_json::from_str::<ArchitectureReport>(&content)
+    {
+        findings.extend(extract_architecture_findings(&rep));
     }
 
     let conf_json = bundle.join("conformance-report.json");
-    if conf_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&conf_json) {
-            if let Ok(rep) = serde_json::from_str::<ConformanceReport>(&content) {
-                findings.extend(extract_conformance_findings(&rep));
-            }
-        }
+    if conf_json.is_file()
+        && let Ok(content) = fs::read_to_string(&conf_json)
+        && let Ok(rep) = serde_json::from_str::<ConformanceReport>(&content)
+    {
+        findings.extend(extract_conformance_findings(&rep));
     }
 
     let maint_json = bundle.join("maintainability-report.json");
-    if maint_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&maint_json) {
-            if let Ok(rep) = serde_json::from_str::<MaintainabilityReport>(&content) {
-                findings.extend(extract_maintainability_findings(&rep));
-            }
-        }
+    if maint_json.is_file()
+        && let Ok(content) = fs::read_to_string(&maint_json)
+        && let Ok(rep) = serde_json::from_str::<MaintainabilityReport>(&content)
+    {
+        findings.extend(extract_maintainability_findings(&rep));
+    }
+
+    let testing_json = bundle.join("testing-report.json");
+    if testing_json.is_file()
+        && let Ok(content) = fs::read_to_string(&testing_json)
+        && let Ok(rep) = serde_json::from_str::<TestingReport>(&content)
+    {
+        findings.extend(extract_testing_findings(&rep));
     }
 
     let opt_json = bundle.join("optimization-report.json");
-    if opt_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&opt_json) {
-            if let Ok(rep) = serde_json::from_str::<OptimizationReport>(&content) {
-                findings.extend(extract_optimization_findings(&rep));
-            }
-        }
+    if opt_json.is_file()
+        && let Ok(content) = fs::read_to_string(&opt_json)
+        && let Ok(rep) = serde_json::from_str::<OptimizationReport>(&content)
+    {
+        findings.extend(extract_optimization_findings(&rep));
     }
 
     // If no report files were found, attempt bundle report writers
@@ -1125,6 +1166,11 @@ pub fn extract_all_findings_from_bundle(
             "optimization-conservative@1",
         ) {
             findings.extend(extract_optimization_findings(&rep));
+        }
+        if let Ok(rep) =
+            crate::write_testing_bundle_reports(bundle, run_id.clone(), "testing-conservative@1")
+        {
+            findings.extend(extract_testing_findings(&rep));
         }
     }
 

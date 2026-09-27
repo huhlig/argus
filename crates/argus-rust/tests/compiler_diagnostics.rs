@@ -80,13 +80,17 @@ fn maps_captured_diagnostics_to_narrowest_target_and_retains_build_failure() {
         target("src/lib.rs", PortableTargetKind::File, 0, 100),
         target("function", PortableTargetKind::Callable, 10, 30),
     ];
-    let stream = br#"{"reason":"compiler-message","message":{"message":"unused variable","code":{"code":"unused_variables"},"level":"warning","spans":[{"file_name":"C:/workspace/src/lib.rs","byte_start":12,"byte_end":15,"is_primary":true}],"rendered":"warning: unused variable"}}
-{"reason":"build-finished","success":false}
+    let file_name = workspace_root().join("src/lib.rs");
+    let stream = format!(
+        r#"{{"reason":"compiler-message","message":{{"message":"unused variable","code":{{"code":"unused_variables"}},"level":"warning","spans":[{{"file_name":"{}","byte_start":12,"byte_end":15,"is_primary":true}}],"rendered":"warning: unused variable"}}}}
+{{"reason":"build-finished","success":false}}
 not-json
-"#;
+"#,
+        file_name.to_string_lossy().replace('\\', "/")
+    );
     let provider = CompilerDiagnosticProvider::new(
-        stream.to_vec(),
-        PathBuf::from("C:/workspace"),
+        stream.into_bytes(),
+        workspace_root(),
         ConfigurationId::derive([b"default".as_slice()]),
         "cargo-check",
         "rustc 1.85.0",
@@ -128,7 +132,7 @@ fn falls_back_to_file_target_when_no_declaration_contains_span() {
 "#;
     let provider = CompilerDiagnosticProvider::new(
         stream.to_vec(),
-        PathBuf::from("C:/workspace"),
+        workspace_root(),
         ConfigurationId::derive([b"default".as_slice()]),
         "clippy",
         "0.1",
@@ -174,7 +178,7 @@ fn full_capabilities() -> ExecutorCapabilities {
 fn restricted_request() -> ToolRequest {
     ToolRequest {
         tool: RustTool::CargoCheck,
-        workspace_root: PathBuf::from("C:/workspace"),
+        workspace_root: workspace_root(),
         policy: ToolExecutionPolicy {
             limits: ToolLimits {
                 wall_time_millis: 30_000,
@@ -184,7 +188,7 @@ fn restricted_request() -> ToolRequest {
             },
             network: NetworkAccess::Denied,
             environment: BTreeMap::from([("CARGO_TERM_COLOR".to_owned(), "never".to_owned())]),
-            writable_roots: vec![PathBuf::from("C:/workspace/target")],
+            writable_roots: vec![workspace_root().join("target")],
         },
     }
 }
@@ -201,7 +205,7 @@ fn controlled_execution_matches_ingested_normalization() {
     .to_vec();
     let provider = CompilerDiagnosticProvider::new(
         stream.clone(),
-        PathBuf::from("C:/workspace"),
+        workspace_root(),
         ConfigurationId::derive([b"controlled".as_slice()]),
         "cargo-check",
         "rustc 1.85.0",
@@ -236,7 +240,7 @@ fn restricted_execution_fails_closed_when_network_control_is_missing() {
     };
     let provider = CompilerDiagnosticProvider::new(
         Vec::new(),
-        PathBuf::from("C:/workspace"),
+        workspace_root(),
         ConfigurationId::derive([b"controlled".as_slice()]),
         "cargo-check",
         "rustc 1.85.0",
@@ -260,4 +264,10 @@ fn restricted_execution_fails_closed_when_network_control_is_missing() {
         .execute(&executor, &restricted_request(), &source, &[])
         .unwrap_err();
     assert_eq!(error.code(), argus_core::ErrorCode::Unsupported);
+}
+
+/// Absolute workspace root the tools require, derived from this crate's location so fixtures
+/// hold only relative paths and no host-specific root is hard-coded.
+fn workspace_root() -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixture-workspace")
 }

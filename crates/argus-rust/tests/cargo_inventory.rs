@@ -38,12 +38,12 @@ impl SourceAccess for MemorySource {
 }
 
 const METADATA: &str = r#"{
-  "workspace_root": "/workspace",
+  "workspace_root": "{root}",
   "workspace_members": ["path+file:///workspace#app@0.1.0"],
   "packages": [
-    {"id":"path+file:///workspace#app@0.1.0","name":"app","manifest_path":"/workspace/Cargo.toml","targets":[
-      {"name":"app","kind":["lib"],"src_path":"/workspace/src/lib.rs"},
-      {"name":"tool","kind":["bin"],"src_path":"/workspace/src/bin/tool.rs"}
+    {"id":"path+file:///workspace#app@0.1.0","name":"app","manifest_path":"{root}/Cargo.toml","targets":[
+      {"name":"app","kind":["lib"],"src_path":"{root}/src/lib.rs"},
+      {"name":"tool","kind":["bin"],"src_path":"{root}/src/bin/tool.rs"}
     ]},
     {"id":"registry+https://example.invalid#dep@1.0.0","name":"dep","manifest_path":"/registry/dep/Cargo.toml","targets":[]}
   ]
@@ -63,7 +63,7 @@ fn source() -> MemorySource {
 fn inventories_workspace_members_and_accounts_for_missing_entry_sources() {
     let source = source();
     let adapter = CargoMetadataAdapter::new(
-        METADATA.as_bytes().to_vec(),
+        with_root(METADATA),
         ConfigurationId::derive([b"default".as_slice()]),
     );
     let first = normalize_inventory(&source, adapter.inventory(&source).unwrap()).unwrap();
@@ -84,15 +84,15 @@ fn inventories_workspace_members_and_accounts_for_missing_entry_sources() {
 #[test]
 fn discovers_workspace_features_and_resolved_package_dependencies() {
     let metadata = r#"{
-      "workspace_root": "/workspace",
+      "workspace_root": "{root}",
       "workspace_members": ["app 0.1.0 (path+file:///workspace)", "shared 0.1.0 (path+file:///workspace/shared)"],
       "packages": [
-        {"id":"app 0.1.0 (path+file:///workspace)","name":"app","manifest_path":"/workspace/Cargo.toml",
+        {"id":"app 0.1.0 (path+file:///workspace)","name":"app","manifest_path":"{root}/Cargo.toml",
          "features":{"default":["fast"],"fast":[]},
-         "targets":[{"name":"app","kind":["lib"],"src_path":"/workspace/src/lib.rs"}]},
-        {"id":"shared 0.1.0 (path+file:///workspace/shared)","name":"shared","manifest_path":"/workspace/shared/Cargo.toml",
+         "targets":[{"name":"app","kind":["lib"],"src_path":"{root}/src/lib.rs"}]},
+        {"id":"shared 0.1.0 (path+file:///workspace/shared)","name":"shared","manifest_path":"{root}/shared/Cargo.toml",
          "features":{},
-         "targets":[{"name":"shared","kind":["lib"],"src_path":"/workspace/shared/src/lib.rs"}]}
+         "targets":[{"name":"shared","kind":["lib"],"src_path":"{root}/shared/src/lib.rs"}]}
       ],
       "resolve":{"nodes":[
         {"id":"app 0.1.0 (path+file:///workspace)","dependencies":["shared 0.1.0 (path+file:///workspace/shared)"]},
@@ -109,7 +109,7 @@ fn discovers_workspace_features_and_resolved_package_dependencies() {
         ]),
     };
     let adapter = CargoMetadataAdapter::new(
-        metadata.as_bytes().to_vec(),
+        with_root(metadata),
         ConfigurationId::derive([b"features".as_slice()]),
     );
     let inventory = normalize_inventory(&source, adapter.inventory(&source).unwrap()).unwrap();
@@ -143,4 +143,17 @@ fn discovers_workspace_features_and_resolved_package_dependencies() {
         .unwrap();
     assert_eq!(source_package.name, "app");
     assert_eq!(target_package.name, "shared");
+}
+
+/// Cargo metadata reports absolute paths; fixtures hold `{root}` placeholders filled with a
+/// root derived from this crate's location, so no host-specific root is hard-coded.
+fn workspace_root() -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixture-workspace")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn with_root(template: &str) -> Vec<u8> {
+    template.replace("{root}", &workspace_root()).into_bytes()
 }

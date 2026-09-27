@@ -105,6 +105,7 @@ impl ArchitectureAssessmentContract {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn from_context(
         work_item: WorkItemId,
         target: ArchitectureTargetProfile,
@@ -204,8 +205,8 @@ impl ArchitectureAssessmentContract {
             )
             .collect();
         let constituent_health = constituent_evidence.first().map_or_else(
-            || scope_evidence.constituent_health.clone(),
-            |evidence| evidence.constituent_health.clone(),
+            || scope_evidence.constituent_health,
+            |evidence| evidence.constituent_health,
         );
         let verification_complete = scope_evidence.omitted_constituents == 0
             && scope_evidence.omitted_boundary_targets == 0
@@ -466,6 +467,12 @@ Decision Rules:
 - Emit `review.pass` ONLY when all dimensions are satisfied or not applicable and no candidates exist.
 - `review.failed` is strictly reserved for internal analysis execution errors and must NEVER be used to report architectural defects or code issues."#;
 
+/// JSON schema for an architecture assessment draft.
+///
+/// # Panics
+///
+/// Panics only if the schema literal is edited so that a path this function patches no longer
+/// exists.
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn architecture_assessment_draft_schema() -> Value {

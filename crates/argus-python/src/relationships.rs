@@ -116,20 +116,19 @@ impl PythonRelationshipProvider {
                 TargetKind::Portable {
                     kind: PortableTargetKind::File
                 }
-            ) {
-                if let Some(loc) = &target.location {
-                    let p = loc.path.as_str().replace('\\', "/");
-                    file_targets_by_path.insert(p.clone(), target);
+            ) && let Some(loc) = &target.location
+            {
+                let p = loc.path.as_str().replace('\\', "/");
+                file_targets_by_path.insert(p.clone(), target);
 
-                    // Compute module dotted path (e.g. foo/bar.py -> foo.bar)
-                    let mod_path = p
-                        .strip_suffix(".py")
-                        .unwrap_or(&p)
-                        .strip_suffix("/__init__")
-                        .unwrap_or(&p)
-                        .replace('/', ".");
-                    file_targets_by_module.insert(mod_path, target);
-                }
+                // Compute module dotted path (e.g. foo/bar.py -> foo.bar)
+                let mod_path = p
+                    .strip_suffix(".py")
+                    .unwrap_or(&p)
+                    .strip_suffix("/__init__")
+                    .unwrap_or(&p)
+                    .replace('/', ".");
+                file_targets_by_module.insert(mod_path, target);
             }
         }
 
@@ -180,18 +179,18 @@ impl PythonRelationshipProvider {
                 .next()
                 .unwrap_or(&call.callee_name);
 
-            if let Some(candidates) = callable_targets.get(simple_callee) {
-                if candidates.len() == 1 {
-                    let callee = candidates[0];
-                    insert_relation(
-                        &mut relations,
-                        call.caller_target_id.clone(),
-                        callee.id.clone(),
-                        "python:calls",
-                        &self.configuration,
-                        Some(format!("calls {simple_callee}")),
-                    );
-                }
+            if let Some(candidates) = callable_targets.get(simple_callee)
+                && candidates.len() == 1
+            {
+                let callee = candidates[0];
+                insert_relation(
+                    &mut relations,
+                    call.caller_target_id.clone(),
+                    callee.id.clone(),
+                    "python:calls",
+                    &self.configuration,
+                    Some(format!("calls {simple_callee}")),
+                );
             }
         }
 

@@ -49,16 +49,16 @@ fn classify_typescript(kind: &str) -> Option<NodeClassification> {
 
 fn extract_typescript_visibility(node: &tree_sitter::Node, source: &[u8]) -> TargetVisibility {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "accessibility_modifier" {
-                let text = node_text(&child, source).trim();
-                if text == "private" {
-                    return TargetVisibility::Private;
-                } else if text == "protected" {
-                    return TargetVisibility::Restricted;
-                }
-                return TargetVisibility::Public;
+        if let Some(child) = node.child(i)
+            && child.kind() == "accessibility_modifier"
+        {
+            let text = node_text(&child, source).trim();
+            if text == "private" {
+                return TargetVisibility::Private;
+            } else if text == "protected" {
+                return TargetVisibility::Restricted;
             }
+            return TargetVisibility::Public;
         }
     }
     TargetVisibility::Public

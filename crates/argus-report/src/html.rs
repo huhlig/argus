@@ -638,11 +638,9 @@ pub fn render_findings_html_report(
     );
 
     if let Some(ref base_id) = options.baseline_run_id {
-        let _ = write!(
+        let _ = writeln!(
             html,
-            r#"        <span class="tag">Baseline: {}</span>
-"#,
-            base_id
+            r#"        <span class="tag">Baseline: {base_id}</span>"#
         );
     }
 
@@ -694,18 +692,17 @@ pub fn render_findings_html_report(
             html,
             r#"      <div class="metric-card cat-new">
         <div class="metric-title">New Findings</div>
-        <div class="metric-value">{}</div>
+        <div class="metric-value">{new_count}</div>
       </div>
       <div class="metric-card cat-resolved">
         <div class="metric-title">Resolved</div>
-        <div class="metric-value">{}</div>
+        <div class="metric-value">{resolved_count}</div>
       </div>
       <div class="metric-card cat-persistent">
         <div class="metric-title">Persistent</div>
-        <div class="metric-value">{}</div>
+        <div class="metric-value">{persistent_count}</div>
       </div>
-"#,
-            new_count, resolved_count, persistent_count
+"#
         );
     }
 
@@ -731,14 +728,13 @@ pub fn render_findings_html_report(
         <div class="filter-group">
           <span class="filter-label">Severity:</span>
           <span class="pill active" data-filter-type="severity" data-filter-val="all">All</span>
-          <span class="pill" data-filter-type="severity" data-filter-val="critical">Critical <span class="badge">{}</span></span>
-          <span class="pill" data-filter-type="severity" data-filter-val="high">High <span class="badge">{}</span></span>
-          <span class="pill" data-filter-type="severity" data-filter-val="medium">Med <span class="badge">{}</span></span>
-          <span class="pill" data-filter-type="severity" data-filter-val="low">Low <span class="badge">{}</span></span>
-          <span class="pill" data-filter-type="severity" data-filter-val="note">Note <span class="badge">{}</span></span>
+          <span class="pill" data-filter-type="severity" data-filter-val="critical">Critical <span class="badge">{crit_count}</span></span>
+          <span class="pill" data-filter-type="severity" data-filter-val="high">High <span class="badge">{high_count}</span></span>
+          <span class="pill" data-filter-type="severity" data-filter-val="medium">Med <span class="badge">{med_count}</span></span>
+          <span class="pill" data-filter-type="severity" data-filter-val="low">Low <span class="badge">{low_count}</span></span>
+          <span class="pill" data-filter-type="severity" data-filter-val="note">Note <span class="badge">{note_count}</span></span>
         </div>
-"#,
-        crit_count, high_count, med_count, low_count, note_count
+"#
     );
 
     if is_differential {
@@ -747,12 +743,11 @@ pub fn render_findings_html_report(
             r#"        <div class="filter-group">
           <span class="filter-label">Status:</span>
           <span class="pill active" data-filter-type="category" data-filter-val="all">All</span>
-          <span class="pill" data-filter-type="category" data-filter-val="new">New <span class="badge">{}</span></span>
-          <span class="pill" data-filter-type="category" data-filter-val="resolved">Resolved <span class="badge">{}</span></span>
-          <span class="pill" data-filter-type="category" data-filter-val="persistent">Persistent <span class="badge">{}</span></span>
+          <span class="pill" data-filter-type="category" data-filter-val="new">New <span class="badge">{new_count}</span></span>
+          <span class="pill" data-filter-type="category" data-filter-val="resolved">Resolved <span class="badge">{resolved_count}</span></span>
+          <span class="pill" data-filter-type="category" data-filter-val="persistent">Persistent <span class="badge">{persistent_count}</span></span>
         </div>
-"#,
-            new_count, resolved_count, persistent_count
+"#
         );
     }
 
@@ -767,6 +762,7 @@ pub fn render_findings_html_report(
           <span class="pill" data-filter-type="policy" data-filter-val="conformance">Conformance</span>
           <span class="pill" data-filter-type="policy" data-filter-val="maintainability">Maintainability</span>
           <span class="pill" data-filter-type="policy" data-filter-val="optimization">Optimization</span>
+          <span class="pill" data-filter-type="policy" data-filter-val="testing">Testing</span>
         </div>
       </div>
 
@@ -813,7 +809,7 @@ pub fn render_findings_html_report(
             let targets_str = finding
                 .targets
                 .iter()
-                .map(|t| t.to_string())
+                .map(std::string::ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(" ");
 
@@ -841,10 +837,9 @@ pub fn render_findings_html_report(
             );
 
             if is_differential {
-                let _ = write!(
+                let _ = writeln!(
                     html,
-                    r#"            <span class="badge-cat {cat_str}">{cat_badge_text}</span>
-"#
+                    r#"            <span class="badge-cat {cat_str}">{cat_badge_text}</span>"#
                 );
             }
 
@@ -859,10 +854,9 @@ pub fn render_findings_html_report(
             );
 
             if let Some(ref loc) = finding.primary_location {
-                let _ = write!(
+                let _ = writeln!(
                     html,
-                    r#"          <span class="finding-location-preview">{}</span>
-"#,
+                    r#"          <span class="finding-location-preview">{}</span>"#,
                     escape_html(loc)
                 );
             }
@@ -908,25 +902,21 @@ pub fn render_findings_html_report(
             }
 
             if !finding.targets.is_empty() {
-                let targets_tags = finding
-                    .targets
-                    .iter()
-                    .map(|t| {
-                        format!(
-                            r#"<span class="pill-tag">{}</span>"#,
-                            escape_html(t.as_str())
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
+                let targets_tags = finding.targets.iter().fold(String::new(), |mut tags, t| {
+                    let _ = write!(
+                        tags,
+                        r#"<span class="pill-tag">{}</span>"#,
+                        escape_html(t.as_str())
+                    );
+                    tags
+                });
                 let _ = write!(
                     html,
                     r#"            <div class="meta-item">
               <span class="meta-item-label">Targets</span>
-              <div>{}</div>
+              <div>{targets_tags}</div>
             </div>
-"#,
-                    targets_tags
+"#
                 );
             }
 
@@ -934,17 +924,17 @@ pub fn render_findings_html_report(
                 let dim_tags = finding
                     .dimensions
                     .iter()
-                    .map(|d| format!(r#"<span class="pill-tag">{}</span>"#, escape_html(d)))
-                    .collect::<Vec<_>>()
-                    .join("");
+                    .fold(String::new(), |mut tags, d| {
+                        let _ = write!(tags, r#"<span class="pill-tag">{}</span>"#, escape_html(d));
+                        tags
+                    });
                 let _ = write!(
                     html,
                     r#"            <div class="meta-item">
               <span class="meta-item-label">Dimensions</span>
-              <div>{}</div>
+              <div>{dim_tags}</div>
             </div>
-"#,
-                    dim_tags
+"#
                 );
             }
 
@@ -953,18 +943,17 @@ pub fn render_findings_html_report(
                     html,
                     r#"            <div class="meta-item">
               <span class="meta-item-label">Matched Baseline Finding</span>
-              <span class="meta-item-val">{}</span>
+              <span class="meta-item-val">{base_id}</span>
             </div>
-"#,
-                    base_id
+"#
                 );
             }
 
             html.push_str(
-                r#"          </div>
+                r"          </div>
         </div>
       </article>
-"#,
+",
             );
         }
     }
@@ -974,7 +963,7 @@ pub fn render_findings_html_report(
         r#"    </main>
 
     <footer class="footer">
-      Generated by Argus Intelligent Source Code Review Harness &bull; Run: <code>{}</code>
+      Generated by Argus Intelligent Source Code Review Harness &bull; Run: <code>{run_id}</code>
     </footer>
   </div>
 
@@ -1085,8 +1074,7 @@ pub fn render_findings_html_report(
   </script>
 </body>
 </html>
-"#,
-        run_id
+"#
     );
 
     html

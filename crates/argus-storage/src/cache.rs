@@ -619,10 +619,10 @@ pub(crate) fn db_prune_invalidated_targets(
         {
             let (key, _) = entry.map_err(database_error("cannot read assessment cache entry"))?;
             let key_str = key.value();
-            if let Some(target_part) = key_str.split('\0').next() {
-                if target_set.contains(target_part) {
-                    keys_to_remove.push(key_str.to_owned());
-                }
+            if let Some(target_part) = key_str.split('\0').next()
+                && target_set.contains(target_part)
+            {
+                keys_to_remove.push(key_str.to_owned());
             }
         }
         let count = keys_to_remove.len();

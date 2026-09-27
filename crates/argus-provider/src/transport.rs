@@ -659,11 +659,8 @@ fn repair_json_syntax(input: &str) -> String {
                 out.push('"');
                 out.push_str(&ident);
                 out.push('"');
-            } else if ident == "true" || ident == "false" || ident == "null" {
-                out.push_str(&ident);
-            } else if ident.chars().all(|ch| ch.is_ascii_digit() || ch == '.') {
-                out.push_str(&ident);
             } else {
+                // Literals (`true`, `false`, `null`, numbers) and other bare words pass through.
                 out.push_str(&ident);
             }
             out.push_str(&whitespace);

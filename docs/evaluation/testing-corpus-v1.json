@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "name": "argus-seeded-testing",
+  "version": "1.0.0",
+  "policy_version": "testing-conservative@1",
+  "expected_issues": [
+    {
+      "id": "untested-error-path",
+      "target": "f69d891e1f5bc9ca3fbd6078b5f82855909239995ffaf48b293104e89c5ed696",
+      "dimensions": [
+        "error_and_failure_paths"
+      ]
+    },
+    {
+      "id": "untested-boundary",
+      "target": "a009e0fd9ba122060eb1eaf1afbc5749aa48990c95cd4d71a5cc9abc27a34d6a",
+      "dimensions": [
+        "boundary_and_edge_inputs"
+      ]
+    },
+    {
+      "id": "untested-core-logic",
+      "target": "6eb10dd55e3523aab0ceacdec25060de1f4c21327ae3845734a80943706d51ab",
+      "dimensions": [
+        "behavioral_correctness"
+      ]
+    },
+    {
+      "id": "untested-concurrency",
+      "target": "2a56f6cf7c35c026c7743ffd6cae51cc0bfd664c23c6edfaf30ab13c93c52e7a",
+      "dimensions": [
+        "state_and_concurrency"
+      ]
+    },
+    {
+      "id": "overflow-without-regression-test",
+      "target": "b04517d6f5e74fc2d480f286e13cc618d5a58b1d5141c78558144751e93f88a8",
+      "dimensions": [
+        "boundary_and_edge_inputs",
+        "regression_protection"
+      ]
+    },
+    {
+      "id": "public-api-without-integration-test",
+      "target": "60f28c82fe3ef23a99349ad62e2b6e731e224d718fa04835759c4610a28cfc91",
+      "dimensions": [
+        "public_api_contract"
+      ]
+    },
+    {
+      "id": "hot-path-without-benchmark",
+      "target": "49621e9f851d9c1f7abe9db76744ff8e98a51b5ce79f80210ae257bdeaf3af72",
+      "dimensions": [
+        "performance_benchmarks"
+      ]
+    },
+    {
+      "id": "cli-without-external-test",
+      "target": "566dff88d3d076c7724fccd22f6c73f6ad4ce2036f5b710aa6d032b0d38ed996",
+      "dimensions": [
+        "external_behavior"
+      ]
+    }
+  ],
+  "known_clean_targets": [
+    "588bdc41a357b72652f3ef0c5b61ea1785ef6b8a30af818a6369a6a973461ed1",
+    "58a3dfffd941008000e08d317c86faf2682cdf11ef0d67e419891c3729194624"
+  ]
+}

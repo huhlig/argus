@@ -15,7 +15,7 @@
 use argus_core::{ConfigurationId, EvidenceKind, PortableTargetKind, SourcePath, TargetKind};
 use argus_java::JavaSyntaxProvider;
 
-const JAVA_SAMPLE: &str = r#"package com.example.model;
+const JAVA_SAMPLE: &str = r"package com.example.model;
 
 import java.util.List;
 import java.io.Serializable;
@@ -63,7 +63,7 @@ public enum AccountStatus {
     ACTIVE,
     SUSPENDED
 }
-"#;
+";
 
 #[test]
 fn syntax_provider_extracts_all_java_symbols() {
@@ -166,4 +166,180 @@ fn syntax_provider_extracts_all_java_symbols() {
     assert_eq!(inv.imports.len(), 2);
     assert!(inv.imports.iter().any(|i| i.path == "java.util.List"));
     assert!(inv.imports.iter().any(|i| i.path == "java.io.Serializable"));
+}
+
+const JAVA_TESTS: &str = r"package com.example;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+
+public class CalculatorTest {
+    @Test
+    void addsNumbers() {
+        new Calculator().add(1, 2);
+    }
+
+    @ParameterizedTest
+    void addsMany(int value) {
+        new Calculator().add(value, value);
+    }
+
+    @org.junit.Test
+    public void legacyJunitFour() {}
+
+    @org.openjdk.jmh.annotations.Benchmark
+    public void measureAdd() {}
+
+    private Calculator fixture() {
+        return new Calculator();
+    }
+}
+";
+
+#[test]
+fn syntax_provider_emits_source_evidence_for_files_types_and_callables() {
+    let provider = JavaSyntaxProvider::new(ConfigurationId::derive([b"java".as_slice()]));
+    let path = SourcePath::new("src/main/java/com/example/model/AccountService.java").unwrap();
+    let inv = provider.parse_file(&path, JAVA_SAMPLE, None).unwrap();
+    let source_for = |name: &str| {
+        let target = inv
+            .targets
+            .iter()
+            .find(|target| target.name == name)
+            .unwrap();
+        inv.evidence
+            .iter()
+            .find(|record| {
+                record.kind == EvidenceKind::Source && record.target.as_ref() == Some(&target.id)
+            })
+            .and_then(|record| record.detail.clone())
+            .unwrap_or_else(|| panic!("no source evidence for {name}"))
+    };
+    assert!(source_for(path.as_str()).starts_with("package com.example.model;"));
+    assert!(source_for("AccountService").contains("public void deposit(double amount)"));
+    let deposit = source_for("deposit");
+    assert!(deposit.contains("this.balance += amount;"));
+    assert!(!deposit.contains("class AccountService"));
+}
+
+#[test]
+fn syntax_provider_classifies_junit_testng_and_jmh_methods() {
+    let provider = JavaSyntaxProvider::new(ConfigurationId::derive([b"java".as_slice()]));
+    let path = SourcePath::new("src/test/java/com/example/CalculatorTest.java").unwrap();
+    let inv = provider.parse_file(&path, JAVA_TESTS, None).unwrap();
+    let kind = |name: &str| {
+        inv.targets
+            .iter()
+            .find(|target| target.name == name)
+            .map(|target| target.kind.clone())
+            .unwrap()
+    };
+    let test = TargetKind::Portable {
+        kind: PortableTargetKind::Test,
+    };
+    assert_eq!(kind("addsNumbers"), test);
+    assert_eq!(kind("addsMany"), test);
+    assert_eq!(kind("legacyJunitFour"), test);
+    assert_eq!(
+        kind("measureAdd"),
+        TargetKind::LanguageSpecific {
+            language: "java".to_owned(),
+            kind: "benchmark".to_owned(),
+        }
+    );
+    assert_eq!(
+        kind("fixture"),
+        TargetKind::Portable {
+            kind: PortableTargetKind::Callable,
+        }
+    );
+
+    // Classification does not change identity: the ID depends only on the signature.
+    let plain = JAVA_TESTS.replace("    @Test\n    void addsNumbers", "    void addsNumbers");
+    let plain_inv = provider.parse_file(&path, &plain, None).unwrap();
+    let id = |inventory: &argus_java::JavaSyntaxInventory| {
+        inventory
+            .targets
+            .iter()
+            .find(|target| target.name == "addsNumbers")
+            .unwrap()
+            .id
+            .clone()
+    };
+    assert_eq!(id(&inv), id(&plain_inv));
+}
+
+const JAVA_SPANS: &str = r#"package com.example;
+
+public interface Shape {
+    double area();
+}
+
+class Parser {
+    String first(String input) {
+        String braces = "}{"; // } in a comment
+        char close = '}';
+        return input + braces + close;
+    }
+
+    <T> T second(T value) {
+        /* } */
+        String block = """
+            }
+            """;
+        return value;
+    }
+}
+
+record Range(int low, int high) {
+    Range {
+        if (low > high) { throw new IllegalArgumentException("}"); }
+    }
+}
+"#;
+
+#[test]
+fn callable_spans_cover_exactly_their_declaration() {
+    let provider = JavaSyntaxProvider::new(ConfigurationId::derive([b"java".as_slice()]));
+    let path = SourcePath::new("src/main/java/com/example/Parser.java").unwrap();
+    let inv = provider.parse_file(&path, JAVA_SPANS, None).unwrap();
+    let text_of = |name: &str| {
+        let location = inv
+            .targets
+            .iter()
+            .find(|target| target.name == name)
+            .and_then(|target| target.location.clone())
+            .unwrap();
+        JAVA_SPANS[usize::try_from(location.bytes.start).unwrap()
+            ..usize::try_from(location.bytes.end).unwrap()]
+            .to_owned()
+    };
+    let first = text_of("first");
+    assert!(first.starts_with("String first(String input) {"), "{first}");
+    assert!(
+        first.ends_with("return input + braces + close;\n    }"),
+        "{first}"
+    );
+    let second = text_of("second");
+    assert!(second.starts_with("<T> T second(T value) {"), "{second}");
+    assert!(second.ends_with("return value;\n    }"), "{second}");
+    assert_eq!(text_of("area"), "double area();");
+    let compact = text_of("Range");
+    assert!(
+        compact.contains("record Range"),
+        "the record type keeps its own span"
+    );
+    let constructor = inv
+        .targets
+        .iter()
+        .filter(|target| target.name == "Range")
+        .filter_map(|target| target.location.clone())
+        .map(|location| {
+            &JAVA_SPANS[usize::try_from(location.bytes.start).unwrap()
+                ..usize::try_from(location.bytes.end).unwrap()]
+        })
+        .find(|text| !text.contains("record"))
+        .unwrap();
+    assert!(constructor.trim_end().ends_with('}'), "{constructor}");
+    assert!(!constructor.contains("record"), "{constructor}");
 }

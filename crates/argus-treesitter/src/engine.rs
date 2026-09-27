@@ -209,31 +209,31 @@ impl TreeSitterEngine {
                 .rsplit(['.', ':', '>'])
                 .next()
                 .unwrap_or(&callee_name);
-            if let Some(candidates) = callable_by_name.get(simple_name) {
-                if candidates.len() == 1 {
-                    let callee_id = &candidates[0];
-                    if callee_id != &caller_id {
-                        let rel_id = RelationId::derive([
-                            caller_id.as_str().as_bytes(),
-                            callee_id.as_str().as_bytes(),
-                            b"core:calls".as_slice(),
-                        ]);
-                        if seen_relations.insert(rel_id.clone()) {
-                            inventory.relations.push(Relation {
-                                id: rel_id,
-                                source: caller_id,
-                                target: callee_id.clone(),
-                                kind: "core:calls".to_owned(),
-                                provenance: RelationProvenance {
-                                    provider: spec.provider_name.to_owned(),
-                                    provider_version: ENGINE_VERSION.to_owned(),
-                                    configuration: Some(self.configuration.clone()),
-                                    ingest_only: false,
-                                    resolution: ResolutionQuality::Inferred,
-                                    detail: Some("AST call expression resolution".to_owned()),
-                                },
-                            });
-                        }
+            if let Some(candidates) = callable_by_name.get(simple_name)
+                && candidates.len() == 1
+            {
+                let callee_id = &candidates[0];
+                if callee_id != &caller_id {
+                    let rel_id = RelationId::derive([
+                        caller_id.as_str().as_bytes(),
+                        callee_id.as_str().as_bytes(),
+                        b"core:calls".as_slice(),
+                    ]);
+                    if seen_relations.insert(rel_id.clone()) {
+                        inventory.relations.push(Relation {
+                            id: rel_id,
+                            source: caller_id,
+                            target: callee_id.clone(),
+                            kind: "core:calls".to_owned(),
+                            provenance: RelationProvenance {
+                                provider: spec.provider_name.to_owned(),
+                                provider_version: ENGINE_VERSION.to_owned(),
+                                configuration: Some(self.configuration.clone()),
+                                ingest_only: false,
+                                resolution: ResolutionQuality::Inferred,
+                                detail: Some("AST call expression resolution".to_owned()),
+                            },
+                        });
                     }
                 }
             }
@@ -409,10 +409,10 @@ impl Walker<'_> {
                 }
             }
             Some(NodeClassification::Call) => {
-                if let Some(target_name) = (self.spec.extract_call_target)(node, self.source) {
-                    if let Some((caller_id, _)) = self.scope_stack.last() {
-                        self.call_sites.push((caller_id.clone(), target_name));
-                    }
+                if let Some(target_name) = (self.spec.extract_call_target)(node, self.source)
+                    && let Some((caller_id, _)) = self.scope_stack.last()
+                {
+                    self.call_sites.push((caller_id.clone(), target_name));
                 }
             }
             _ => {}

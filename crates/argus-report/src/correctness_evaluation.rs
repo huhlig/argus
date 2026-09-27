@@ -109,6 +109,7 @@ impl CorrectnessEvaluation {
         self.check_thresholds_with_mode(thresholds, false)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn check_thresholds_with_mode(
         &self,
         thresholds: &CorrectnessEvaluationThresholds,
@@ -178,36 +179,34 @@ impl CorrectnessEvaluation {
                 _ => {}
             }
         }
-        if let Some(min_recall) = thresholds.min_recall_basis_points {
-            if self.recall.basis_points < min_recall {
-                violations.push(format!(
-                    "recall {:.2}% is below threshold {:.2}%",
-                    f64::from(self.recall.basis_points) / 100.0,
-                    f64::from(min_recall) / 100.0
-                ));
-            }
+        if let Some(min_recall) = thresholds.min_recall_basis_points
+            && self.recall.basis_points < min_recall
+        {
+            violations.push(format!(
+                "recall {:.2}% is below threshold {:.2}%",
+                f64::from(self.recall.basis_points) / 100.0,
+                f64::from(min_recall) / 100.0
+            ));
         }
-        if let Some(max_duplicate) = thresholds.max_duplicate_rate_basis_points {
-            if let Some(duplicate) = self.duplicate_rate {
-                if duplicate.basis_points > max_duplicate {
-                    violations.push(format!(
-                        "duplicate rate {:.2}% exceeds maximum threshold {:.2}%",
-                        f64::from(duplicate.basis_points) / 100.0,
-                        f64::from(max_duplicate) / 100.0
-                    ));
-                }
-            }
+        if let Some(max_duplicate) = thresholds.max_duplicate_rate_basis_points
+            && let Some(duplicate) = self.duplicate_rate
+            && duplicate.basis_points > max_duplicate
+        {
+            violations.push(format!(
+                "duplicate rate {:.2}% exceeds maximum threshold {:.2}%",
+                f64::from(duplicate.basis_points) / 100.0,
+                f64::from(max_duplicate) / 100.0
+            ));
         }
-        if let Some(max_utv) = thresholds.max_unable_to_verify_rate_basis_points {
-            if let Some(utv) = self.unable_to_verify_rate {
-                if utv.basis_points > max_utv {
-                    violations.push(format!(
-                        "unable-to-verify rate {:.2}% exceeds maximum threshold {:.2}%",
-                        f64::from(utv.basis_points) / 100.0,
-                        f64::from(max_utv) / 100.0
-                    ));
-                }
-            }
+        if let Some(max_utv) = thresholds.max_unable_to_verify_rate_basis_points
+            && let Some(utv) = self.unable_to_verify_rate
+            && utv.basis_points > max_utv
+        {
+            violations.push(format!(
+                "unable-to-verify rate {:.2}% exceeds maximum threshold {:.2}%",
+                f64::from(utv.basis_points) / 100.0,
+                f64::from(max_utv) / 100.0
+            ));
         }
         if let Some(min_stability) = thresholds.min_repeated_run_stability_basis_points {
             match self.repeated_run_stability {
@@ -319,15 +318,13 @@ pub fn evaluate_correctness(
                 Some(adjudication) => match adjudication.state {
                     AdjudicationState::Accepted => {
                         accepted_findings += 1;
-                        if let Some(expected_issue) = &adjudication.expected_issue {
-                            if corpus
+                        if let Some(expected_issue) = &adjudication.expected_issue
+                            && corpus
                                 .expected_issues
                                 .iter()
                                 .any(|issue| &issue.id == expected_issue)
-                            {
-                                accepted_issues
-                                    .insert((report.run_id.clone(), expected_issue.clone()));
-                            }
+                        {
+                            accepted_issues.insert((report.run_id.clone(), expected_issue.clone()));
                         }
                     }
                     AdjudicationState::Rejected => rejected_findings += 1,

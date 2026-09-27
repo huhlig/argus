@@ -30,6 +30,8 @@ mod optimization;
 mod optimization_evaluation;
 pub mod publish;
 pub mod sarif;
+mod testing;
+mod testing_evaluation;
 
 pub use architecture::{
     ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND, ARCHITECTURE_REPORT_SCHEMA_VERSION,
@@ -44,7 +46,7 @@ pub use architecture_evaluation::{
 };
 pub use backlog::{
     BacklogCategory, BacklogItem, BacklogReport, classify_backlog_finding, extract_backlog_report,
-    extract_conformance_backlog_items,
+    extract_conformance_backlog_items, extract_testing_backlog_items,
 };
 pub use conformance::{
     CONFORMANCE_ASSESSMENT_ARTIFACT_KIND, CONFORMANCE_REPORT_SCHEMA_VERSION,
@@ -75,7 +77,7 @@ pub use differential::{
     differential_report_from_queue, extract_all_findings_from_bundle,
     extract_all_findings_from_queue, extract_architecture_findings, extract_conformance_findings,
     extract_correctness_findings, extract_documentation_findings, extract_maintainability_findings,
-    extract_optimization_findings,
+    extract_optimization_findings, extract_testing_findings,
 };
 pub use evaluation::{
     DOCUMENTATION_CORPUS_SCHEMA_VERSION, DOCUMENTATION_EVALUATION_SCHEMA_VERSION,
@@ -118,6 +120,15 @@ pub use sarif::{
     SarifMessage, SarifMultiformatMessageString, SarifPhysicalLocation, SarifRegion, SarifReport,
     SarifReportingConfiguration, SarifResult, SarifRule, SarifRun, SarifTool, build_rule_catalog,
     parse_sarif_location, render_differential_sarif_report, render_sarif_report,
+};
+pub use testing::{
+    TESTING_ASSESSMENT_ARTIFACT_KIND, TESTING_REPORT_SCHEMA_VERSION, TestingFindingCluster,
+    TestingFindingOccurrence, TestingReport, TestingReportAssessment, TestingReportSummary,
+    testing_report_from_queue, write_testing_bundle_reports,
+};
+pub use testing_evaluation::{
+    ExpectedTestingIssue, TESTING_CORPUS_SCHEMA_VERSION, TESTING_EVALUATION_SCHEMA_VERSION,
+    TestingEvaluation, TestingEvaluationCorpus, TestingEvaluationThresholds, evaluate_testing,
 };
 
 use argus_core::{
@@ -391,9 +402,7 @@ impl DocumentationReport {
                 .collect();
             for cluster in &self.finding_clusters {
                 let rep_citations = citations(&cluster.representative.citations);
-                let location_str = if rep_citations != "none" {
-                    rep_citations
-                } else {
+                let location_str = if rep_citations == "none" {
                     let fallback_locs = cluster
                         .occurrences
                         .iter()
@@ -406,6 +415,8 @@ impl DocumentationReport {
                     } else {
                         fallback_locs.into_iter().collect::<Vec<_>>().join(", ")
                     }
+                } else {
+                    rep_citations
                 };
                 let target_ids = cluster
                     .occurrences
@@ -747,7 +758,7 @@ fn render_assessment(output: &mut String, item: &DocumentationReportAssessment) 
     let location_line = if target_loc.is_empty() {
         String::new()
     } else {
-        format!("Location: {}  \n", target_loc)
+        format!("Location: {target_loc}  \n")
     };
     write!(
         output,
@@ -1248,7 +1259,7 @@ mod tests {
             POLICY,
             &[work.clone()],
             &[outcome_rec.clone()],
-            &[artifact.clone()],
+            std::slice::from_ref(&artifact),
             &[],
         )
         .unwrap();

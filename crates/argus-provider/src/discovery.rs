@@ -20,6 +20,7 @@ use crate::{
     runtime_profile::{PROVIDER_CONFIG_SCHEMA_VERSION, PROVIDER_RUNTIME_PROFILE_SCHEMA_VERSION},
 };
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::{collections::BTreeSet, str::FromStr};
 use url::Url;
 
@@ -115,7 +116,8 @@ pub async fn discover_models(
     match kind {
         DiscoveredProviderKind::Lemonade
         | DiscoveredProviderKind::LmStudio
-        | DiscoveredProviderKind::Openai => {
+        | DiscoveredProviderKind::Openai
+        | DiscoveredProviderKind::Bedrock => {
             discover_openai_compatible_models(&client, endpoint, api_key).await
         }
         DiscoveredProviderKind::Ollama => discover_ollama_models(&client, endpoint).await,
@@ -128,15 +130,13 @@ pub async fn discover_models(
             })?;
             discover_anthropic_models(&client, endpoint, key).await
         }
-        DiscoveredProviderKind::Bedrock => {
-            discover_openai_compatible_models(&client, endpoint, api_key).await
-        }
         DiscoveredProviderKind::Watsonx => {
             discover_watsonx_models(&client, endpoint, api_key).await
         }
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn discover_watsonx_models(
     client: &reqwest::Client,
     base_url: &str,
@@ -215,7 +215,7 @@ async fn discover_watsonx_models(
         format!("{base_clean}/ml/v1/foundation_model_specs?version=2023-05-29")
     };
     if let Some(pid) = effective_pid.as_deref().filter(|p| !p.trim().is_empty()) {
-        url.push_str(&format!("&project_id={}", pid.trim()));
+        let _ = write!(url, "&project_id={}", pid.trim());
     }
 
     let response = client
@@ -304,24 +304,22 @@ async fn discover_ollama_models(
     let tags_url = format!("{base}/api/tags");
 
     let response = client.get(&tags_url).send().await;
-    if let Ok(resp) = response {
-        if resp.status().is_success() {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
-                    let ids: Vec<String> = models
-                        .iter()
-                        .filter_map(|item| {
-                            item.get("name")
-                                .or_else(|| item.get("model"))
-                                .and_then(|v| v.as_str())
-                                .map(ToOwned::to_owned)
-                        })
-                        .collect();
-                    if !ids.is_empty() {
-                        return Ok(ids);
-                    }
-                }
-            }
+    if let Ok(resp) = response
+        && resp.status().is_success()
+        && let Ok(json) = resp.json::<serde_json::Value>().await
+        && let Some(models) = json.get("models").and_then(|m| m.as_array())
+    {
+        let ids: Vec<String> = models
+            .iter()
+            .filter_map(|item| {
+                item.get("name")
+                    .or_else(|| item.get("model"))
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned)
+            })
+            .collect();
+        if !ids.is_empty() {
+            return Ok(ids);
         }
     }
 
@@ -481,7 +479,13 @@ pub fn infer_deployment_mode(endpoint: &str) -> DeploymentMode {
             }
         }
 
-        if host.ends_with(".local") || host.ends_with(".lan") || host.ends_with(".internal") {
+        // Host names are case-insensitive; `Url` lowercases only special schemes.
+        let private_suffix = host.rsplit_once('.').is_some_and(|(_, suffix)| {
+            ["local", "lan", "internal"]
+                .iter()
+                .any(|private| suffix.eq_ignore_ascii_case(private))
+        });
+        if private_suffix {
             return DeploymentMode::SameNetwork;
         }
     }
@@ -490,6 +494,7 @@ pub fn infer_deployment_mode(endpoint: &str) -> DeploymentMode {
 }
 
 /// Builds a complete `ProviderRuntimeProfile` for a discovered model.
+#[allow(clippy::too_many_lines)]
 pub fn generate_runtime_profile(
     kind: DiscoveredProviderKind,
     endpoint: &str,
@@ -567,26 +572,28 @@ pub fn generate_runtime_profile(
             base_url: Some(endpoint.to_owned()),
         },
         DiscoveredProviderKind::Openai => ProviderTransportProfile::Openai {
-            api_key: api_key_env
-                .map(|k| {
+            api_key: api_key_env.map_or_else(
+                || "${OPENAI_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${OPENAI_API_KEY}".to_owned()),
+                },
+            ),
         },
         DiscoveredProviderKind::Anthropic => ProviderTransportProfile::Anthropic {
-            api_key: api_key_env
-                .map(|k| {
+            api_key: api_key_env.map_or_else(
+                || "${ANTHROPIC_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${ANTHROPIC_API_KEY}".to_owned()),
+                },
+            ),
         },
         DiscoveredProviderKind::LmStudio => ProviderTransportProfile::LmStudio {
             base_url: Some(endpoint.to_owned()),
@@ -595,7 +602,11 @@ pub fn generate_runtime_profile(
         DiscoveredProviderKind::Bedrock => {
             let region = if let Some(pos) = endpoint.find(".api.aws") {
                 let prefix = &endpoint[..pos];
-                prefix.split('.').last().unwrap_or("us-east-1").to_owned()
+                prefix
+                    .split('.')
+                    .next_back()
+                    .unwrap_or("us-east-1")
+                    .to_owned()
             } else if endpoint.contains("bedrock-runtime.") {
                 endpoint
                     .split("bedrock-runtime.")
@@ -637,15 +648,16 @@ pub fn generate_runtime_profile(
             } else {
                 endpoint.to_owned()
             };
-            let api_key_var = api_key_env
-                .map(|k| {
+            let api_key_var = api_key_env.map_or_else(
+                || "${WATSONX_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${WATSONX_API_KEY}".to_owned());
+                },
+            );
             ProviderTransportProfile::Watsonx {
                 service_url,
                 api_version: "2023-05-29".to_owned(),
@@ -707,7 +719,8 @@ pub fn slugify_model_alias(model_id: &str) -> String {
     slugify_profile_name(DiscoveredProviderKind::Openai, without_version).replace("openai-", "")
 }
 
-/// Generates a complete ProviderConfig containing all discovered models with aliases.
+/// Generates a complete `ProviderConfig` containing all discovered models with aliases.
+#[allow(clippy::too_many_lines)]
 pub fn generate_provider_config(
     kind: DiscoveredProviderKind,
     endpoint: Option<&str>,
@@ -730,26 +743,28 @@ pub fn generate_provider_config(
             base_url: Some(endpoint.to_owned()),
         },
         DiscoveredProviderKind::Openai => ProviderTransportProfile::Openai {
-            api_key: api_key_env
-                .map(|k| {
+            api_key: api_key_env.map_or_else(
+                || "${OPENAI_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${OPENAI_API_KEY}".to_owned()),
+                },
+            ),
         },
         DiscoveredProviderKind::Anthropic => ProviderTransportProfile::Anthropic {
-            api_key: api_key_env
-                .map(|k| {
+            api_key: api_key_env.map_or_else(
+                || "${ANTHROPIC_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${ANTHROPIC_API_KEY}".to_owned()),
+                },
+            ),
         },
         DiscoveredProviderKind::LmStudio => ProviderTransportProfile::LmStudio {
             base_url: Some(endpoint.to_owned()),
@@ -758,7 +773,11 @@ pub fn generate_provider_config(
         DiscoveredProviderKind::Bedrock => {
             let region = if let Some(pos) = endpoint.find(".api.aws") {
                 let prefix = &endpoint[..pos];
-                prefix.split('.').last().unwrap_or("us-east-1").to_owned()
+                prefix
+                    .split('.')
+                    .next_back()
+                    .unwrap_or("us-east-1")
+                    .to_owned()
             } else if endpoint.contains("bedrock-runtime.") {
                 endpoint
                     .split("bedrock-runtime.")
@@ -800,15 +819,16 @@ pub fn generate_provider_config(
             } else {
                 endpoint.to_owned()
             };
-            let api_key_var = api_key_env
-                .map(|k| {
+            let api_key_var = api_key_env.map_or_else(
+                || "${WATSONX_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${WATSONX_API_KEY}".to_owned());
+                },
+            );
             ProviderTransportProfile::Watsonx {
                 service_url,
                 api_version: "2023-05-29".to_owned(),

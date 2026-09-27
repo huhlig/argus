@@ -68,7 +68,7 @@ fn provider(value: &serde_json::Value, limit: usize) -> RustdocJsonProvider {
         42,
         "nightly-2026-08-24",
         limit,
-        PathBuf::from("C:/workspace"),
+        workspace_root(),
     )
 }
 
@@ -142,4 +142,10 @@ fn identities_and_order_are_stable() {
         provider.ingest(&source, &[]).unwrap(),
         provider.ingest(&source, &[]).unwrap()
     );
+}
+
+/// Absolute workspace root the tools require, derived from this crate's location so fixtures
+/// hold only relative paths and no host-specific root is hard-coded.
+fn workspace_root() -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixture-workspace")
 }

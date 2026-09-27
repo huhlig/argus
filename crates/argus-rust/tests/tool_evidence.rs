@@ -86,7 +86,7 @@ impl ControlledExecutor for FakeExecutor {
 fn request(tool: RustTool) -> ToolRequest {
     ToolRequest {
         tool,
-        workspace_root: PathBuf::from("C:/workspace"),
+        workspace_root: workspace_root(),
         policy: ToolExecutionPolicy {
             limits: ToolLimits {
                 wall_time_millis: 1_000,
@@ -96,7 +96,7 @@ fn request(tool: RustTool) -> ToolRequest {
             },
             network: NetworkAccess::Denied,
             environment: BTreeMap::default(),
-            writable_roots: vec![PathBuf::from("C:/workspace/target")],
+            writable_roots: vec![workspace_root().join("target")],
         },
     }
 }
@@ -210,4 +210,10 @@ fn rejects_a_mismatched_active_tool_request() {
         )
         .unwrap_err();
     assert!(error.to_string().contains("does not match"));
+}
+
+/// Absolute workspace root the tools require, derived from this crate's location so fixtures
+/// hold only relative paths and no host-specific root is hard-coded.
+fn workspace_root() -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixture-workspace")
 }

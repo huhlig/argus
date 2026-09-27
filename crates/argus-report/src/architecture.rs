@@ -147,17 +147,15 @@ impl ArchitectureReport {
                 continue;
             };
 
-            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref) {
-                if artifact.kind == ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND {
-                    if let Ok(assessment) =
-                        serde_json::from_slice::<ArchitectureAssessment>(&artifact.payload)
-                    {
-                        assessments_by_work.insert(
-                            effective_outcome.logical_key.work_id.clone(),
-                            (effective_outcome, assessment),
-                        );
-                    }
-                }
+            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref)
+                && artifact.kind == ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND
+                && let Ok(assessment) =
+                    serde_json::from_slice::<ArchitectureAssessment>(&artifact.payload)
+            {
+                assessments_by_work.insert(
+                    effective_outcome.logical_key.work_id.clone(),
+                    (effective_outcome, assessment),
+                );
             }
         }
 
@@ -585,6 +583,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn unadjudicated_and_adjudicated_architecture_findings_demarcation() {
         let run_id = RunId::derive([b"arch-adj-run".as_slice()]);
         let target_id = TargetId::derive([b"target-arch-1".as_slice()]);
@@ -699,8 +698,8 @@ mod tests {
             run_id.clone(),
             "architecture-code-derived@1",
             &[work_succeeded.clone()],
-            &[outcome_record.clone()],
-            &[artifact.clone()],
+            std::slice::from_ref(&outcome_record),
+            std::slice::from_ref(&artifact),
             &[],
         )
         .unwrap();

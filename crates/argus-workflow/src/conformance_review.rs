@@ -242,7 +242,7 @@ impl PolicyAssessmentContract for ConformanceAssessmentContract {
     }
 }
 
-const CONFORMANCE_INSTRUCTIONS: &str = r#"Assess the target declaration and bounded source and design evidence for design document conformance across the codebase.
+const CONFORMANCE_INSTRUCTIONS: &str = r"Assess the target declaration and bounded source and design evidence for design document conformance across the codebase.
 You MUST evaluate all 5 standard conformance dimensions:
 1. coverage: Whether all declared architectural constraints, invariants, and requirements in the governing design documents have corresponding implementations and test verification.
 2. constraint_conformance: Direct alignment between the implementation and declared design rules (error handling strategy, boundary invariants, concurrency models, dependency constraints).
@@ -269,7 +269,7 @@ For any identified finding, you must provide:
   * clarify_ownership_or_scope: Ambiguous ownership or boundary.
   * accept_intentional_drift: Documented intentional deviation with rationale.
   * require_human_review: Ambiguous condition requiring human architect adjudication.
-"#;
+";
 
 #[must_use]
 pub fn conformance_assessment_draft_schema() -> Value {

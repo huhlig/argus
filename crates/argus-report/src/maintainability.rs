@@ -120,6 +120,7 @@ impl MaintainabilityReport {
         Self::build_with_adjudications(run_id, policy_version, work, outcomes, artifacts, &[])
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn build_with_adjudications(
         run_id: RunId,
         policy_version: &str,
@@ -143,12 +144,11 @@ impl MaintainabilityReport {
             else {
                 continue;
             };
-            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref) {
-                if let Ok(assessment) =
+            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref)
+                && let Ok(assessment) =
                     serde_json::from_slice::<MaintainabilityAssessment>(&artifact.payload)
-                {
-                    assessments_by_work.insert(effective_outcome.logical_key.work_id, assessment);
-                }
+            {
+                assessments_by_work.insert(effective_outcome.logical_key.work_id, assessment);
             }
         }
 
@@ -288,9 +288,9 @@ impl MaintainabilityReport {
         let json_bytes = self.to_json()?;
         write_reconciled(&json_path, &json_bytes)?;
 
-        let jsonl_path = directory.join("maintainability-report.jsonl");
-        let jsonl_bytes = self.to_jsonl()?;
-        write_reconciled(&jsonl_path, &jsonl_bytes)?;
+        let lines_path = directory.join("maintainability-report.jsonl");
+        let lines_bytes = self.to_jsonl()?;
+        write_reconciled(&lines_path, &lines_bytes)?;
 
         let md_path = directory.join("maintainability-report.md");
         let md_bytes = self.to_markdown().into_bytes();
@@ -321,6 +321,7 @@ impl MaintainabilityReport {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(

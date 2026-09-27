@@ -684,10 +684,10 @@ fn is_dunder(name: &str) -> bool {
 
 fn extract_docstring(body: &[Stmt]) -> Option<String> {
     let first = body.first()?;
-    if let Stmt::Expr(expr_stmt) = first {
-        if let Expr::StringLiteral(str_lit) = &*expr_stmt.value {
-            return Some(str_lit.value.to_str().to_owned());
-        }
+    if let Stmt::Expr(expr_stmt) = first
+        && let Expr::StringLiteral(str_lit) = &*expr_stmt.value
+    {
+        return Some(str_lit.value.to_str().to_owned());
     }
     None
 }

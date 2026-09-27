@@ -265,7 +265,7 @@ pub fn documented_stub_todo(signature: &[u8]) -> bool {
             SeededCorrectnessSource {
                 target: documented_scope_gap,
                 logical_name: "documented_scope_gap",
-                source: r#"// 11. ScopeGap: dummy return value violating security invariant
+                source: r"// 11. ScopeGap: dummy return value violating security invariant
 /// Evaluates user permission scope against resource requirements.
 ///
 /// Full permission evaluation is incomplete; currently allows all requests.
@@ -275,7 +275,7 @@ pub fn documented_scope_gap(user_id: u64, resource: &str) -> bool {
     let _ = (user_id, resource);
     true
 }
-"#,
+",
             },
             SeededCorrectnessSource {
                 target: known_clean_implemented_feature,

@@ -56,6 +56,12 @@ mod outcome;
 mod outcome_actor;
 mod recovery;
 mod review_actor;
+mod testing_outcome_actor;
+mod testing_plan;
+mod testing_review;
+mod testing_runtime;
+mod testing_scope;
+mod testing_worker;
 mod workflow_data;
 
 use langchart_model::{validation::CompiledWorkflow, workflow::WorkflowDocument};
@@ -195,6 +201,20 @@ pub use review_actor::{
     PolicyAssessmentContract, PolicyReviewDecisionValidator, PrimaryReviewActor,
     ReviewDecisionValidator, review_decision_schema, review_decision_schema_for,
 };
+pub use testing_outcome_actor::{
+    DurableTestingOutcomeActor, TESTING_ASSESSMENT_ARTIFACT_KIND, TestingOutcomeActor,
+};
+pub use testing_plan::{
+    TESTING_EVIDENCE_PACKAGE_ARTIFACT_KIND, TESTING_REVIEW_CONTEXT_ARTIFACT_KIND,
+    TESTING_REVIEW_PLAN_SCHEMA_VERSION, TestingEvidenceCatalog, TestingReviewAdmission,
+    TestingReviewBatch, TestingReviewMaterialization, TestingReviewPlan, TestingReviewPlanner,
+    TestingReviewUnit, UpstreamSignal, testing_project_target,
+};
+pub use testing_review::{
+    TestingAssessmentContract, TestingReviewTransportValidator, testing_assessment_draft_schema,
+};
+pub use testing_runtime::{TestingRuntimeIdentity, testing_actor_registry};
+pub use testing_worker::{TestingWorker, TestingWorkerConfig, TestingWorkerResult};
 pub use workflow_data::{
     CandidateFindingRecord, EvidenceExpansionRecord, EvidenceRequestDecision,
     EvidenceRequestDisposition, PrimaryReviewDecision, ReviewWorkflowData,

@@ -748,6 +748,7 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::similar_names)]
     async fn leased_documentation_work_requires_a_durable_assessment_to_succeed() {
         let temporary = tempfile::tempdir().unwrap();
         let state = temporary.path().join("state");

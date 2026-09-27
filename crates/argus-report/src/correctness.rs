@@ -144,12 +144,11 @@ impl CorrectnessReport {
             else {
                 continue;
             };
-            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref) {
-                if let Ok(assessment) =
+            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref)
+                && let Ok(assessment) =
                     serde_json::from_slice::<CorrectnessAssessment>(&artifact.payload)
-                {
-                    assessments_by_work.insert(effective_outcome.logical_key.work_id, assessment);
-                }
+            {
+                assessments_by_work.insert(effective_outcome.logical_key.work_id, assessment);
             }
         }
 
@@ -298,6 +297,7 @@ impl CorrectnessReport {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "# Correctness audit: {}\n", self.run_id);
@@ -592,6 +592,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn unadjudicated_and_adjudicated_correctness_findings_demarcation() {
         let run_id = RunId::derive([b"correctness-adj-run".as_slice()]);
         let target_id = TargetId::derive([b"target-1".as_slice()]);
@@ -691,8 +692,8 @@ mod tests {
             run_id.clone(),
             "correctness@1",
             &[work_succeeded.clone()],
-            &[outcome_record.clone()],
-            &[artifact.clone()],
+            std::slice::from_ref(&outcome_record),
+            std::slice::from_ref(&artifact),
             &[],
         )
         .unwrap();

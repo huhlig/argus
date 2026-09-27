@@ -31,12 +31,12 @@ impl SourceAccess for MockSource {
     }
 }
 
-const HELPER_SRC: &str = r#"package com.example.util;
+const HELPER_SRC: &str = r"package com.example.util;
 
 public class Helper {
     public static void help() {}
 }
-"#;
+";
 
 const SRC: &str = r#"package com.example;
 

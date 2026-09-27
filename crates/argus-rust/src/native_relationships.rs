@@ -75,9 +75,9 @@ impl NativeRustRelationshipProvider {
             if !sources.contains_key(&location.path) {
                 sources.insert(location.path.clone(), source.read(&location.path)?);
             }
-            let bytes = sources
-                .get(&location.path)
-                .expect("relationship source was inserted");
+            let bytes = sources.get(&location.path).ok_or_else(|| {
+                argus_core::ArgusError::invariant("relationship source was not loaded")
+            })?;
             let start = usize::try_from(location.bytes.start).map_err(|error| {
                 argus_core::ArgusError::invariant(
                     "native relationship source start exceeds platform limits",
@@ -162,7 +162,7 @@ fn identifiers(source: &str) -> Vec<Identifier> {
     let tokens = parsed
         .syntax()
         .descendants_with_tokens()
-        .filter_map(|element| element.into_token())
+        .filter_map(ra_ap_syntax::NodeOrToken::into_token)
         .collect::<Vec<_>>();
     tokens
         .iter()

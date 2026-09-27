@@ -43,13 +43,13 @@ impl SourceAccess for MemorySource {
 }
 
 const METADATA: &str = r#"{
-  "workspace_root": "/workspace",
+  "workspace_root": "{root}",
   "workspace_members": ["path+file:///workspace#app@0.1.0"],
   "packages": [{
     "id":"path+file:///workspace#app@0.1.0",
     "name":"app",
-    "manifest_path":"/workspace/Cargo.toml",
-    "targets":[{"name":"app","kind":["lib"],"src_path":"/workspace/src/lib.rs"}]
+    "manifest_path":"{root}/Cargo.toml",
+    "targets":[{"name":"app","kind":["lib"],"src_path":"{root}/src/lib.rs"}]
   }]
 }"#;
 
@@ -74,7 +74,7 @@ fn source() -> MemorySource {
 fn reconciles_cargo_roots_with_syntax_targets_and_containment() {
     let source = source();
     let adapter = RustWorkspaceAdapter::new(
-        METADATA.as_bytes().to_vec(),
+        with_root(METADATA),
         ConfigurationId::derive([b"default".as_slice()]),
         RustEdition::Edition2024,
     );
@@ -169,20 +169,20 @@ fn emits_conservative_native_calls_references_and_trait_implementations() {
     let mut source = source();
     source.files.insert(
         SourcePath::new("src/lib.rs").unwrap(),
-        br#"
+        br"
 pub trait Store {}
 pub struct Record;
 impl Store for Record {}
 pub fn helper() {}
 pub fn run() { helper(); let _record = Record; }
-"#
+"
         .to_vec(),
     );
     source
         .files
         .remove(&SourcePath::new("src/model.rs").unwrap());
     let adapter = RustWorkspaceAdapter::new(
-        METADATA.as_bytes().to_vec(),
+        with_root(METADATA),
         ConfigurationId::derive([b"native-relations".as_slice()]),
         RustEdition::Edition2024,
     );
@@ -224,7 +224,7 @@ fn ambiguous_native_symbol_names_are_reported_and_not_emitted() {
         .files
         .remove(&SourcePath::new("src/model.rs").unwrap());
     let adapter = RustWorkspaceAdapter::new(
-        METADATA.as_bytes().to_vec(),
+        with_root(METADATA),
         ConfigurationId::derive([b"ambiguous-native-relations".as_slice()]),
         RustEdition::Edition2024,
     );
@@ -262,7 +262,7 @@ fn comments_and_string_literals_do_not_create_native_relationships() {
         .files
         .remove(&SourcePath::new("src/model.rs").unwrap());
     let adapter = RustWorkspaceAdapter::new(
-        METADATA.as_bytes().to_vec(),
+        with_root(METADATA),
         ConfigurationId::derive([b"literal-native-relations".as_slice()]),
         RustEdition::Edition2024,
     );
@@ -284,7 +284,7 @@ fn reports_configuration_and_macro_gaps_in_adapter_coverage() {
         b"#[cfg(unix)] pub fn platform() {}\nmake_items!();\n".to_vec(),
     );
     let adapter = RustWorkspaceAdapter::new(
-        METADATA.as_bytes().to_vec(),
+        with_root(METADATA),
         ConfigurationId::derive([b"cfg".as_slice()]),
         RustEdition::Edition2024,
     );
@@ -362,12 +362,12 @@ fn streams_large_multi_package_inventory_in_dependency_order() {
         packages.push(serde_json::json!({
             "id": id,
             "name": format!("package-{index}"),
-            "manifest_path": format!("/workspace/{directory}/Cargo.toml"),
+            "manifest_path": format!("{}/{directory}/Cargo.toml", workspace_root()),
             "features": {},
             "targets": [{
                 "name": format!("package-{index}"),
                 "kind": ["lib"],
-                "src_path": format!("/workspace/{directory}/src/lib.rs")
+                "src_path": format!("{}/{directory}/src/lib.rs", workspace_root())
             }]
         }));
         files.insert(
@@ -380,7 +380,7 @@ fn streams_large_multi_package_inventory_in_dependency_order() {
         );
     }
     let metadata = serde_json::to_vec(&serde_json::json!({
-        "workspace_root": "/workspace",
+        "workspace_root": workspace_root(),
         "workspace_members": members,
         "packages": packages
     }))
@@ -427,7 +427,7 @@ pub fn platform() -> &'static str { "linux" }
         .files
         .remove(&SourcePath::new("src/model.rs").unwrap());
     let adapter = RustWorkspaceAdapter::new(
-        METADATA.as_bytes().to_vec(),
+        with_root(METADATA),
         ConfigurationId::derive([b"overload-test".as_slice()]),
         RustEdition::Edition2024,
     );
@@ -477,10 +477,23 @@ pub mod platform;
         b"pub fn run() {}\n".to_vec(),
     );
     let adapter = RustWorkspaceAdapter::new(
-        METADATA.as_bytes().to_vec(),
+        with_root(METADATA),
         ConfigurationId::derive([b"test".as_slice()]),
         RustEdition::Edition2024,
     );
     let mut sink = CountingSink::default();
     adapter.inventory_into(&source, &mut sink).unwrap();
+}
+
+/// Cargo metadata reports absolute paths; fixtures hold `{root}` placeholders filled with a
+/// root derived from this crate's location, so no host-specific root is hard-coded.
+fn workspace_root() -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixture-workspace")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn with_root(template: &str) -> Vec<u8> {
+    template.replace("{root}", &workspace_root()).into_bytes()
 }

@@ -120,7 +120,7 @@ fn soak_concurrent_heartbeats_and_lease_renewal() {
 }
 
 /// Soak test: Fault injection simulating crashing workers, lease timeouts,
-/// retry tracking up to maximum_attempts, and eventual fail state.
+/// retry tracking up to `maximum_attempts`, and eventual fail state.
 #[test]
 fn soak_fault_injection_worker_crashes_and_recovery() {
     let temporary = tempfile::tempdir().unwrap();
@@ -157,7 +157,7 @@ fn soak_fault_injection_worker_crashes_and_recovery() {
             let work_str = leased.id.as_str().to_owned();
             let hash_byte = work_str.as_bytes().last().copied().unwrap_or(0) as usize;
 
-            if hash_byte % 3 == 0 {
+            if hash_byte.is_multiple_of(3) {
                 // Abandon lease without recording failure (simulates sudden process crash)
                 // If attempt_count reaches max_attempts, fail explicitly so it terminates
                 if leased.attempt_number >= max_attempts {
@@ -282,20 +282,15 @@ fn soak_storage_growth_and_memory_stability() {
         let run_id = audit_run.id.clone();
 
         worker_handles.push(thread::spawn(move || {
-            loop {
-                // Fixed nominal lease time so items are acquired and not expired while in flight
-                let leased = match q.lease_next(10_000, 60_000).unwrap() {
-                    Some(item) => item,
-                    None => break,
-                };
-
+            // Fixed nominal lease time so items are acquired and not expired while in flight
+            while let Some(leased) = q.lease_next(10_000, 60_000).unwrap() {
                 let done_now = c.fetch_add(10, Ordering::SeqCst);
                 let effective_key = format!("effective-{}", leased.id);
                 q.complete(&leased.id, &effective_key, b"pass").unwrap();
 
                 // Concurrently record human adjudication for every 10th item
                 let current_p = p.fetch_add(1, Ordering::SeqCst);
-                if current_p % 10 == 0 {
+                if current_p.is_multiple_of(10) {
                     let adj = HumanAdjudication {
                         run: run_id.clone(),
                         finding: FindingId::derive([leased.id.as_str().as_bytes()]),

@@ -133,10 +133,10 @@ impl TypeScriptWorkspaceAdapter {
                 "src/main.js",
             ];
             for d in defaults {
-                if let Ok(sp) = SourcePath::new(d) {
-                    if source.contains(&sp) {
-                        candidate_sources.push(sp);
-                    }
+                if let Ok(sp) = SourcePath::new(d)
+                    && source.contains(&sp)
+                {
+                    candidate_sources.push(sp);
                 }
             }
         }

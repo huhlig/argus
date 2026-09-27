@@ -160,8 +160,7 @@ impl MaintainabilityApplicabilityPolicy {
         let key = match target.class {
             MaintainabilityTargetClass::Callable => "callable",
             MaintainabilityTargetClass::Type => "type",
-            MaintainabilityTargetClass::Module => "module",
-            MaintainabilityTargetClass::Namespace => "module",
+            MaintainabilityTargetClass::Module | MaintainabilityTargetClass::Namespace => "module",
             MaintainabilityTargetClass::Unknown => "unknown",
         };
 
@@ -436,6 +435,7 @@ pub struct MaintainabilityAssessmentDraft {
 }
 
 impl MaintainabilityAssessmentDraft {
+    #[allow(clippy::too_many_arguments)]
     pub fn bind(
         self,
         work_item: WorkItemId,

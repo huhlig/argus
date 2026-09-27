@@ -227,18 +227,18 @@ impl DesignArtifactParser {
         // Extract H1 title if not provided by frontmatter
         while current_line_idx < lines.len() {
             let line = lines[current_line_idx].trim();
-            if let Some(h1) = line.strip_prefix('#') {
-                if !h1.starts_with('#') {
-                    let raw_title = h1.trim();
-                    if title.is_none() {
-                        title = Some(raw_title.to_owned());
-                    }
-                    if identifier.is_none() {
-                        identifier = extract_identifier_from_title(raw_title);
-                    }
-                    current_line_idx += 1;
-                    break;
+            if let Some(h1) = line.strip_prefix('#')
+                && !h1.starts_with('#')
+            {
+                let raw_title = h1.trim();
+                if title.is_none() {
+                    title = Some(raw_title.to_owned());
                 }
+                if identifier.is_none() {
+                    identifier = extract_identifier_from_title(raw_title);
+                }
+                current_line_idx += 1;
+                break;
             }
             current_line_idx += 1;
         }
@@ -371,13 +371,13 @@ impl DesignArtifactIndex {
                 .push(id.clone());
 
             // If identifier has prefix like "adr-0001" or "prd-001", also index suffix "0001"
-            if let Some((_, suffix)) = normalized.split_once('-') {
-                if !suffix.is_empty() {
-                    self.by_identifier
-                        .entry(suffix.to_owned())
-                        .or_default()
-                        .push(id.clone());
-                }
+            if let Some((_, suffix)) = normalized.split_once('-')
+                && !suffix.is_empty()
+            {
+                self.by_identifier
+                    .entry(suffix.to_owned())
+                    .or_default()
+                    .push(id.clone());
             }
         }
         self.by_path.insert(path, id.clone());
@@ -413,17 +413,16 @@ impl DesignArtifactIndex {
     #[must_use]
     pub fn get_by_identifier(&self, identifier: &str) -> Option<&DesignArtifact> {
         let normalized = normalize_identifier(identifier);
-        if let Some(ids) = self.by_identifier.get(&normalized) {
-            if let Some(first_id) = ids.first() {
-                return self.artifacts.get(first_id);
-            }
+        if let Some(ids) = self.by_identifier.get(&normalized)
+            && let Some(first_id) = ids.first()
+        {
+            return self.artifacts.get(first_id);
         }
-        if let Some((_, suffix)) = normalized.split_once('-') {
-            if let Some(ids) = self.by_identifier.get(suffix) {
-                if let Some(first_id) = ids.first() {
-                    return self.artifacts.get(first_id);
-                }
-            }
+        if let Some((_, suffix)) = normalized.split_once('-')
+            && let Some(ids) = self.by_identifier.get(suffix)
+            && let Some(first_id) = ids.first()
+        {
+            return self.artifacts.get(first_id);
         }
         None
     }
@@ -569,18 +568,18 @@ impl DesignArtifactIndex {
             }
 
             // Check if superseded_by target exists
-            if let Some(by) = &artifact.superseded_by {
-                if self.get_by_identifier(by).is_none() {
-                    issues.push(DocumentHealthIssue {
-                        artifact_id: Some(id.clone()),
-                        path: artifact.path.clone(),
-                        severity: DocumentHealthSeverity::Error,
-                        kind: DocumentHealthIssueKind::BrokenSupersession,
-                        message: format!(
-                            "Artifact claims to be superseded by '{by}', but no such document exists"
-                        ),
-                    });
-                }
+            if let Some(by) = &artifact.superseded_by
+                && self.get_by_identifier(by).is_none()
+            {
+                issues.push(DocumentHealthIssue {
+                    artifact_id: Some(id.clone()),
+                    path: artifact.path.clone(),
+                    severity: DocumentHealthSeverity::Error,
+                    kind: DocumentHealthIssueKind::BrokenSupersession,
+                    message: format!(
+                        "Artifact claims to be superseded by '{by}', but no such document exists"
+                    ),
+                });
             }
 
             // Check supersession cycle

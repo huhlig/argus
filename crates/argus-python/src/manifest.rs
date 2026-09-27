@@ -107,12 +107,11 @@ impl PyprojectAdapter {
             }
             if let Some(deps) = project.get("dependencies").and_then(toml::Value::as_array) {
                 for dep in deps {
-                    if let Some(dep_str) = dep.as_str() {
-                        if let Some(parsed) =
+                    if let Some(dep_str) = dep.as_str()
+                        && let Some(parsed) =
                             parse_pep508_dependency(dep_str, PythonDependencyKind::Runtime)
-                        {
-                            dependencies.push(parsed);
-                        }
+                    {
+                        dependencies.push(parsed);
                     }
                 }
             }
@@ -123,12 +122,11 @@ impl PyprojectAdapter {
                 for (_group, deps_val) in opt_deps {
                     if let Some(deps_arr) = deps_val.as_array() {
                         for dep in deps_arr {
-                            if let Some(dep_str) = dep.as_str() {
-                                if let Some(parsed) =
+                            if let Some(dep_str) = dep.as_str()
+                                && let Some(parsed) =
                                     parse_pep508_dependency(dep_str, PythonDependencyKind::Optional)
-                                {
-                                    dependencies.push(parsed);
-                                }
+                            {
+                                dependencies.push(parsed);
                             }
                         }
                     }
@@ -137,81 +135,80 @@ impl PyprojectAdapter {
         }
 
         // 2. Check Poetry `[tool.poetry]` table
-        if let Some(tool) = value.get("tool").and_then(toml::Value::as_table) {
-            if let Some(poetry) = tool.get("poetry").and_then(toml::Value::as_table) {
-                if name.is_none() {
-                    if let Some(n) = poetry.get("name").and_then(toml::Value::as_str) {
-                        name = Some(n.to_owned());
+        if let Some(tool) = value.get("tool").and_then(toml::Value::as_table)
+            && let Some(poetry) = tool.get("poetry").and_then(toml::Value::as_table)
+        {
+            if name.is_none()
+                && let Some(n) = poetry.get("name").and_then(toml::Value::as_str)
+            {
+                name = Some(n.to_owned());
+            }
+            if version.is_none()
+                && let Some(v) = poetry.get("version").and_then(toml::Value::as_str)
+            {
+                version = Some(v.to_owned());
+            }
+            if let Some(deps) = poetry.get("dependencies").and_then(toml::Value::as_table) {
+                for (dep_name, dep_val) in deps {
+                    if dep_name.eq_ignore_ascii_case("python") {
+                        continue;
                     }
+                    let spec = match dep_val {
+                        toml::Value::String(s) => Some(s.clone()),
+                        toml::Value::Table(t) => t
+                            .get("version")
+                            .and_then(toml::Value::as_str)
+                            .map(ToOwned::to_owned),
+                        _ => None,
+                    };
+                    dependencies.push(PythonPackageDependency {
+                        name: dep_name.clone(),
+                        specifier: spec,
+                        kind: PythonDependencyKind::Runtime,
+                    });
                 }
-                if version.is_none() {
-                    if let Some(v) = poetry.get("version").and_then(toml::Value::as_str) {
-                        version = Some(v.to_owned());
-                    }
+            }
+            if let Some(dev_deps) = poetry
+                .get("dev-dependencies")
+                .and_then(toml::Value::as_table)
+            {
+                for (dep_name, dep_val) in dev_deps {
+                    let spec = match dep_val {
+                        toml::Value::String(s) => Some(s.clone()),
+                        toml::Value::Table(t) => t
+                            .get("version")
+                            .and_then(toml::Value::as_str)
+                            .map(ToOwned::to_owned),
+                        _ => None,
+                    };
+                    dependencies.push(PythonPackageDependency {
+                        name: dep_name.clone(),
+                        specifier: spec,
+                        kind: PythonDependencyKind::Development,
+                    });
                 }
-                if let Some(deps) = poetry.get("dependencies").and_then(toml::Value::as_table) {
-                    for (dep_name, dep_val) in deps {
-                        if dep_name.eq_ignore_ascii_case("python") {
-                            continue;
-                        }
-                        let spec = match dep_val {
-                            toml::Value::String(s) => Some(s.clone()),
-                            toml::Value::Table(t) => t
-                                .get("version")
-                                .and_then(toml::Value::as_str)
-                                .map(ToOwned::to_owned),
-                            _ => None,
-                        };
-                        dependencies.push(PythonPackageDependency {
-                            name: dep_name.clone(),
-                            specifier: spec,
-                            kind: PythonDependencyKind::Runtime,
-                        });
-                    }
-                }
-                if let Some(dev_deps) = poetry
-                    .get("dev-dependencies")
-                    .and_then(toml::Value::as_table)
-                {
-                    for (dep_name, dep_val) in dev_deps {
-                        let spec = match dep_val {
-                            toml::Value::String(s) => Some(s.clone()),
-                            toml::Value::Table(t) => t
-                                .get("version")
-                                .and_then(toml::Value::as_str)
-                                .map(ToOwned::to_owned),
-                            _ => None,
-                        };
-                        dependencies.push(PythonPackageDependency {
-                            name: dep_name.clone(),
-                            specifier: spec,
-                            kind: PythonDependencyKind::Development,
-                        });
-                    }
-                }
-                if let Some(group) = poetry.get("group").and_then(toml::Value::as_table) {
-                    for (_grp_name, grp_val) in group {
-                        if let Some(grp_table) = grp_val.as_table() {
-                            if let Some(grp_deps) = grp_table
-                                .get("dependencies")
-                                .and_then(toml::Value::as_table)
-                            {
-                                for (dep_name, dep_val) in grp_deps {
-                                    let spec = match dep_val {
-                                        toml::Value::String(s) => Some(s.clone()),
-                                        toml::Value::Table(t) => t
-                                            .get("version")
-                                            .and_then(toml::Value::as_str)
-                                            .map(ToOwned::to_owned),
-                                        _ => None,
-                                    };
-                                    dependencies.push(PythonPackageDependency {
-                                        name: dep_name.clone(),
-                                        specifier: spec,
-                                        kind: PythonDependencyKind::Development,
-                                    });
-                                }
-                            }
+            }
+            if let Some(group) = poetry.get("group").and_then(toml::Value::as_table) {
+                for (_grp_name, grp_val) in group {
+                    if let Some(grp_table) = grp_val.as_table()
+                        && let Some(grp_deps) = grp_table
+                            .get("dependencies")
+                            .and_then(toml::Value::as_table)
+                    {
+                        for (dep_name, dep_val) in grp_deps {
+                            let spec = match dep_val {
+                                toml::Value::String(s) => Some(s.clone()),
+                                toml::Value::Table(t) => t
+                                    .get("version")
+                                    .and_then(toml::Value::as_str)
+                                    .map(ToOwned::to_owned),
+                                _ => None,
+                            };
+                            dependencies.push(PythonPackageDependency {
+                                name: dep_name.clone(),
+                                specifier: spec,
+                                kind: PythonDependencyKind::Development,
+                            });
                         }
                     }
                 }
@@ -264,22 +261,21 @@ impl PyprojectAdapter {
                     if k == "install_requires" {
                         in_install_requires = true;
                         let v = v.trim();
-                        if !v.is_empty() {
-                            if let Some(dep) =
+                        if !v.is_empty()
+                            && let Some(dep) =
                                 parse_pep508_dependency(v, PythonDependencyKind::Runtime)
-                            {
-                                dependencies.push(dep);
-                            }
+                        {
+                            dependencies.push(dep);
                         }
                     } else {
                         in_install_requires = false;
                     }
-                } else if in_install_requires && line.starts_with(char::is_whitespace) {
-                    if let Some(dep) =
+                } else if in_install_requires
+                    && line.starts_with(char::is_whitespace)
+                    && let Some(dep) =
                         parse_pep508_dependency(trimmed, PythonDependencyKind::Runtime)
-                    {
-                        dependencies.push(dep);
-                    }
+                {
+                    dependencies.push(dep);
                 }
             }
         }
@@ -345,7 +341,7 @@ impl LanguageAdapter for PyprojectAdapter {
         let mut conflicts = Vec::new();
 
         let mut sorted_paths = self.manifest_paths.clone();
-        sorted_paths.sort_by(|a, b| manifest_priority(a).cmp(&manifest_priority(b)));
+        sorted_paths.sort_by_key(manifest_priority);
 
         let mut seen_dirs = BTreeSet::new();
 
@@ -511,28 +507,28 @@ impl LanguageAdapter for PyprojectAdapter {
             });
 
             // If workspace target exists and this is not the root itself, emit containment
-            if let Some(ws_id) = &root_target_id {
-                if !pkg.is_root {
-                    let rel_id = RelationId::derive([
-                        ws_id.as_str().as_bytes(),
-                        pkg.target_id.as_str().as_bytes(),
-                        b"contains",
-                    ]);
-                    relations.push(Relation {
-                        id: rel_id,
-                        source: ws_id.clone(),
-                        target: pkg.target_id.clone(),
-                        kind: "core:contains".to_owned(),
-                        provenance: RelationProvenance {
-                            provider: PROVIDER.to_owned(),
-                            provider_version: PROVIDER_VERSION.to_owned(),
-                            configuration: Some(self.configuration.clone()),
-                            ingest_only: true,
-                            resolution: ResolutionQuality::Exact,
-                            detail: Some("workspace package member".to_owned()),
-                        },
-                    });
-                }
+            if let Some(ws_id) = &root_target_id
+                && !pkg.is_root
+            {
+                let rel_id = RelationId::derive([
+                    ws_id.as_str().as_bytes(),
+                    pkg.target_id.as_str().as_bytes(),
+                    b"contains",
+                ]);
+                relations.push(Relation {
+                    id: rel_id,
+                    source: ws_id.clone(),
+                    target: pkg.target_id.clone(),
+                    kind: "core:contains".to_owned(),
+                    provenance: RelationProvenance {
+                        provider: PROVIDER.to_owned(),
+                        provider_version: PROVIDER_VERSION.to_owned(),
+                        configuration: Some(self.configuration.clone()),
+                        ingest_only: true,
+                        resolution: ResolutionQuality::Exact,
+                        detail: Some("workspace package member".to_owned()),
+                    },
+                });
             }
 
             // 3. Package dependencies linking

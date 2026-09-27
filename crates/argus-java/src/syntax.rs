@@ -250,7 +250,60 @@ impl JavaSyntaxProvider {
             }
         }
 
+        self.extract_source_evidence(text, &mut inventory);
         Ok(inventory)
+    }
+
+    /// Emits source evidence for every file, type, and callable from its byte span.
+    fn extract_source_evidence(&self, text: &str, inventory: &mut JavaSyntaxInventory) {
+        let mut evidence = Vec::new();
+        for target in &inventory.targets {
+            let has_source = match &target.kind {
+                TargetKind::Portable { kind } => matches!(
+                    kind,
+                    PortableTargetKind::File
+                        | PortableTargetKind::Type
+                        | PortableTargetKind::Callable
+                        | PortableTargetKind::Test
+                ),
+                TargetKind::LanguageSpecific { .. } => true,
+            };
+            let Some(location) = target.location.as_ref().filter(|_| has_source) else {
+                continue;
+            };
+            let (Ok(start), Ok(end)) = (
+                usize::try_from(location.bytes.start),
+                usize::try_from(location.bytes.end),
+            ) else {
+                continue;
+            };
+            let Some(source) = text
+                .get(start..end)
+                .filter(|source| !source.trim().is_empty())
+            else {
+                continue;
+            };
+            evidence.push(EvidenceRecord {
+                id: EvidenceId::derive([
+                    b"java-syntax-source".as_slice(),
+                    target.id.as_str().as_bytes(),
+                ]),
+                kind: EvidenceKind::Source,
+                origin: EvidenceOrigin::Direct,
+                target: Some(target.id.clone()),
+                location: Some(location.clone()),
+                summary: format!("Java source for {}", target.name),
+                detail: Some(source.to_owned()),
+                provenance: EvidenceProvenance {
+                    provider: PROVIDER.to_string(),
+                    provider_version: PROVIDER_VERSION.to_string(),
+                    configuration: self.configuration.clone(),
+                    ingest_only: true,
+                    resolution: ResolutionQuality::Exact,
+                },
+            });
+        }
+        inventory.evidence.extend(evidence);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -454,6 +507,7 @@ impl JavaSyntaxProvider {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     fn extract_record(
         &self,
         path: &SourcePath,
@@ -948,7 +1002,13 @@ impl JavaSyntaxProvider {
             enclosing_type.as_bytes(),
             sig.as_bytes(),
         ]);
-        let span = ByteSpan::new(method.span().start() as u64, method.span().end() as u64)?;
+        let span = callable_span(
+            text,
+            method.span().start(),
+            method.name.span.start(),
+            method.name.span.end(),
+            method.span().end(),
+        )?;
         let location = SourceLocation {
             path: path.clone(),
             bytes: span,
@@ -960,9 +1020,7 @@ impl JavaSyntaxProvider {
 
         let target = Target {
             id: target_id.clone(),
-            kind: TargetKind::Portable {
-                kind: PortableTargetKind::Callable,
-            },
+            kind: method_kind(&method.modifiers),
             name,
             parent: Some(parent_id.clone()),
             location: Some(location),
@@ -1020,7 +1078,13 @@ impl JavaSyntaxProvider {
             enclosing_type.as_bytes(),
             sig.as_bytes(),
         ]);
-        let span = ByteSpan::new(ctor.span().start() as u64, ctor.span().end() as u64)?;
+        let span = callable_span(
+            text,
+            ctor.span().start(),
+            ctor.name.span.start(),
+            ctor.name.span.end(),
+            ctor.span().end(),
+        )?;
         let location = SourceLocation {
             path: path.clone(),
             bytes: span,
@@ -1311,7 +1375,7 @@ impl JavaSyntaxProvider {
     ) -> Result<(), argus_core::ArgusError> {
         match stmt {
             Stmt::Expr(expr_stmt) => {
-                self.scan_expr_for_calls(caller, &expr_stmt.expr, inventory)?
+                self.scan_expr_for_calls(caller, &expr_stmt.expr, inventory)?;
             }
             Stmt::LocalVarDecl(decl) => {
                 for d in &decl.declarators {
@@ -1430,6 +1494,159 @@ impl JavaSyntaxProvider {
         }
         Ok(())
     }
+}
+
+/// Annotations that mark a test method in `JUnit` 4 and 5 and in `TestNG`.
+const TEST_ANNOTATIONS: [&str; 5] = [
+    "Test",
+    "ParameterizedTest",
+    "RepeatedTest",
+    "TestFactory",
+    "TestTemplate",
+];
+
+/// Classifies a method as a test, a JMH benchmark, or an ordinary callable by its annotations.
+/// Target IDs are derived from the signature, so the kind does not affect identity.
+fn method_kind(modifiers: &[Modifier]) -> TargetKind {
+    let annotation_names = modifiers.iter().filter_map(|modifier| match modifier {
+        Modifier::Annotation(annotation) => annotation
+            .path()
+            .segments
+            .last()
+            .map(|segment| segment.ident.name.as_str()),
+        _ => None,
+    });
+    let mut kind = TargetKind::Portable {
+        kind: PortableTargetKind::Callable,
+    };
+    for name in annotation_names {
+        if TEST_ANNOTATIONS.contains(&name) {
+            return TargetKind::Portable {
+                kind: PortableTargetKind::Test,
+            };
+        }
+        if name == "Benchmark" {
+            kind = TargetKind::LanguageSpecific {
+                language: "java".to_owned(),
+                kind: "benchmark".to_owned(),
+            };
+        }
+    }
+    kind
+}
+
+/// Corrects a callable's byte span.
+///
+/// `java-lang` 0.3.2 starts a method's span at its name when it has no modifiers (dropping the
+/// return type and type parameters, whose own spans are unreliable for primitives) and ends body
+/// spans one token late. The start is found by scanning the header backwards from the name; the
+/// end by scanning the declaration forwards.
+fn callable_span(
+    text: &str,
+    parsed_start: usize,
+    name_start: usize,
+    name_end: usize,
+    parsed_end: usize,
+) -> Result<ByteSpan, argus_core::ArgusError> {
+    let start = header_start(text, name_start).min(parsed_start);
+    let end = declaration_end(text, name_end)
+        .unwrap_or(parsed_end)
+        .max(start);
+    ByteSpan::new(start as u64, end as u64)
+}
+
+/// Start of the type and modifier words preceding a callable's name.
+fn header_start(text: &str, name_start: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut start = name_start.min(bytes.len());
+    while start > 0 {
+        let byte = bytes[start - 1];
+        let header_byte = byte.is_ascii_alphanumeric()
+            || byte.is_ascii_whitespace()
+            || matches!(
+                byte,
+                b'_' | b'$' | b'.' | b'<' | b'>' | b'?' | b',' | b'[' | b']' | b'&' | b'@'
+            );
+        if !header_byte {
+            break;
+        }
+        start -= 1;
+    }
+    while start < name_start && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    start
+}
+
+/// End of a declaration starting at `from`: just past its body's closing brace, or past its
+/// terminating `;` for abstract and annotation members. Comments and literals are skipped.
+fn declaration_end(text: &str, from: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut index = from;
+    let mut parens = 0_usize;
+    let mut braces = 0_usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index = text[index..]
+                    .find('\n')
+                    .map_or(bytes.len(), |offset| index + offset);
+                continue;
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = text[index + 2..]
+                    .find("*/")
+                    .map_or(bytes.len(), |offset| index + 2 + offset + 2);
+                continue;
+            }
+            b'"' | b'\'' => {
+                index = skip_literal(text, index)?;
+                continue;
+            }
+            b'(' => parens += 1,
+            b')' => parens = parens.saturating_sub(1),
+            b'{' if parens == 0 => braces += 1,
+            b'}' if parens == 0 => {
+                braces = braces.checked_sub(1)?;
+                if braces == 0 {
+                    return Some(index + 1);
+                }
+            }
+            b';' if parens == 0 && braces == 0 => return Some(index + 1),
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Index just past a string, text block, or character literal starting at `start`.
+fn skip_literal(text: &str, start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if text[start..].starts_with("\"\"\"") {
+        let mut index = start + 3;
+        while index + 2 < bytes.len() {
+            if bytes[index] == b'\\' {
+                index += 2;
+            } else if &bytes[index..index + 3] == b"\"\"\"" {
+                return Some(index + 3);
+            } else {
+                index += 1;
+            }
+        }
+        return None;
+    }
+    let quote = bytes[start];
+    let mut index = start + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b'\n' => return None,
+            byte if byte == quote => return Some(index + 1),
+            _ => index += 1,
+        }
+    }
+    None
 }
 
 fn visibility_from_modifiers(modifiers: &[Modifier]) -> TargetVisibility {

@@ -46,7 +46,7 @@ pub enum DeploymentMode {
     Local,
     /// Hosted within the same private network or VPC.
     SameNetwork,
-    /// Hosted externally over the public Internet (e.g. OpenAI, Anthropic).
+    /// Hosted externally over the public Internet (e.g. `OpenAI`, Anthropic).
     Online,
 }
 
