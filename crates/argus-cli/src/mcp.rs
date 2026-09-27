@@ -66,15 +66,14 @@ pub fn run_mcp_stdio_server(root: &Path) -> Result<(), ArgusError> {
         > 0
     {
         let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            if let Some(resp) = handle_json_rpc(root, trimmed) {
-                writeln!(writer, "{resp}").map_err(|e| {
-                    ArgusError::invariant("failed to write to stdout").with_source(e)
-                })?;
-                writer
-                    .flush()
-                    .map_err(|e| ArgusError::invariant("failed to flush stdout").with_source(e))?;
-            }
+        if !trimmed.is_empty()
+            && let Some(resp) = handle_json_rpc(root, trimmed)
+        {
+            writeln!(writer, "{resp}")
+                .map_err(|e| ArgusError::invariant("failed to write to stdout").with_source(e))?;
+            writer
+                .flush()
+                .map_err(|e| ArgusError::invariant("failed to flush stdout").with_source(e))?;
         }
         line.clear();
     }

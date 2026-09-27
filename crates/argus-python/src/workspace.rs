@@ -182,36 +182,36 @@ impl PythonWorkspaceAdapter {
                 }
             }
 
-            if let Some(parent_id) = file_parent {
-                if let Some(file_target) = syntax_inv.targets.iter().find(|t| {
+            if let Some(parent_id) = file_parent
+                && let Some(file_target) = syntax_inv.targets.iter().find(|t| {
                     matches!(
                         t.kind,
                         TargetKind::Portable {
                             kind: PortableTargetKind::File
                         }
                     )
-                }) {
-                    let rel = Relation {
-                        id: RelationId::derive([
-                            parent_id.as_str().as_bytes(),
-                            file_target.id.as_str().as_bytes(),
-                            b"contains",
-                        ]),
-                        source: parent_id,
-                        target: file_target.id.clone(),
-                        kind: "core:contains".to_owned(),
-                        provenance: RelationProvenance {
-                            provider: "python-manifest".to_owned(),
-                            provider_version: "1".to_owned(),
-                            configuration: Some(self.configuration.clone()),
-                            ingest_only: true,
-                            resolution: ResolutionQuality::Exact,
-                            detail: Some("package source file".to_owned()),
-                        },
-                    };
-                    if seen_relations.insert(rel.id.clone()) {
-                        sink.relation(rel)?;
-                    }
+                })
+            {
+                let rel = Relation {
+                    id: RelationId::derive([
+                        parent_id.as_str().as_bytes(),
+                        file_target.id.as_str().as_bytes(),
+                        b"contains",
+                    ]),
+                    source: parent_id,
+                    target: file_target.id.clone(),
+                    kind: "core:contains".to_owned(),
+                    provenance: RelationProvenance {
+                        provider: "python-manifest".to_owned(),
+                        provider_version: "1".to_owned(),
+                        configuration: Some(self.configuration.clone()),
+                        ingest_only: true,
+                        resolution: ResolutionQuality::Exact,
+                        detail: Some("package source file".to_owned()),
+                    },
+                };
+                if seen_relations.insert(rel.id.clone()) {
+                    sink.relation(rel)?;
                 }
             }
 

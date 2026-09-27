@@ -1,6 +1,6 @@
 # Argus — Repository Source Intelligence & Automated Code Audit Engine
 
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-blue.svg)](https://www.rust-lang.org)
+[![Rust 1.96+](https://img.shields.io/badge/rust-1.96%2B-blue.svg)](https://www.rust-lang.org)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE.md)
 
 **Argus** is a high-performance, durable, content-addressed repository source intelligence and automated code/documentation review framework built in Rust. It performs snapshot-backed static target discovery, bounded evidence frame construction, policy applicability planning, durable task queueing, LLM provider orchestration, and structured review report generation.

@@ -219,18 +219,19 @@ impl JavaManifestAdapter {
             }
 
             // Extract group
-            if group.is_none() && (line.starts_with("group =") || line.starts_with("group=")) {
-                if let Some(val) = extract_string_literal(line) {
-                    group = Some(val);
-                }
+            if group.is_none()
+                && (line.starts_with("group =") || line.starts_with("group="))
+                && let Some(val) = extract_string_literal(line)
+            {
+                group = Some(val);
             }
 
             // Extract version
-            if version.is_none() && (line.starts_with("version =") || line.starts_with("version="))
+            if version.is_none()
+                && (line.starts_with("version =") || line.starts_with("version="))
+                && let Some(val) = extract_string_literal(line)
             {
-                if let Some(val) = extract_string_literal(line) {
-                    version = Some(val);
-                }
+                version = Some(val);
             }
 
             // Extract dependencies like: implementation 'org.slf4j:slf4j-api:2.0.0'
@@ -379,18 +380,17 @@ impl LanguageAdapter for JavaManifestAdapter {
         let mut gradle_modules = Vec::new();
         for path in &self.manifest_paths {
             let path_str = path.as_str();
-            if path_str == "settings.gradle"
+            if (path_str == "settings.gradle"
                 || path_str.ends_with("/settings.gradle")
                 || path_str == "settings.gradle.kts"
-                || path_str.ends_with("/settings.gradle.kts")
+                || path_str.ends_with("/settings.gradle.kts"))
+                && let Ok(bytes) = source.read(path)
             {
-                if let Ok(bytes) = source.read(path) {
-                    let (name, inc) = Self::parse_gradle_settings(&bytes);
-                    if let Some(n) = name {
-                        gradle_root_name = Some(n);
-                    }
-                    gradle_modules.extend(inc);
+                let (name, inc) = Self::parse_gradle_settings(&bytes);
+                if let Some(n) = name {
+                    gradle_root_name = Some(n);
                 }
+                gradle_modules.extend(inc);
             }
         }
 

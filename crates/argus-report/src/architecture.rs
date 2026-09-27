@@ -147,17 +147,15 @@ impl ArchitectureReport {
                 continue;
             };
 
-            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref) {
-                if artifact.kind == ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND {
-                    if let Ok(assessment) =
-                        serde_json::from_slice::<ArchitectureAssessment>(&artifact.payload)
-                    {
-                        assessments_by_work.insert(
-                            effective_outcome.logical_key.work_id.clone(),
-                            (effective_outcome, assessment),
-                        );
-                    }
-                }
+            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref)
+                && artifact.kind == ARCHITECTURE_ASSESSMENT_ARTIFACT_KIND
+                && let Ok(assessment) =
+                    serde_json::from_slice::<ArchitectureAssessment>(&artifact.payload)
+            {
+                assessments_by_work.insert(
+                    effective_outcome.logical_key.work_id.clone(),
+                    (effective_outcome, assessment),
+                );
             }
         }
 

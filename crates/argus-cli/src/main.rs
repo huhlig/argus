@@ -881,12 +881,12 @@ where
 
     while let Some(ch) = chars.next() {
         if ch == '\\' {
-            if let Some(&next) = chars.peek() {
-                if next == '$' {
-                    chars.next();
-                    result.push('$');
-                    continue;
-                }
+            if let Some(&next) = chars.peek()
+                && next == '$'
+            {
+                chars.next();
+                result.push('$');
+                continue;
             }
             result.push('\\');
         } else if ch == '$' {
@@ -1025,9 +1025,8 @@ fn format_available_providers_and_models(env_config_dir: Option<&std::path::Path
         if !dir.is_dir() {
             continue;
         }
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => continue,
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
         };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -1035,31 +1034,27 @@ fn format_available_providers_and_models(env_config_dir: Option<&std::path::Path
                 && path
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+                && let Ok(bytes) = std::fs::read(&path)
+                && let Ok(text) = std::str::from_utf8(&bytes)
             {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    if let Ok(text) = std::str::from_utf8(&bytes) {
-                        let parsed_config = serde_json::from_str::<argus_provider::ProviderConfig>(
-                            text,
-                        )
-                        .or_else(|_| {
-                            if let Ok(sub) = substitute_env_vars(text) {
-                                serde_json::from_str(&sub)
-                            } else {
-                                serde_json::from_str(text)
-                            }
-                        });
-                        if let Ok(cfg) = parsed_config {
-                            found_any = true;
-                            writeln!(output, "  * {} ({})", cfg.provider, path.display()).unwrap();
-                            for (model_id, m_cfg) in &cfg.models {
-                                let aliases_str = if m_cfg.aliases.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" [aliases: {}]", m_cfg.aliases.join(", "))
-                                };
-                                writeln!(output, "    - {model_id}{aliases_str}").unwrap();
-                            }
+                let parsed_config = serde_json::from_str::<argus_provider::ProviderConfig>(text)
+                    .or_else(|_| {
+                        if let Ok(sub) = substitute_env_vars(text) {
+                            serde_json::from_str(&sub)
+                        } else {
+                            serde_json::from_str(text)
                         }
+                    });
+                if let Ok(cfg) = parsed_config {
+                    found_any = true;
+                    writeln!(output, "  * {} ({})", cfg.provider, path.display()).unwrap();
+                    for (model_id, m_cfg) in &cfg.models {
+                        let aliases_str = if m_cfg.aliases.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [aliases: {}]", m_cfg.aliases.join(", "))
+                        };
+                        writeln!(output, "    - {model_id}{aliases_str}").unwrap();
                     }
                 }
             }
@@ -1107,45 +1102,47 @@ fn resolve_provider_profile_with_env_and_model(
     if is_explicit_path(name_or_path) {
         let candidates = explicit_provider_path_candidates(root, name_or_path);
         for path in &candidates {
-            if path.is_file() {
-                if let Ok(bytes) = std::fs::read(path) {
-                    if let Ok(raw_text) = std::str::from_utf8(&bytes) {
-                        if let Ok(substituted) = substitute_env_vars(raw_text) {
-                            if let Ok(config) =
-                                serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
-                            {
-                                let profile = config.resolve_runtime_profile(model_override).map_err(|error| {
-                                    argus_core::ArgusError::invalid_input(format!(
-                                        "cannot resolve model in provider configuration `{}`: {error}",
-                                        path.display()
-                                    ))
-                                })?;
-                                return Ok((path.clone(), profile));
-                            }
-                            if let Ok(profile) = serde_json::from_str::<
-                                argus_provider::ProviderRuntimeProfile,
-                            >(&substituted)
-                            {
-                                return Ok((path.clone(), profile));
-                            }
-                        }
-                        if let Ok(config) =
-                            serde_json::from_str::<argus_provider::ProviderConfig>(raw_text)
-                        {
-                            let profile = config.resolve_runtime_profile(model_override).map_err(|error| {
+            if path.is_file()
+                && let Ok(bytes) = std::fs::read(path)
+                && let Ok(raw_text) = std::str::from_utf8(&bytes)
+            {
+                if let Ok(substituted) = substitute_env_vars(raw_text) {
+                    if let Ok(config) =
+                        serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
+                    {
+                        let profile = config.resolve_runtime_profile(model_override).map_err(
+                            |error| {
+                                argus_core::ArgusError::invalid_input(format!(
+                                    "cannot resolve model in provider configuration `{}`: {error}",
+                                    path.display()
+                                ))
+                            },
+                        )?;
+                        return Ok((path.clone(), profile));
+                    }
+                    if let Ok(profile) =
+                        serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted)
+                    {
+                        return Ok((path.clone(), profile));
+                    }
+                }
+                if let Ok(config) = serde_json::from_str::<argus_provider::ProviderConfig>(raw_text)
+                {
+                    let profile =
+                        config
+                            .resolve_runtime_profile(model_override)
+                            .map_err(|error| {
                                 argus_core::ArgusError::invalid_input(format!(
                                     "cannot resolve model in provider configuration `{}`: {error}",
                                     path.display()
                                 ))
                             })?;
-                            return Ok((path.clone(), profile));
-                        }
-                        if let Ok(profile) =
-                            serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(raw_text)
-                        {
-                            return Ok((path.clone(), profile));
-                        }
-                    }
+                    return Ok((path.clone(), profile));
+                }
+                if let Ok(profile) =
+                    serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(raw_text)
+                {
+                    return Ok((path.clone(), profile));
                 }
             }
         }
@@ -1155,12 +1152,12 @@ fn resolve_provider_profile_with_env_and_model(
     if let Some((prov, model)) = name_or_path.split_once(':') {
         let provider_spec = prov.trim();
         let colon_model = model.trim();
-        if let Some(mo) = model_override {
-            if !colon_model.eq_ignore_ascii_case(mo.trim()) {
-                return Err(argus_core::ArgusError::invalid_input(format!(
-                    "conflicting model specified in provider spec `{name_or_path}` and --model `{mo}`"
-                )));
-            }
+        if let Some(mo) = model_override
+            && !colon_model.eq_ignore_ascii_case(mo.trim())
+        {
+            return Err(argus_core::ArgusError::invalid_input(format!(
+                "conflicting model specified in provider spec `{name_or_path}` and --model `{mo}`"
+            )));
         }
         let model_selector = Some(colon_model);
         for dir in &provider_dirs {
@@ -1215,41 +1212,40 @@ fn resolve_provider_profile_with_env_and_model(
         // 3a. Exact provider file name (e.g. "lemonade" -> "lemonade.json")
         for dir in &provider_dirs {
             let provider_path = dir.join(format!("{provider_spec}.json"));
-            if provider_path.is_file() {
-                if let Ok(bytes) = std::fs::read(&provider_path) {
-                    if let Ok(raw_text) = std::str::from_utf8(&bytes) {
-                        let parsed =
-                            serde_json::from_str::<argus_provider::ProviderConfig>(raw_text)
-                                .or_else(|_| {
-                                    if let Ok(sub) = substitute_env_vars(raw_text) {
-                                        serde_json::from_str(&sub)
-                                    } else {
-                                        serde_json::from_str(raw_text)
-                                    }
-                                });
-                        if let Ok(config) = parsed {
-                            let profile = config.resolve_runtime_profile(model_override).map_err(|error| {
+            if provider_path.is_file()
+                && let Ok(bytes) = std::fs::read(&provider_path)
+                && let Ok(raw_text) = std::str::from_utf8(&bytes)
+            {
+                let parsed = serde_json::from_str::<argus_provider::ProviderConfig>(raw_text)
+                    .or_else(|_| {
+                        if let Ok(sub) = substitute_env_vars(raw_text) {
+                            serde_json::from_str(&sub)
+                        } else {
+                            serde_json::from_str(raw_text)
+                        }
+                    });
+                if let Ok(config) = parsed {
+                    let profile =
+                        config
+                            .resolve_runtime_profile(model_override)
+                            .map_err(|error| {
                                 argus_core::ArgusError::invalid_input(format!(
                                     "cannot resolve model in provider configuration `{}`: {error}",
                                     provider_path.display()
                                 ))
                             })?;
-                            return Ok((provider_path, profile));
-                        }
-                        if let Ok(substituted) = substitute_env_vars(raw_text) {
-                            if let Ok(profile) = serde_json::from_str::<
-                                argus_provider::ProviderRuntimeProfile,
-                            >(&substituted)
-                            {
-                                return Ok((provider_path, profile));
-                            }
-                        }
-                        if let Ok(profile) =
-                            serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(raw_text)
-                        {
-                            return Ok((provider_path, profile));
-                        }
-                    }
+                    return Ok((provider_path, profile));
+                }
+                if let Ok(substituted) = substitute_env_vars(raw_text)
+                    && let Ok(profile) =
+                        serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted)
+                {
+                    return Ok((provider_path, profile));
+                }
+                if let Ok(profile) =
+                    serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(raw_text)
+                {
+                    return Ok((provider_path, profile));
                 }
             }
         }
@@ -1272,11 +1268,13 @@ fn resolve_provider_profile_with_env_and_model(
                         if provider_spec.starts_with(&prefix) {
                             let model_candidate =
                                 model_override.unwrap_or(&provider_spec[prefix.len()..]);
-                            if let Ok(bytes) = std::fs::read(&path) {
-                                if let Ok(raw_text) = std::str::from_utf8(&bytes) {
-                                    let parsed = serde_json::from_str::<
-                                        argus_provider::ProviderConfig,
-                                    >(raw_text)
+                            if let Ok(bytes) = std::fs::read(&path)
+                                && let Ok(raw_text) = std::str::from_utf8(&bytes)
+                            {
+                                let parsed =
+                                    serde_json::from_str::<argus_provider::ProviderConfig>(
+                                        raw_text,
+                                    )
                                     .or_else(|_| {
                                         if let Ok(sub) = substitute_env_vars(raw_text) {
                                             serde_json::from_str(&sub)
@@ -1284,13 +1282,11 @@ fn resolve_provider_profile_with_env_and_model(
                                             serde_json::from_str(raw_text)
                                         }
                                     });
-                                    if let Ok(config) = parsed {
-                                        if let Ok(profile) =
-                                            config.resolve_runtime_profile(Some(model_candidate))
-                                        {
-                                            return Ok((path, profile));
-                                        }
-                                    }
+                                if let Ok(config) = parsed
+                                    && let Ok(profile) =
+                                        config.resolve_runtime_profile(Some(model_candidate))
+                                {
+                                    return Ok((path, profile));
                                 }
                             }
                         }
@@ -1473,10 +1469,10 @@ fn run(
         && (args_vec.len() == 1
             || (args_vec.len() == 2 && is_help_flag(Some(args_vec[1].as_str()))))
     {
-        if let Some(cmd) = args_vec.first() {
-            if let Ok(topic) = command_help(cmd) {
-                return Ok(topic);
-            }
+        if let Some(cmd) = args_vec.first()
+            && let Ok(topic) = command_help(cmd)
+        {
+            return Ok(topic);
         }
         return Ok(HELP.to_owned());
     }
@@ -1490,11 +1486,11 @@ fn run(
     };
 
     let append_config = |mut remaining: Vec<String>| -> Vec<String> {
-        if let Some(ref config) = cli.config {
-            if !remaining.iter().any(|a| a == "-c" || a == "--config") {
-                remaining.push("--config".to_owned());
-                remaining.push(config.clone());
-            }
+        if let Some(ref config) = cli.config
+            && !remaining.iter().any(|a| a == "-c" || a == "--config")
+        {
+            remaining.push("--config".to_owned());
+            remaining.push(config.clone());
         }
         remaining
     };
@@ -2086,10 +2082,10 @@ pub fn filter_changed_and_impacted_targets(
 
     let mut directly_changed_ids = BTreeSet::new();
     for target in targets {
-        if let Some(loc) = &target.location {
-            if changed_files.contains(&loc.path) {
-                directly_changed_ids.insert(target.id.clone());
-            }
+        if let Some(loc) = &target.location
+            && changed_files.contains(&loc.path)
+        {
+            directly_changed_ids.insert(target.id.clone());
         }
     }
 
@@ -2137,14 +2133,14 @@ fn scan_markdown_files(
         }
         if path.is_dir() {
             scan_markdown_files(&path, root, out)?;
-        } else if path.is_file() && (name.ends_with(".md") || name.ends_with(".markdown")) {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(rel_path) = path.strip_prefix(root) {
-                    let rel_norm = rel_path.to_string_lossy().replace('\\', "/");
-                    if let Ok(source_path) = argus_core::SourcePath::new(rel_norm) {
-                        out.push((source_path, content));
-                    }
-                }
+        } else if path.is_file()
+            && (name.ends_with(".md") || name.ends_with(".markdown"))
+            && let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(rel_path) = path.strip_prefix(root)
+        {
+            let rel_norm = rel_path.to_string_lossy().replace('\\', "/");
+            if let Ok(source_path) = argus_core::SourcePath::new(rel_norm) {
+                out.push((source_path, content));
             }
         }
     }
@@ -3050,7 +3046,7 @@ fn work_command_with_env(
                 "requested concurrency {concurrency} exceeds provider capacity ({capacity})"
             )));
         }
-        profile.policy.limits.max_concurrency = concurrency as u32;
+        profile.policy.limits.max_concurrency = u32::try_from(concurrency).unwrap_or(u32::MAX);
     } else if matches!(preset, PipelinePreset::Ci) {
         // Under CI preset, cap default concurrency to min(4, capacity) for predictable bounded runs
         let ci_concurrency = (profile.policy.limits.max_concurrency).min(4);
@@ -3064,45 +3060,37 @@ fn work_command_with_env(
         .map_err(io_error("cannot start worker runtime"))?;
 
     let mut cache_prefix = String::new();
-    if incremental {
-        if let Ok(queue) = working_queue(root) {
-            if let Ok(run_id) = current_run(root) {
-                if let Ok(Some(run)) = queue.get_run(&run_id) {
-                    let queue_arc = std::sync::Arc::new(queue);
-                    let resolver =
-                        std::sync::Arc::new(argus_workflow::MapFingerprintResolver::new());
-                    let worker = argus_workflow::ShortCircuitCacheWorker::new(
-                        queue_arc,
-                        None,
-                        resolver,
-                        argus_workflow::ShortCircuitCacheWorkerConfig {
-                            audit_run: run_id,
-                            audit_snapshot: run.snapshot,
-                            adapter: None,
-                            policy: if policy_name == "all" {
-                                None
-                            } else {
-                                Some(policy_name.to_owned())
-                            },
-                            lease_duration_millis: 60_000,
-                        },
-                    );
-                    let now_millis = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    if let Ok(sweep) =
-                        runtime.block_on(worker.run_sweep(now_millis, limit.unwrap_or(0)))
-                    {
-                        if sweep.hits > 0 {
-                            cache_prefix = format!(
-                                "Cache short-circuit: {} assessment hit(s), {} miss(es)\n",
-                                sweep.hits, sweep.misses
-                            );
-                        }
-                    }
-                }
-            }
+    if incremental
+        && let Ok(queue) = working_queue(root)
+        && let Ok(run_id) = current_run(root)
+        && let Ok(Some(run)) = queue.get_run(&run_id)
+    {
+        let queue_arc = std::sync::Arc::new(queue);
+        let resolver = std::sync::Arc::new(argus_workflow::MapFingerprintResolver::new());
+        let worker = argus_workflow::ShortCircuitCacheWorker::new(
+            queue_arc,
+            None,
+            resolver,
+            argus_workflow::ShortCircuitCacheWorkerConfig {
+                audit_run: run_id,
+                audit_snapshot: run.snapshot,
+                adapter: None,
+                policy: if policy_name == "all" {
+                    None
+                } else {
+                    Some(policy_name.to_owned())
+                },
+                lease_duration_millis: 60_000,
+            },
+        );
+        let now_millis = now_millis().unwrap_or_default();
+        if let Ok(sweep) = runtime.block_on(worker.run_sweep(now_millis, limit.unwrap_or(0)))
+            && sweep.hits > 0
+        {
+            cache_prefix = format!(
+                "Cache short-circuit: {} assessment hit(s), {} miss(es)\n",
+                sweep.hits, sweep.misses
+            );
         }
     }
 
@@ -3167,19 +3155,18 @@ impl TargetCatalog {
             return catalog;
         }
 
-        if catalog.targets.is_empty() {
-            if let Ok(entries) = std::fs::read_dir(&inv_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        catalog.load_snapshot_dir(&path);
-                    } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if name.starts_with("current-") {
-                            if let Ok(snap) = std::fs::read_to_string(&path) {
-                                catalog.load_snapshot_dir(&inv_dir.join(snap.trim()));
-                            }
-                        }
-                    }
+        if catalog.targets.is_empty()
+            && let Ok(entries) = std::fs::read_dir(&inv_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    catalog.load_snapshot_dir(&path);
+                } else if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && name.starts_with("current-")
+                    && let Ok(snap) = std::fs::read_to_string(&path)
+                {
+                    catalog.load_snapshot_dir(&inv_dir.join(snap.trim()));
                 }
             }
         }
@@ -3226,11 +3213,6 @@ impl TargetCatalog {
 
     fn load_jsonl_file(&mut self, path: &std::path::Path, default_adapter: Option<&str>) {
         use std::io::BufRead;
-        let Ok(file) = std::fs::File::open(path) else {
-            return;
-        };
-        let reader = std::io::BufReader::new(file);
-
         #[derive(serde::Deserialize)]
         struct TargetEntryRecord {
             record: String,
@@ -3252,41 +3234,45 @@ impl TargetCatalog {
             path: String,
         }
 
-        for line in reader.lines().flatten() {
+        let Ok(file) = std::fs::File::open(path) else {
+            return;
+        };
+        let reader = std::io::BufReader::new(file);
+
+        for line in reader.lines().map_while(Result::ok) {
             if !line.contains("\"record\":\"target\"") {
                 continue;
             }
-            if let Ok(rec) = serde_json::from_str::<TargetEntryRecord>(&line) {
-                if rec.record == "target" {
-                    if let Some(val) = rec.value {
-                        let (lang, kind_str) = match &val.kind {
-                            Some(serde_json::Value::Object(map)) => {
-                                let lang = map
-                                    .get("language")
-                                    .and_then(|v| v.as_str())
-                                    .map(ToOwned::to_owned)
-                                    .or_else(|| default_adapter.map(ToOwned::to_owned));
-                                let kind = map
-                                    .get("kind")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("target")
-                                    .to_owned();
-                                (lang, kind)
-                            }
-                            _ => (default_adapter.map(ToOwned::to_owned), "target".to_owned()),
-                        };
-                        let path = val.location.map(|l| l.path);
-                        self.targets.insert(
-                            val.id,
-                            TargetCatalogEntry {
-                                name: val.name,
-                                kind: kind_str,
-                                language: lang,
-                                path,
-                            },
-                        );
+            if let Ok(rec) = serde_json::from_str::<TargetEntryRecord>(&line)
+                && rec.record == "target"
+                && let Some(val) = rec.value
+            {
+                let (lang, kind_str) = match &val.kind {
+                    Some(serde_json::Value::Object(map)) => {
+                        let lang = map
+                            .get("language")
+                            .and_then(|v| v.as_str())
+                            .map(ToOwned::to_owned)
+                            .or_else(|| default_adapter.map(ToOwned::to_owned));
+                        let kind = map
+                            .get("kind")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("target")
+                            .to_owned();
+                        (lang, kind)
                     }
-                }
+                    _ => (default_adapter.map(ToOwned::to_owned), "target".to_owned()),
+                };
+                let path = val.location.map(|l| l.path);
+                self.targets.insert(
+                    val.id,
+                    TargetCatalogEntry {
+                        name: val.name,
+                        kind: kind_str,
+                        language: lang,
+                        path,
+                    },
+                );
             }
         }
     }
@@ -3338,6 +3324,7 @@ impl TargetCatalog {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_worker_step<F, Fut, R>(
     category: &str,
     worker_id: usize,
@@ -3516,7 +3503,7 @@ const CIRCUIT_BREAKER_CONSECUTIVE_FAILURES: usize = 5;
 /// that never yields back to the executor.
 const WORK_ITEM_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(3600);
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn execute_concurrent_worker_pool<W, F, Fut>(
     category: &'static str,
     category_title: &'static str,
@@ -3617,11 +3604,10 @@ where
                     break;
                 }
                 let item_index = dispatched.fetch_add(1, Ordering::SeqCst);
-                if let Some(l) = limit {
-                    if item_index >= l {
+                if let Some(l) = limit
+                    && item_index >= l {
                         break;
                     }
-                }
 
                 let remaining = queue_pending_count(&queue, &run_id, category);
                 let worker_clone = worker.clone();
@@ -4884,14 +4870,15 @@ fn run_command(
     output.push('\n');
 
     // 2. Audit phase
-    let mut audit_args = Vec::new();
-    audit_args.push("--pipeline".to_owned());
-    audit_args.push(pipeline.unwrap_or_else(|| "full".to_owned()));
-    audit_args.push("--preset".to_owned());
-    audit_args.push(match preset {
-        PipelinePreset::Local => "local".to_owned(),
-        PipelinePreset::Ci => "ci".to_owned(),
-    });
+    let mut audit_args = vec![
+        "--pipeline".to_owned(),
+        pipeline.unwrap_or_else(|| "full".to_owned()),
+        "--preset".to_owned(),
+        match preset {
+            PipelinePreset::Local => "local".to_owned(),
+            PipelinePreset::Ci => "ci".to_owned(),
+        },
+    ];
     if ci_lite {
         audit_args.push("--ci-lite".to_owned());
     }
@@ -4994,37 +4981,37 @@ fn run_command(
     }
 
     // Differential CI gate check against baseline
-    if let Some(ref base) = baseline_arg {
-        if let Ok(base_run_id) = base.parse::<argus_core::RunId>() {
-            let queue = working_queue(root)?;
-            let run_id = current_run(root)?;
-            let diff_report = argus_report::differential_report_from_queue(
-                &queue,
-                base_run_id.clone(),
-                run_id.clone(),
+    if let Some(ref base) = baseline_arg
+        && let Ok(base_run_id) = base.parse::<argus_core::RunId>()
+    {
+        let queue = working_queue(root)?;
+        let run_id = current_run(root)?;
+        let diff_report = argus_report::differential_report_from_queue(
+            &queue,
+            base_run_id.clone(),
+            run_id.clone(),
+            Some(&argus_report::DifferentialThresholds::default()),
+        )
+        .or_else(|_| {
+            let base_bundle = root.join(".argus/reviews").join(base_run_id.as_str());
+            let cur_bundle = root.join(".argus/reviews").join(run_id.as_str());
+            argus_report::differential_report_from_bundles(
+                &base_bundle,
+                &cur_bundle,
+                base_run_id,
+                run_id,
                 Some(&argus_report::DifferentialThresholds::default()),
             )
-            .or_else(|_| {
-                let base_bundle = root.join(".argus/reviews").join(base_run_id.as_str());
-                let cur_bundle = root.join(".argus/reviews").join(run_id.as_str());
-                argus_report::differential_report_from_bundles(
-                    &base_bundle,
-                    &cur_bundle,
-                    base_run_id,
-                    run_id,
-                    Some(&argus_report::DifferentialThresholds::default()),
-                )
-            });
-            if let Ok(report) = diff_report {
-                if let Some(gate) = report.gate_result {
-                    if !gate.passed && (matches!(preset, PipelinePreset::Ci) || ci_lite) {
-                        return Err(argus_core::ArgusError::invalid_input(format!(
-                            "CI gate check failed on new findings: {}",
-                            gate.violations.join("; ")
-                        )));
-                    }
-                }
-            }
+        });
+        if let Ok(report) = diff_report
+            && let Some(gate) = report.gate_result
+            && !gate.passed
+            && (matches!(preset, PipelinePreset::Ci) || ci_lite)
+        {
+            return Err(argus_core::ArgusError::invalid_input(format!(
+                "CI gate check failed on new findings: {}",
+                gate.violations.join("; ")
+            )));
         }
     }
 
@@ -5223,7 +5210,7 @@ fn prime_command(
             argus_snapshot::SnapshotRepository::open(root.join(".argus/state/sources"))?;
         let source = SnapshotSource(repository.reader(snapshot.clone()));
         let mut publication =
-            inventory::Publication::new(root, &source, snapshot.configuration.id.clone())?;
+            inventory::Publication::new(root, &source, &snapshot.configuration.id)?;
         if let Some(metadata) = metadata {
             let rust = argus_rust::RustWorkspaceAdapter::new(
                 metadata,
@@ -5836,34 +5823,29 @@ fn clean_command(
     }
 
     // 5. Finalized review bundles pruning (if explicitly opted in with --reviews)
-    if do_reviews {
-        if let Some(ref ret_str) = retention {
-            let duration_ms = parse_duration_millis(ret_str)?;
-            let reviews_dir = root.join(".argus/reviews");
-            if reviews_dir.exists() {
-                if let Ok(entries) = std::fs::read_dir(&reviews_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            let mut is_old = false;
-                            if let Ok(meta) = std::fs::metadata(&path) {
-                                if let Ok(modified) = meta.modified() {
-                                    if let Ok(dur) = modified.elapsed() {
-                                        if dur.as_millis() as u64 >= duration_ms {
-                                            is_old = true;
-                                        }
-                                    }
-                                }
-                            }
-                            if is_old {
-                                let (_sub_files, sub_bytes) =
-                                    clean_directory_contents(&path, dry_run);
-                                report.reviews_removed += 1;
-                                report.reviews_bytes_reclaimed += sub_bytes;
-                                if !dry_run {
-                                    let _ = std::fs::remove_dir_all(&path);
-                                }
-                            }
+    if do_reviews && let Some(ref ret_str) = retention {
+        let duration_ms = parse_duration_millis(ret_str)?;
+        let reviews_dir = root.join(".argus/reviews");
+        if reviews_dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&reviews_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let mut is_old = false;
+                    if let Ok(meta) = std::fs::metadata(&path)
+                        && let Ok(modified) = meta.modified()
+                        && let Ok(dur) = modified.elapsed()
+                        && u64::try_from(dur.as_millis()).unwrap_or(u64::MAX) >= duration_ms
+                    {
+                        is_old = true;
+                    }
+                    if is_old {
+                        let (_sub_files, sub_bytes) = clean_directory_contents(&path, dry_run);
+                        report.reviews_removed += 1;
+                        report.reviews_bytes_reclaimed += sub_bytes;
+                        if !dry_run {
+                            let _ = std::fs::remove_dir_all(&path);
                         }
                     }
                 }
@@ -6390,26 +6372,24 @@ pub(crate) fn publish_command(
 
     let pub_dir = root.join(".argus/publications");
     let mut prior_receipts = Vec::new();
-    if pub_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&pub_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Ok(receipt) =
-                            serde_json::from_str::<argus_report::PublicationReceipt>(&content)
-                        {
-                            prior_receipts.push(receipt);
-                        }
-                    }
-                }
+    if pub_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&pub_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json")
+                && let Ok(content) = std::fs::read_to_string(&path)
+                && let Ok(receipt) =
+                    serde_json::from_str::<argus_report::PublicationReceipt>(&content)
+            {
+                prior_receipts.push(receipt);
             }
         }
     }
 
     let now_millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64);
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
 
     let (receipt, script) = argus_report::prepare_publication(
         &id,
@@ -6865,24 +6845,22 @@ fn design_command(
             } else {
                 let mut out = String::new();
                 out.push_str("# Design Artifacts Index\n\n");
-                out.push_str(&format!(
-                    "Found {} design document(s):\n\n",
-                    artifacts.len()
-                ));
+                let _ = writeln!(out, "Found {} design document(s):\n", artifacts.len());
                 if artifacts.is_empty() {
                     out.push_str("No design artifacts found in workspace.\n");
                 } else {
                     out.push_str("| ID | Title | Kind | Status | Path |\n");
                     out.push_str("|---|---|---|---|---|\n");
                     for a in &artifacts {
-                        out.push_str(&format!(
-                            "| {} | {} | {:?} | {:?} | {} |\n",
+                        let _ = writeln!(
+                            out,
+                            "| {} | {} | {:?} | {:?} | {} |",
                             a.id,
                             a.title,
                             a.kind,
                             a.status,
                             a.path.as_str()
-                        ));
+                        );
                     }
                 }
                 Ok(out)
@@ -6904,22 +6882,25 @@ fn design_command(
                 out.push_str("# Design Document Health\n\n");
                 let total = index.artifacts().count();
                 if issues.is_empty() {
-                    out.push_str(&format!(
-                        "All {total} design document(s) are healthy. No issues detected.\n"
-                    ));
+                    let _ = writeln!(
+                        out,
+                        "All {total} design document(s) are healthy. No issues detected."
+                    );
                 } else {
-                    out.push_str(&format!(
-                        "Indexed {total} document(s). Detected {} issue(s):\n\n",
+                    let _ = writeln!(
+                        out,
+                        "Indexed {total} document(s). Detected {} issue(s):\n",
                         issues.len()
-                    ));
+                    );
                     out.push_str("| Severity | Kind | Artifact | Message |\n");
                     out.push_str("|---|---|---|---|\n");
                     for issue in &issues {
                         let artifact = issue.artifact_id.as_ref().map_or("-", |id| id.as_str());
-                        out.push_str(&format!(
-                            "| {:?} | {:?} | {} | {} |\n",
+                        let _ = writeln!(
+                            out,
+                            "| {:?} | {:?} | {} | {} |",
                             issue.severity, issue.kind, artifact, issue.message
-                        ));
+                        );
                     }
                 }
                 Ok(out)
@@ -6958,10 +6939,11 @@ fn design_command(
             } else {
                 let mut out = String::new();
                 out.push_str("# Architectural Drift Status\n\n");
-                out.push_str(&format!(
-                    "Registered {} accepted intentional drift record(s):\n\n",
+                let _ = writeln!(
+                    out,
+                    "Registered {} accepted intentional drift record(s):\n",
                     records.len()
-                ));
+                );
                 if records.is_empty() {
                     out.push_str("No intentional drift records registered.\n");
                 } else {
@@ -6969,10 +6951,11 @@ fn design_command(
                     out.push_str("|---|---|---|---|---|---|\n");
                     for r in &records {
                         let review = r.review_date.as_deref().unwrap_or("-");
-                        out.push_str(&format!(
-                            "| {} | {} | {} | {} | {} | {} |\n",
+                        let _ = writeln!(
+                            out,
+                            "| {} | {} | {} | {} | {} | {} |",
                             r.id, r.target_id, r.artifact_id, r.owner, r.accepted_at, review
-                        ));
+                        );
                     }
                 }
                 Ok(out)
@@ -6996,7 +6979,13 @@ pub(crate) fn status_command(root: &std::path::Path) -> Result<String, argus_cor
     status_command_with_adapter(root, None)
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "throughput, ETA, and cost figures are approximate display values from non-negative counts"
+)]
 fn status_command_with_adapter(
     root: &std::path::Path,
     adapter: Option<&str>,
@@ -7011,25 +7000,29 @@ fn status_command_with_adapter(
     if let (Some(first), Some(last)) = (
         telemetry.first_succeeded_at_millis,
         telemetry.last_succeeded_at_millis,
-    ) {
-        if last > first && status.succeeded > 1 {
-            let elapsed_secs = (last - first) as f64 / 1000.0;
-            let throughput = (status.succeeded - 1) as f64 / elapsed_secs;
-            progress_line.push_str(&format!(
-                "\nThroughput: {throughput:.2} items/s (over {elapsed_secs:.1}s)"
-            ));
-            if status.pending > 0 && throughput > 0.0 {
-                let remaining_secs = (status.pending as f64 / throughput).round() as u64;
-                let minutes = remaining_secs / 60;
-                let seconds = remaining_secs % 60;
-                if minutes > 0 {
-                    progress_line.push_str(&format!(
-                        "\nProjected completion: ~{minutes}m {seconds}s remaining"
-                    ));
-                } else {
-                    progress_line
-                        .push_str(&format!("\nProjected completion: ~{seconds}s remaining"));
-                }
+    ) && last > first
+        && status.succeeded > 1
+    {
+        let elapsed_secs = (last - first) as f64 / 1000.0;
+        let throughput = (status.succeeded - 1) as f64 / elapsed_secs;
+        let _ = write!(
+            progress_line,
+            "\nThroughput: {throughput:.2} items/s (over {elapsed_secs:.1}s)"
+        );
+        if status.pending > 0 && throughput > 0.0 {
+            let remaining_secs = (status.pending as f64 / throughput).round() as u64;
+            let minutes = remaining_secs / 60;
+            let seconds = remaining_secs % 60;
+            if minutes > 0 {
+                let _ = write!(
+                    progress_line,
+                    "\nProjected completion: ~{minutes}m {seconds}s remaining"
+                );
+            } else {
+                let _ = write!(
+                    progress_line,
+                    "\nProjected completion: ~{seconds}s remaining"
+                );
             }
         }
     }
@@ -7144,20 +7137,28 @@ fn status_command_with_adapter(
         )
         .expect("writing to a String cannot fail");
     }
-    append_stalled_warnings(&telemetry.stalled_items, &mut output)?;
+    append_stalled_warnings(&telemetry.stalled_items, &mut output);
     append_review_workflows_status(root, &queue, &mut output)?;
     append_architecture_status(root, &queue, &mut output)?;
     append_work_errors_summary(root, &queue, &mut output)?;
     if current_run(root).is_ok() {
         match inventory::load(root, adapter) {
-            Ok(inventory) => output.push_str(&format!("\n{}\n", inventory::describe(&inventory))),
+            Ok(inventory) => {
+                let _ = writeln!(output, "\n{}", inventory::describe(&inventory));
+            }
             Err(error) if adapter.is_some() => return Err(error),
-            Err(error) => output.push_str(&format!("\nInventory unavailable: {error}\n")),
+            Err(error) => {
+                let _ = writeln!(output, "\nInventory unavailable: {error}");
+            }
         }
     }
     Ok(output.trim_end().to_owned())
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "human-readable sizes are approximate; the exact byte count is printed alongside"
+)]
 fn format_bytes(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
@@ -7173,12 +7174,9 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn append_stalled_warnings(
-    stalled_items: &[argus_storage::StalledWorkItem],
-    output: &mut String,
-) -> Result<(), argus_core::ArgusError> {
+fn append_stalled_warnings(stalled_items: &[argus_storage::StalledWorkItem], output: &mut String) {
     if stalled_items.is_empty() {
-        return Ok(());
+        return;
     }
     writeln!(
         output,
@@ -7203,7 +7201,6 @@ fn append_stalled_warnings(
         "Action: Run 'argus resume' to release expired leases back to pending state, or investigate crashed workers."
     )
     .expect("writing to a String cannot fail");
-    Ok(())
 }
 
 fn append_review_workflows_status(
@@ -7211,14 +7208,6 @@ fn append_review_workflows_status(
     queue: &argus_storage::DurableQueue,
     output: &mut String,
 ) -> Result<(), argus_core::ArgusError> {
-    let Ok(run_id) = current_run(root) else {
-        return Ok(());
-    };
-    let records = queue.run_records(&run_id)?;
-    if records.work.is_empty() {
-        return Ok(());
-    }
-
     struct PolicyCounts {
         total: usize,
         pending: usize,
@@ -7226,6 +7215,14 @@ fn append_review_workflows_status(
         succeeded: usize,
         failed: usize,
         cancelled: usize,
+    }
+
+    let Ok(run_id) = current_run(root) else {
+        return Ok(());
+    };
+    let records = queue.run_records(&run_id)?;
+    if records.work.is_empty() {
+        return Ok(());
     }
 
     let mut counts_by_policy: std::collections::BTreeMap<String, PolicyCounts> =
@@ -7517,7 +7514,7 @@ const DEFAULT_PROFILE_JSON: &str = r#"{
       "model_version": "latest"
     },
     "deployment": "local",
-    "context_window_tokens": 128000,
+    "context_window_tokens": 128_000,
     "max_output_tokens": 8192,
     "structured_output": "best_effort",
     "tool_calling": false,
@@ -7797,7 +7794,7 @@ fn provider_discover_command(
                     | argus_provider::WatsonxCredentialProfile::BearerToken(k) => Some(k.clone()),
                 }
             }
-            _ => None,
+            argus_provider::ProviderTransportProfile::Ollama { .. } => None,
         });
 
     // Extract project fallback from existing transport
@@ -7805,8 +7802,8 @@ fn provider_discover_command(
         .as_ref()
         .and_then(|cfg| match &cfg.transport {
             argus_provider::ProviderTransportProfile::Watsonx { scope, .. } => match scope {
-                argus_provider::WatsonxScopeProfile::Project(id) => Some(id.clone()),
-                argus_provider::WatsonxScopeProfile::Space(id) => Some(id.clone()),
+                argus_provider::WatsonxScopeProfile::Project(id)
+                | argus_provider::WatsonxScopeProfile::Space(id) => Some(id.clone()),
             },
             _ => None,
         });
@@ -7899,12 +7896,11 @@ fn provider_discover_command(
     })?;
 
     // Apply configured project ID if WatsonX
-    if let Some(ref pid) = effective_project {
-        if let argus_provider::ProviderTransportProfile::Watsonx { ref mut scope, .. } =
+    if let Some(ref pid) = effective_project
+        && let argus_provider::ProviderTransportProfile::Watsonx { ref mut scope, .. } =
             newly_generated.transport
-        {
-            *scope = argus_provider::WatsonxScopeProfile::Project(pid.clone());
-        }
+    {
+        *scope = argus_provider::WatsonxScopeProfile::Project(pid.clone());
     }
 
     let config = if let Some(mut existing) = existing_config {
@@ -8000,6 +7996,13 @@ fn provider_list_command(
     args: &[String],
     env_config_dir: Option<&std::path::Path>,
 ) -> Result<String, argus_core::ArgusError> {
+    struct ProviderDisplayEntry {
+        provider_name: String,
+        transport: String,
+        models_summary: Vec<(String, Vec<String>, u32)>,
+        file_path: std::path::PathBuf,
+    }
+
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_PROVIDER_LIST.to_owned());
     }
@@ -8049,13 +8052,6 @@ fn provider_list_command(
     let mut seen_dirs = std::collections::HashSet::new();
     search_dirs.retain(|d| seen_dirs.insert(d.clone()));
 
-    struct ProviderDisplayEntry {
-        provider_name: String,
-        transport: String,
-        models_summary: Vec<(String, Vec<String>, u32)>,
-        file_path: std::path::PathBuf,
-    }
-
     let mut providers = Vec::new();
     let mut seen_providers = std::collections::HashSet::new();
 
@@ -8063,9 +8059,8 @@ fn provider_list_command(
         if !dir.is_dir() {
             continue;
         }
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => continue,
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
         };
 
         let mut dir_entries = Vec::new();
@@ -8091,9 +8086,8 @@ fn provider_list_command(
                 continue;
             }
 
-            let bytes = match std::fs::read(&path) {
-                Ok(b) => b,
-                Err(_) => continue,
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
             };
 
             if let Ok(config) = serde_json::from_slice::<argus_provider::ProviderConfig>(&bytes) {
@@ -8272,7 +8266,7 @@ struct JsonProbeItem {
 
 fn load_all_provider_configs(
     search_dirs: &[std::path::PathBuf],
-) -> Result<Vec<(std::path::PathBuf, argus_provider::ProviderConfig)>, argus_core::ArgusError> {
+) -> Vec<(std::path::PathBuf, argus_provider::ProviderConfig)> {
     let mut results = Vec::new();
     let mut seen_providers = std::collections::HashSet::new();
 
@@ -8280,9 +8274,8 @@ fn load_all_provider_configs(
         if !dir.is_dir() {
             continue;
         }
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => continue,
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
         };
         let mut paths = Vec::new();
         for entry in entries.flatten() {
@@ -8301,25 +8294,22 @@ fn load_all_provider_configs(
             if stem == "argus" || stem.is_empty() {
                 continue;
             }
-            let bytes = match std::fs::read(&path) {
-                Ok(b) => b,
-                Err(_) => continue,
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
             };
-            let text = match std::str::from_utf8(&bytes) {
-                Ok(t) => t,
-                Err(_) => continue,
+            let Ok(text) = std::str::from_utf8(&bytes) else {
+                continue;
             };
             let substituted = substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
             if let Ok(config) = serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
+                && seen_providers.insert(config.provider.clone())
             {
-                if seen_providers.insert(config.provider.clone()) {
-                    results.push((path, config));
-                }
+                results.push((path, config));
             }
         }
     }
 
-    Ok(results)
+    results
 }
 
 fn load_provider_spec(
@@ -8345,23 +8335,20 @@ fn load_provider_spec(
     if is_explicit_path(provider_name) {
         let candidates = explicit_provider_path_candidates(root, provider_name);
         for path in candidates {
-            if path.is_file() {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    if let Ok(text) = std::str::from_utf8(&bytes) {
-                        let substituted =
-                            substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
-                        if let Ok(config) =
-                            serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
-                        {
-                            return Ok((path, Some(config), None));
-                        }
-                        if let Ok(profile) = serde_json::from_str::<
-                            argus_provider::ProviderRuntimeProfile,
-                        >(&substituted)
-                        {
-                            return Ok((path, None, Some(profile)));
-                        }
-                    }
+            if path.is_file()
+                && let Ok(bytes) = std::fs::read(&path)
+                && let Ok(text) = std::str::from_utf8(&bytes)
+            {
+                let substituted = substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
+                if let Ok(config) =
+                    serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
+                {
+                    return Ok((path, Some(config), None));
+                }
+                if let Ok(profile) =
+                    serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted)
+                {
+                    return Ok((path, None, Some(profile)));
                 }
             }
         }
@@ -8370,21 +8357,19 @@ fn load_provider_spec(
     // 2. Exact filename in search_dirs
     for dir in search_dirs {
         let path = dir.join(format!("{provider_name}.json"));
-        if path.is_file() {
-            if let Ok(bytes) = std::fs::read(&path) {
-                if let Ok(text) = std::str::from_utf8(&bytes) {
-                    let substituted = substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
-                    if let Ok(config) =
-                        serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
-                    {
-                        return Ok((path, Some(config), None));
-                    }
-                    if let Ok(profile) =
-                        serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted)
-                    {
-                        return Ok((path, None, Some(profile)));
-                    }
-                }
+        if path.is_file()
+            && let Ok(bytes) = std::fs::read(&path)
+            && let Ok(text) = std::str::from_utf8(&bytes)
+        {
+            let substituted = substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
+            if let Ok(config) = serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
+            {
+                return Ok((path, Some(config), None));
+            }
+            if let Ok(profile) =
+                serde_json::from_str::<argus_provider::ProviderRuntimeProfile>(&substituted)
+            {
+                return Ok((path, None, Some(profile)));
             }
         }
     }
@@ -8404,18 +8389,16 @@ fn load_provider_spec(
                 {
                     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                     let prefix = format!("{stem}-");
-                    if provider_name.starts_with(&prefix) {
-                        if let Ok(bytes) = std::fs::read(&path) {
-                            if let Ok(text) = std::str::from_utf8(&bytes) {
-                                let substituted =
-                                    substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
-                                if let Ok(config) = serde_json::from_str::<
-                                    argus_provider::ProviderConfig,
-                                >(&substituted)
-                                {
-                                    return Ok((path, Some(config), None));
-                                }
-                            }
+                    if provider_name.starts_with(&prefix)
+                        && let Ok(bytes) = std::fs::read(&path)
+                        && let Ok(text) = std::str::from_utf8(&bytes)
+                    {
+                        let substituted =
+                            substitute_env_vars(text).unwrap_or_else(|_| text.to_owned());
+                        if let Ok(config) =
+                            serde_json::from_str::<argus_provider::ProviderConfig>(&substituted)
+                        {
+                            return Ok((path, Some(config), None));
                         }
                     }
                 }
@@ -8435,6 +8418,8 @@ fn provider_test_command(
     args: &[String],
     env_config_dir: Option<&std::path::Path>,
 ) -> Result<String, argus_core::ArgusError> {
+    use argus_provider::ModelProvider as _;
+
     if args.iter().any(|arg| is_help_flag(Some(arg.as_str()))) {
         return Ok(HELP_PROVIDER_TEST.to_owned());
     }
@@ -8549,12 +8534,12 @@ fn provider_test_command(
     let mut target_items: Vec<ProviderTestTargetItem> = Vec::new();
 
     if let Some(ref prov_spec) = provider_arg {
-        if let (Some((_, colon_m)), Some(m)) = (prov_spec.split_once(':'), model_arg.as_deref()) {
-            if !colon_m.trim().eq_ignore_ascii_case(m.trim()) {
-                return Err(argus_core::ArgusError::invalid_input(format!(
-                    "conflicting model specified in provider spec `{prov_spec}` and --model `{m}`"
-                )));
-            }
+        if let (Some((_, colon_m)), Some(m)) = (prov_spec.split_once(':'), model_arg.as_deref())
+            && !colon_m.trim().eq_ignore_ascii_case(m.trim())
+        {
+            return Err(argus_core::ArgusError::invalid_input(format!(
+                "conflicting model specified in provider spec `{prov_spec}` and --model `{m}`"
+            )));
         }
         let (path, config_opt, profile_opt) =
             load_provider_spec(root, prov_spec, &search_dirs, env_config_dir)?;
@@ -8621,7 +8606,7 @@ fn provider_test_command(
             });
         }
     } else if test_all {
-        let configs = load_all_provider_configs(&search_dirs)?;
+        let configs = load_all_provider_configs(&search_dirs);
         if configs.is_empty() {
             return Ok(
                 "No provider configurations found.\nRun 'argus provider discover --type <type>' to configure a provider."
@@ -8670,7 +8655,7 @@ fn provider_test_command(
                 profile,
             });
         } else {
-            let configs = load_all_provider_configs(&search_dirs)?;
+            let configs = load_all_provider_configs(&search_dirs);
             let mut found = false;
             for (path, config) in configs {
                 if let Ok(profile) = config.resolve_runtime_profile(Some(model_sel)) {
@@ -8695,21 +8680,20 @@ fn provider_test_command(
             .default_provider
             .or(project_config.default_profile);
         let mut resolved_default = false;
-        if let Some(ref dp) = default_prov {
-            if let Ok((path, profile)) =
+        if let Some(ref dp) = default_prov
+            && let Ok((path, profile)) =
                 resolve_provider_profile_with_env_and_model(root, dp, None, env_config_dir)
-            {
-                target_items.push(ProviderTestTargetItem {
-                    provider_name: profile.capabilities.identity.provider.clone(),
-                    model_name: profile.capabilities.identity.model.clone(),
-                    config_path: path,
-                    profile,
-                });
-                resolved_default = true;
-            }
+        {
+            target_items.push(ProviderTestTargetItem {
+                provider_name: profile.capabilities.identity.provider.clone(),
+                model_name: profile.capabilities.identity.model.clone(),
+                config_path: path,
+                profile,
+            });
+            resolved_default = true;
         }
         if !resolved_default {
-            let configs = load_all_provider_configs(&search_dirs)?;
+            let configs = load_all_provider_configs(&search_dirs);
             if configs.is_empty() {
                 return Ok(
                     "No provider configurations found.\nRun 'argus provider discover --type <type>' to configure a provider."
@@ -8768,7 +8752,6 @@ fn provider_test_command(
             }
         };
 
-        use argus_provider::ModelProvider as _;
         let timeout_dur = std::time::Duration::from_secs(timeout_seconds);
 
         let start = std::time::Instant::now();
@@ -8785,7 +8768,7 @@ fn provider_test_command(
             }
         });
 
-        let elapsed_ms = health_res.1.as_millis() as u64;
+        let elapsed_ms = u64::try_from(health_res.1.as_millis()).unwrap_or(u64::MAX);
         let (health_passed, health_str, details) = match health_res.0 {
             Ok(argus_provider::ProviderHealth::Ready) => (
                 true,
@@ -8812,7 +8795,7 @@ fn provider_test_command(
             ),
         };
 
-        let mut probe_result = None;
+        let mut probe_outcomeult = None;
         let mut overall_passed = health_passed;
 
         if probe && health_passed {
@@ -8833,7 +8816,7 @@ fn provider_test_command(
             };
             let probe_start = std::time::Instant::now();
             let probe_future = built.provider.complete(probe_req);
-            let probe_res = runtime.block_on(async {
+            let probe_outcome = runtime.block_on(async {
                 match tokio::time::timeout(timeout_dur, probe_future).await {
                     Ok(res) => (res, probe_start.elapsed()),
                     Err(_) => (
@@ -8844,10 +8827,10 @@ fn provider_test_command(
                     ),
                 }
             });
-            let probe_ms = probe_res.1.as_millis() as u64;
-            match probe_res.0 {
+            let probe_ms = u64::try_from(probe_outcome.1.as_millis()).unwrap_or(u64::MAX);
+            match probe_outcome.0 {
                 Ok(resp) => {
-                    probe_result = Some(ProbeExecutionResult {
+                    probe_outcomeult = Some(ProbeExecutionResult {
                         passed: true,
                         latency_ms: probe_ms,
                         details: "valid response received".to_owned(),
@@ -8856,7 +8839,7 @@ fn provider_test_command(
                 }
                 Err(err) => {
                     overall_passed = false;
-                    probe_result = Some(ProbeExecutionResult {
+                    probe_outcomeult = Some(ProbeExecutionResult {
                         passed: false,
                         latency_ms: probe_ms,
                         details: format!("probe failed: {err}"),
@@ -8877,7 +8860,7 @@ fn provider_test_command(
             health: Some(health_str),
             latency_ms: Some(elapsed_ms),
             details,
-            probe: probe_result,
+            probe: probe_outcomeult,
         });
     }
 
@@ -11273,7 +11256,7 @@ mod tests {
             "models": {
                 "anthropic.claude-3-7-sonnet-20250219-v1:0": {
                     "aliases": ["claude-sonnet"],
-                    "context_window_tokens": 200000,
+                    "context_window_tokens": 200_000,
                     "max_output_tokens": 8192,
                     "structured_output": "schema_constrained",
                     "concurrency_capacity": 4
@@ -11389,7 +11372,7 @@ mod tests {
             "models": {
                 "gpt-4o": {
                     "aliases": [],
-                    "context_window_tokens": 128000,
+                    "context_window_tokens": 128_000,
                     "max_output_tokens": 4096,
                     "structured_output": "schema_constrained",
                     "concurrency_capacity": 2
@@ -11436,7 +11419,7 @@ mod tests {
             "models": {
                 "claude-haiku": {
                     "aliases": [],
-                    "context_window_tokens": 100000,
+                    "context_window_tokens": 100_000,
                     "max_output_tokens": 4096,
                     "structured_output": "schema_constrained",
                     "concurrency_capacity": 2

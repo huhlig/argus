@@ -47,10 +47,10 @@ fn classify_cpp(kind: &str) -> Option<NodeClassification> {
 }
 
 fn extract_cpp_name(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
-    if node.kind() == "function_definition" {
-        if let Some(decl) = node.child_by_field_name("declarator") {
-            return extract_declarator_name(&decl, source);
-        }
+    if node.kind() == "function_definition"
+        && let Some(decl) = node.child_by_field_name("declarator")
+    {
+        return extract_declarator_name(&decl, source);
     }
     default_extract_name(node, source)
 }

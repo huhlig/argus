@@ -50,14 +50,14 @@ fn classify_rust(kind: &str) -> Option<NodeClassification> {
 
 fn extract_rust_visibility(node: &tree_sitter::Node, source: &[u8]) -> TargetVisibility {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "visibility_modifier" {
-                let text = node_text(&child, source).trim();
-                if text == "pub" {
-                    return TargetVisibility::Public;
-                }
-                return TargetVisibility::Restricted;
+        if let Some(child) = node.child(i)
+            && child.kind() == "visibility_modifier"
+        {
+            let text = node_text(&child, source).trim();
+            if text == "pub" {
+                return TargetVisibility::Public;
             }
+            return TargetVisibility::Restricted;
         }
     }
     TargetVisibility::Private

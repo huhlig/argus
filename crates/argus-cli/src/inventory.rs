@@ -5,8 +5,9 @@ use argus_language::{AdapterIdentity, AdapterInventory, InventorySink, SourceAcc
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     fs::File,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -102,16 +103,7 @@ fn read_manifest(path: &Path) -> Result<Manifest, ArgusError> {
 fn hash_file(path: &Path) -> Result<ContentHash, ArgusError> {
     let mut file = File::open(path).map_err(io_error("cannot hash inventory stream"))?;
     let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0_u8; 65536];
-    loop {
-        let size = file
-            .read(&mut buffer)
-            .map_err(io_error("cannot hash inventory stream"))?;
-        if size == 0 {
-            break;
-        }
-        hasher.update(&buffer[..size]);
-    }
+    std::io::copy(&mut file, &mut hasher).map_err(io_error("cannot hash inventory stream"))?;
     ContentHash::parse(hasher.finalize().to_hex().to_string())
 }
 
@@ -140,7 +132,7 @@ impl<'a> Publication<'a> {
     pub fn new(
         root: &'a Path,
         source: &'a dyn SourceAccess,
-        configuration: ConfigurationId,
+        configuration: &ConfigurationId,
     ) -> Result<Self, ArgusError> {
         let dir = directory(root, source.snapshot_id());
         std::fs::create_dir_all(&dir)
@@ -155,7 +147,7 @@ impl<'a> Publication<'a> {
                 adapters: BTreeMap::new(),
             }
         };
-        if manifest.snapshot != *source.snapshot_id() || manifest.configuration != configuration {
+        if manifest.snapshot != *source.snapshot_id() || manifest.configuration != *configuration {
             return Err(ArgusError::invariant(
                 "inventory manifest snapshot/configuration mismatch",
             ));
@@ -185,12 +177,12 @@ impl<'a> Publication<'a> {
             ContentHash::digest(semantic),
             selection,
         ))?);
-        if let Some(old) = self.manifest.adapters.get(&name) {
-            if old.input != input {
-                return Err(ArgusError::invalid_input(format!(
-                    "adapter {name} version/options/semantic inputs changed for this snapshot; rebuild its inventory with fresh state"
-                )));
-            }
+        if let Some(old) = self.manifest.adapters.get(&name)
+            && old.input != input
+        {
+            return Err(ArgusError::invalid_input(format!(
+                "adapter {name} version/options/semantic inputs changed for this snapshot; rebuild its inventory with fresh state"
+            )));
         }
         let mut sink = JsonLinesInventorySink::new(self.staged.path(), self.source, &name)?;
         sink.begin(inventory.adapter.clone(), inventory.snapshot.clone())?;
@@ -498,7 +490,17 @@ pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
         inventory.relations.len()
     );
     for (name, entry) in &inventory.manifest.adapters {
-        output.push_str(&format!("Adapter: {name}@{} targets={} evidence={} relations={} conflicts={} stream_bytes={} elapsed_millis={}\n", entry.adapter.version, entry.metrics.targets, entry.metrics.evidence, entry.metrics.relations, entry.metrics.conflicts, entry.metrics.stream_bytes, entry.metrics.elapsed_millis));
+        let _ = writeln!(
+            output,
+            "Adapter: {name}@{} targets={} evidence={} relations={} conflicts={} stream_bytes={} elapsed_millis={}",
+            entry.adapter.version,
+            entry.metrics.targets,
+            entry.metrics.evidence,
+            entry.metrics.relations,
+            entry.metrics.conflicts,
+            entry.metrics.stream_bytes,
+            entry.metrics.elapsed_millis
+        );
     }
     let mut counts = BTreeMap::<String, usize>::new();
     for target in &inventory.targets {
@@ -511,52 +513,58 @@ pub(super) fn describe(inventory: &WorkspaceInventory) -> String {
             .or_default() += 1;
     }
     for (class, count) in counts {
-        output.push_str(&format!("{class}: {count}\n"));
+        let _ = writeln!(output, "{class}: {count}");
     }
     for (name, partition) in &inventory.partitions {
-        output.push_str(&format!(
-            "{name}/{}\t{:?}\t{}\n",
+        let _ = writeln!(
+            output,
+            "{name}/{}\t{:?}\t{}",
             partition.name,
             partition.status,
             partition.diagnostic.as_deref().unwrap_or("")
-        ));
+        );
     }
     for (name, conflict) in &inventory.conflicts {
-        output.push_str(&format!(
-            "Conflict {name}/{}: {}\n",
+        let _ = writeln!(
+            output,
+            "Conflict {name}/{}: {}",
             conflict.subject, conflict.detail
-        ));
+        );
     }
     if !inventory.missing_adapters.is_empty() {
-        output.push_str(&format!(
-            "Source languages outside selected inventory (detected by extension): {}\n",
+        let _ = writeln!(
+            output,
+            "Source languages outside selected inventory (detected by extension): {}",
             inventory.missing_adapters.join(", ")
-        ));
+        );
     }
     output.push_str("Discovery scope: captured snapshot files; adapter dependency/build exclusions and capability partitions apply. Counts are declarations, not source lines.\n");
     for issue in &inventory.capture_issues {
-        output.push_str(&format!(
-            "Capture limitation {}: {:?}: {}\n",
+        let _ = writeln!(
+            output,
+            "Capture limitation {}: {:?}: {}",
             issue.path.as_str(),
             issue.kind,
             issue.detail
-        ));
+        );
     }
     for path in &inventory.excluded_typescript {
-        output.push_str(&format!(
-            "TypeScript discovery exclusion: {} (adapter path/support rules)\n",
+        let _ = writeln!(
+            output,
+            "TypeScript discovery exclusion: {} (adapter path/support rules)",
             path.as_str()
-        ));
+        );
     }
-    output.push_str(&format!(
-        "Retained identifiers: {}\n",
+    let _ = writeln!(
+        output,
+        "Retained identifiers: {}",
         inventory
             .manifest
             .adapters
             .values()
             .map(|e| e.metrics.retained_identifiers)
             .sum::<usize>()
-    ));
+    );
     output.trim_end().to_owned()
 }
 
@@ -658,6 +666,7 @@ mod tests {
 
     #[test]
     fn locks_release_and_unpublished_staging_is_invisible() {
+        use argus_language::LanguageAdapter;
         let dir = workspace();
         prime(dir.path(), "rust");
         let guard = lock(dir.path()).unwrap();
@@ -669,12 +678,11 @@ mod tests {
         let snapshot = repository.load_manifest(&loaded.snapshot).unwrap();
         let source = SnapshotSource(repository.reader(snapshot.clone()));
         let mut publication =
-            Publication::new(dir.path(), &source, snapshot.configuration.id.clone()).unwrap();
+            Publication::new(dir.path(), &source, &snapshot.configuration.id).unwrap();
         let adapter = argus_typescript::TypeScriptWorkspaceAdapter::new(
             snapshot.configuration.id,
             snapshot.files.keys().cloned().collect(),
         );
-        use argus_language::LanguageAdapter;
         publication
             .add(adapter.inventory(&source).unwrap(), &[], "default")
             .unwrap();
@@ -705,7 +713,7 @@ mod tests {
         let snapshot = repository.load_manifest(&loaded.snapshot).unwrap();
         let source = SnapshotSource(repository.reader(snapshot.clone()));
         let mut publication =
-            Publication::new(dir.path(), &source, snapshot.configuration.id).unwrap();
+            Publication::new(dir.path(), &source, &snapshot.configuration.id).unwrap();
         let inventory = super::super::read_inventory_stream(&path).unwrap();
         assert!(
             publication

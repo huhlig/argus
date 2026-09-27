@@ -47,10 +47,10 @@ fn classify_c(kind: &str) -> Option<NodeClassification> {
 }
 
 fn extract_c_name(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
-    if node.kind() == "function_definition" {
-        if let Some(decl) = node.child_by_field_name("declarator") {
-            return extract_declarator_name(&decl, source);
-        }
+    if node.kind() == "function_definition"
+        && let Some(decl) = node.child_by_field_name("declarator")
+    {
+        return extract_declarator_name(&decl, source);
     }
     default_extract_name(node, source)
 }
@@ -60,12 +60,12 @@ fn extract_declarator_name(node: &tree_sitter::Node, source: &[u8]) -> Option<St
         return extract_declarator_name(&inner, source);
     }
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "identifier" || child.kind() == "field_identifier" {
-                let text = node_text(&child, source).trim();
-                if !text.is_empty() {
-                    return Some(text.to_owned());
-                }
+        if let Some(child) = node.child(i)
+            && (child.kind() == "identifier" || child.kind() == "field_identifier")
+        {
+            let text = node_text(&child, source).trim();
+            if !text.is_empty() {
+                return Some(text.to_owned());
             }
         }
     }

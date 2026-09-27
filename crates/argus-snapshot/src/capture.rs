@@ -410,10 +410,10 @@ pub fn git_diff_delta(
                             if let Ok(old_p) = SourcePath::new(first_path) {
                                 delta.removed.insert(old_p);
                             }
-                            if let Some(new_file) = parts.next() {
-                                if let Ok(new_p) = SourcePath::new(new_file) {
-                                    delta.added.insert(new_p);
-                                }
+                            if let Some(new_file) = parts.next()
+                                && let Ok(new_p) = SourcePath::new(new_file)
+                            {
+                                delta.added.insert(new_p);
                             }
                         }
                         _ => {
@@ -464,10 +464,10 @@ pub fn git_diff_delta(
                 if let Ok(p) = SourcePath::new(file_path) {
                     delta.removed.insert(p);
                 }
-            } else if let Ok(p) = SourcePath::new(file_path) {
-                if !delta.added.contains(&p) {
-                    delta.modified.insert(p);
-                }
+            } else if let Ok(p) = SourcePath::new(file_path)
+                && !delta.added.contains(&p)
+            {
+                delta.modified.insert(p);
             }
         }
     }

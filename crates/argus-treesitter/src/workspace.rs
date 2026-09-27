@@ -75,10 +75,10 @@ impl TreeSitterWorkspaceAdapter {
                 .unwrap_or("");
 
             if let Some(spec) = spec_for_manifest(filename) {
-                if let Some(ref target_lang) = self.target_language {
-                    if !spec.language_id.eq_ignore_ascii_case(target_lang) {
-                        continue;
-                    }
+                if let Some(ref target_lang) = self.target_language
+                    && !spec.language_id.eq_ignore_ascii_case(target_lang)
+                {
+                    continue;
                 }
 
                 if !source.contains(path) {

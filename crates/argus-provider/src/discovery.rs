@@ -304,24 +304,22 @@ async fn discover_ollama_models(
     let tags_url = format!("{base}/api/tags");
 
     let response = client.get(&tags_url).send().await;
-    if let Ok(resp) = response {
-        if resp.status().is_success() {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
-                    let ids: Vec<String> = models
-                        .iter()
-                        .filter_map(|item| {
-                            item.get("name")
-                                .or_else(|| item.get("model"))
-                                .and_then(|v| v.as_str())
-                                .map(ToOwned::to_owned)
-                        })
-                        .collect();
-                    if !ids.is_empty() {
-                        return Ok(ids);
-                    }
-                }
-            }
+    if let Ok(resp) = response
+        && resp.status().is_success()
+        && let Ok(json) = resp.json::<serde_json::Value>().await
+        && let Some(models) = json.get("models").and_then(|m| m.as_array())
+    {
+        let ids: Vec<String> = models
+            .iter()
+            .filter_map(|item| {
+                item.get("name")
+                    .or_else(|| item.get("model"))
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned)
+            })
+            .collect();
+        if !ids.is_empty() {
+            return Ok(ids);
         }
     }
 

@@ -509,12 +509,12 @@ impl AgentActor for PrimaryReviewActor {
 
             if let Some(assessment) = payload.get("assessment") {
                 last_assessment = Some(assessment.clone());
-                if let Some(contract) = &self.policy_contract {
-                    if let Ok(candidates) = contract.candidates(assessment) {
-                        for cand in candidates {
-                            if !aggregated_candidates.contains(&cand) {
-                                aggregated_candidates.push(cand);
-                            }
+                if let Some(contract) = &self.policy_contract
+                    && let Ok(candidates) = contract.candidates(assessment)
+                {
+                    for cand in candidates {
+                        if !aggregated_candidates.contains(&cand) {
+                            aggregated_candidates.push(cand);
                         }
                     }
                 }

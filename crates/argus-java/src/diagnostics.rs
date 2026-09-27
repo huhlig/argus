@@ -253,18 +253,18 @@ fn parse_javac_line(line: &str) -> Option<ParsedJavacDiag> {
 
     let line_num: usize = parts[1].trim().parse().ok()?;
 
-    if parts.len() == 4 {
-        if let Ok(col) = parts[2].trim().parse::<usize>() {
-            let rest = parts[3].trim();
-            let (sev, msg) = split_severity_message(rest);
-            return Some(ParsedJavacDiag {
-                filename: filename.to_string(),
-                line: line_num,
-                column: Some(col),
-                severity: sev,
-                message: msg,
-            });
-        }
+    if parts.len() == 4
+        && let Ok(col) = parts[2].trim().parse::<usize>()
+    {
+        let rest = parts[3].trim();
+        let (sev, msg) = split_severity_message(rest);
+        return Some(ParsedJavacDiag {
+            filename: filename.to_string(),
+            line: line_num,
+            column: Some(col),
+            severity: sev,
+            message: msg,
+        });
     }
 
     let rest = line.splitn(3, ':').nth(2)?.trim();

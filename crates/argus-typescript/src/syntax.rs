@@ -142,10 +142,10 @@ impl TypeScriptSyntaxProvider {
         for comment in &ret.program.comments {
             let start = usize::try_from(comment.span.start).unwrap_or(0);
             let end = usize::try_from(comment.span.end).unwrap_or(0);
-            if let Some(comment_str) = text.get(start..end) {
-                if comment_str.starts_with("/**") {
-                    jsdoc_comments.insert(comment.span.end, comment_str.to_owned());
-                }
+            if let Some(comment_str) = text.get(start..end)
+                && comment_str.starts_with("/**")
+            {
+                jsdoc_comments.insert(comment.span.end, comment_str.to_owned());
             }
         }
 
@@ -847,11 +847,11 @@ impl TargetCollector<'_> {
                 .zip(usize::try_from(search_pos).ok())
                 .and_then(|(s, e)| self.text.get(s..e));
 
-            if let Some(gap_str) = gap {
-                if gap_str.trim().is_empty() {
-                    self.documentation
-                        .insert(target_id.clone(), comment_text.clone());
-                }
+            if let Some(gap_str) = gap
+                && gap_str.trim().is_empty()
+            {
+                self.documentation
+                    .insert(target_id.clone(), comment_text.clone());
             }
         }
     }

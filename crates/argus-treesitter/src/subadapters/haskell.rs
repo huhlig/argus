@@ -49,12 +49,12 @@ fn classify_haskell(kind: &str) -> Option<NodeClassification> {
 
 fn extract_haskell_call_target(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "variable" || child.kind() == "identifier" {
-                let text = node_text(&child, source).trim();
-                if !text.is_empty() {
-                    return Some(text.to_owned());
-                }
+        if let Some(child) = node.child(i)
+            && (child.kind() == "variable" || child.kind() == "identifier")
+        {
+            let text = node_text(&child, source).trim();
+            if !text.is_empty() {
+                return Some(text.to_owned());
             }
         }
     }
@@ -63,12 +63,12 @@ fn extract_haskell_call_target(node: &tree_sitter::Node, source: &[u8]) -> Optio
 
 fn extract_haskell_import_path(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "module_id" || child.kind() == "conid" {
-                let text = node_text(&child, source).trim();
-                if !text.is_empty() {
-                    return Some(text.to_owned());
-                }
+        if let Some(child) = node.child(i)
+            && (child.kind() == "module_id" || child.kind() == "conid")
+        {
+            let text = node_text(&child, source).trim();
+            if !text.is_empty() {
+                return Some(text.to_owned());
             }
         }
     }

@@ -49,12 +49,12 @@ fn classify_go(kind: &str) -> Option<NodeClassification> {
 fn extract_go_name(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
     if node.kind() == "package_clause" {
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "package_identifier" {
-                    let text = node_text(&child, source).trim();
-                    if !text.is_empty() {
-                        return Some(text.to_owned());
-                    }
+            if let Some(child) = node.child(i)
+                && child.kind() == "package_identifier"
+            {
+                let text = node_text(&child, source).trim();
+                if !text.is_empty() {
+                    return Some(text.to_owned());
                 }
             }
         }

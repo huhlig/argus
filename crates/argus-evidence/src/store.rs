@@ -199,18 +199,17 @@ impl EvidenceStore {
                 for entry in entries {
                     let file = entry.map_err(io_error("cannot read evidence file entry"))?;
                     let path = file.path();
-                    if path.extension().is_none() {
-                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                            if let Ok(hash) = ContentHash::parse(file_name) {
-                                let size = usize::try_from(
-                                    file.metadata()
-                                        .map_err(io_error("cannot read object metadata"))?
-                                        .len(),
-                                )
-                                .unwrap_or(usize::MAX);
-                                objects.push((hash, size, path));
-                            }
-                        }
+                    if path.extension().is_none()
+                        && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                        && let Ok(hash) = ContentHash::parse(file_name)
+                    {
+                        let size = usize::try_from(
+                            file.metadata()
+                                .map_err(io_error("cannot read object metadata"))?
+                                .len(),
+                        )
+                        .unwrap_or(usize::MAX);
+                        objects.push((hash, size, path));
                     }
                 }
             }
@@ -248,12 +247,11 @@ impl EvidenceStore {
 
         // Clean up empty shard directories
         for shard in shards_to_check {
-            if shard.exists() {
-                if let Ok(mut entries) = fs::read_dir(&shard) {
-                    if entries.next().is_none() {
-                        let _ = fs::remove_dir(&shard);
-                    }
-                }
+            if shard.exists()
+                && let Ok(mut entries) = fs::read_dir(&shard)
+                && entries.next().is_none()
+            {
+                let _ = fs::remove_dir(&shard);
             }
         }
 

@@ -148,12 +148,11 @@ impl ConformanceReport {
             else {
                 continue;
             };
-            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref) {
-                if let Ok(assessment) =
+            if let Some(artifact) = artifact_map.get(&effective_outcome.result_ref)
+                && let Ok(assessment) =
                     serde_json::from_slice::<ConformanceAssessment>(&artifact.payload)
-                {
-                    assessments_by_work.insert(effective_outcome.logical_key.work_id, assessment);
-                }
+            {
+                assessments_by_work.insert(effective_outcome.logical_key.work_id, assessment);
             }
         }
 

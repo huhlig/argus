@@ -489,7 +489,7 @@ impl PipelineReport {
         let mut items = backlog.items;
         if self.pipeline == Pipeline::InternalDocumentation {
             for item in &mut items {
-                item.policy = self.pipeline.name().to_owned();
+                self.pipeline.name().clone_into(&mut item.policy);
             }
         }
         items

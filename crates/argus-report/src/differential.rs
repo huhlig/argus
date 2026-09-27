@@ -245,20 +245,20 @@ impl DifferentialReport {
                 new_high, thresholds.max_new_high
             ));
         }
-        if let Some(max_med) = thresholds.max_new_medium {
-            if new_medium > max_med {
-                violations.push(format!(
-                    "New medium findings ({new_medium}) exceeded maximum allowed ({max_med})"
-                ));
-            }
+        if let Some(max_med) = thresholds.max_new_medium
+            && new_medium > max_med
+        {
+            violations.push(format!(
+                "New medium findings ({new_medium}) exceeded maximum allowed ({max_med})"
+            ));
         }
-        if let Some(max_total) = thresholds.max_new_total {
-            if self.summary.new_count > max_total {
-                violations.push(format!(
-                    "Total new findings ({}) exceeded maximum allowed ({})",
-                    self.summary.new_count, max_total
-                ));
-            }
+        if let Some(max_total) = thresholds.max_new_total
+            && self.summary.new_count > max_total
+        {
+            violations.push(format!(
+                "Total new findings ({}) exceeded maximum allowed ({})",
+                self.summary.new_count, max_total
+            ));
         }
         if thresholds.fail_on_new_unadjudicated {
             let unadjudicated_new = self
@@ -851,16 +851,16 @@ pub fn compare_findings(
             continue;
         }
         let key = semantic_key(cur_finding);
-        if let Some(candidates) = remaining_baseline_by_semantic.get_mut(&key) {
-            if let Some((base_idx, base_finding)) = candidates.pop() {
-                matched_baseline_indices.insert(base_idx);
-                matched_current_indices.insert(cur_idx);
+        if let Some(candidates) = remaining_baseline_by_semantic.get_mut(&key)
+            && let Some((base_idx, base_finding)) = candidates.pop()
+        {
+            matched_baseline_indices.insert(base_idx);
+            matched_current_indices.insert(cur_idx);
 
-                let mut persistent = cur_finding.clone();
-                persistent.category = FindingCategory::Persistent;
-                persistent.baseline_id = Some(base_finding.id);
-                persistent_findings.push(persistent);
-            }
+            let mut persistent = cur_finding.clone();
+            persistent.category = FindingCategory::Persistent;
+            persistent.baseline_id = Some(base_finding.id);
+            persistent_findings.push(persistent);
         }
     }
 
@@ -961,12 +961,11 @@ pub fn extract_all_findings_from_queue(
         .iter()
         .any(|w| w.coverage.policy.starts_with("optimization"));
 
-    if is_documentation {
-        if let Ok(rep) =
+    if is_documentation
+        && let Ok(rep) =
             documentation_report_from_queue(queue, run_id.clone(), "documentation-public-api@1")
-        {
-            findings.extend(extract_documentation_findings(&rep));
-        }
+    {
+        findings.extend(extract_documentation_findings(&rep));
     }
     if records
         .work
@@ -977,52 +976,46 @@ pub fn extract_all_findings_from_queue(
             documentation_report_from_queue(queue, run_id.clone(), "documentation-internal@1")?;
         findings.extend(extract_documentation_findings(&rep));
     }
-    if is_correctness {
-        if let Ok(rep) =
+    if is_correctness
+        && let Ok(rep) =
             correctness_report_from_queue(queue, run_id.clone(), "correctness-conservative@1")
-        {
-            findings.extend(extract_correctness_findings(&rep));
-        }
+    {
+        findings.extend(extract_correctness_findings(&rep));
     }
-    if is_architecture {
-        if let Ok(rep) =
+    if is_architecture
+        && let Ok(rep) =
             architecture_report_from_queue(queue, run_id.clone(), "architecture-code-derived@1")
-        {
-            findings.extend(extract_architecture_findings(&rep));
-        }
+    {
+        findings.extend(extract_architecture_findings(&rep));
     }
-    if is_conformance {
-        if let Ok(rep) =
+    if is_conformance
+        && let Ok(rep) =
             conformance_report_from_queue(queue, run_id.clone(), "conformance-design-aligned@1")
-        {
-            findings.extend(extract_conformance_findings(&rep));
-        }
+    {
+        findings.extend(extract_conformance_findings(&rep));
     }
-    if is_maintainability {
-        if let Ok(rep) = maintainability_report_from_queue(
+    if is_maintainability
+        && let Ok(rep) = maintainability_report_from_queue(
             queue,
             run_id.clone(),
             "maintainability-conservative@1",
-        ) {
-            findings.extend(extract_maintainability_findings(&rep));
-        }
+        )
+    {
+        findings.extend(extract_maintainability_findings(&rep));
     }
-    if is_optimization {
-        if let Ok(rep) =
+    if is_optimization
+        && let Ok(rep) =
             optimization_report_from_queue(queue, run_id.clone(), "optimization-conservative@1")
-        {
-            findings.extend(extract_optimization_findings(&rep));
-        }
+    {
+        findings.extend(extract_optimization_findings(&rep));
     }
     if records
         .work
         .iter()
         .any(|w| w.coverage.policy.starts_with("testing"))
+        && let Ok(rep) = testing_report_from_queue(queue, run_id.clone(), "testing-conservative@1")
     {
-        if let Ok(rep) = testing_report_from_queue(queue, run_id.clone(), "testing-conservative@1")
-        {
-            findings.extend(extract_testing_findings(&rep));
-        }
+        findings.extend(extract_testing_findings(&rep));
     }
 
     Ok(findings)
@@ -1056,12 +1049,11 @@ pub fn extract_all_findings_from_bundle(
     let mut findings = Vec::new();
 
     let doc_json = bundle.join("documentation-report.json");
-    if doc_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&doc_json) {
-            if let Ok(rep) = serde_json::from_str::<DocumentationReport>(&content) {
-                findings.extend(extract_documentation_findings(&rep));
-            }
-        }
+    if doc_json.is_file()
+        && let Ok(content) = fs::read_to_string(&doc_json)
+        && let Ok(rep) = serde_json::from_str::<DocumentationReport>(&content)
+    {
+        findings.extend(extract_documentation_findings(&rep));
     }
 
     let internal_json = bundle.join("internal-documentation-report.json");
@@ -1077,57 +1069,51 @@ pub fn extract_all_findings_from_bundle(
         findings.extend(extract_documentation_findings(&report));
     }
     let corr_json = bundle.join("correctness-report.json");
-    if corr_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&corr_json) {
-            if let Ok(rep) = serde_json::from_str::<CorrectnessReport>(&content) {
-                findings.extend(extract_correctness_findings(&rep));
-            }
-        }
+    if corr_json.is_file()
+        && let Ok(content) = fs::read_to_string(&corr_json)
+        && let Ok(rep) = serde_json::from_str::<CorrectnessReport>(&content)
+    {
+        findings.extend(extract_correctness_findings(&rep));
     }
 
     let arch_json = bundle.join("architecture-report.json");
-    if arch_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&arch_json) {
-            if let Ok(rep) = serde_json::from_str::<ArchitectureReport>(&content) {
-                findings.extend(extract_architecture_findings(&rep));
-            }
-        }
+    if arch_json.is_file()
+        && let Ok(content) = fs::read_to_string(&arch_json)
+        && let Ok(rep) = serde_json::from_str::<ArchitectureReport>(&content)
+    {
+        findings.extend(extract_architecture_findings(&rep));
     }
 
     let conf_json = bundle.join("conformance-report.json");
-    if conf_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&conf_json) {
-            if let Ok(rep) = serde_json::from_str::<ConformanceReport>(&content) {
-                findings.extend(extract_conformance_findings(&rep));
-            }
-        }
+    if conf_json.is_file()
+        && let Ok(content) = fs::read_to_string(&conf_json)
+        && let Ok(rep) = serde_json::from_str::<ConformanceReport>(&content)
+    {
+        findings.extend(extract_conformance_findings(&rep));
     }
 
     let maint_json = bundle.join("maintainability-report.json");
-    if maint_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&maint_json) {
-            if let Ok(rep) = serde_json::from_str::<MaintainabilityReport>(&content) {
-                findings.extend(extract_maintainability_findings(&rep));
-            }
-        }
+    if maint_json.is_file()
+        && let Ok(content) = fs::read_to_string(&maint_json)
+        && let Ok(rep) = serde_json::from_str::<MaintainabilityReport>(&content)
+    {
+        findings.extend(extract_maintainability_findings(&rep));
     }
 
     let testing_json = bundle.join("testing-report.json");
-    if testing_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&testing_json) {
-            if let Ok(rep) = serde_json::from_str::<TestingReport>(&content) {
-                findings.extend(extract_testing_findings(&rep));
-            }
-        }
+    if testing_json.is_file()
+        && let Ok(content) = fs::read_to_string(&testing_json)
+        && let Ok(rep) = serde_json::from_str::<TestingReport>(&content)
+    {
+        findings.extend(extract_testing_findings(&rep));
     }
 
     let opt_json = bundle.join("optimization-report.json");
-    if opt_json.is_file() {
-        if let Ok(content) = fs::read_to_string(&opt_json) {
-            if let Ok(rep) = serde_json::from_str::<OptimizationReport>(&content) {
-                findings.extend(extract_optimization_findings(&rep));
-            }
-        }
+    if opt_json.is_file()
+        && let Ok(content) = fs::read_to_string(&opt_json)
+        && let Ok(rep) = serde_json::from_str::<OptimizationReport>(&content)
+    {
+        findings.extend(extract_optimization_findings(&rep));
     }
 
     // If no report files were found, attempt bundle report writers
