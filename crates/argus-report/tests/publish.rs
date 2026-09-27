@@ -71,7 +71,7 @@ fn test_prepare_publication_beads_and_github() {
     let (beads_receipt, beads_script) = prepare_publication(
         &run_id,
         PublicationTarget::Beads,
-        &[finding.clone()],
+        std::slice::from_ref(&finding),
         &[],
         false,
         false,
@@ -122,7 +122,7 @@ fn test_publication_idempotency_and_force() {
     let (first_receipt, _) = prepare_publication(
         &run_id,
         PublicationTarget::Beads,
-        &[finding.clone()],
+        std::slice::from_ref(&finding),
         &[],
         false,
         false,
@@ -135,8 +135,8 @@ fn test_publication_idempotency_and_force() {
     let (second_receipt, second_script) = prepare_publication(
         &run_id,
         PublicationTarget::Beads,
-        &[finding.clone()],
-        &[first_receipt.clone()],
+        std::slice::from_ref(&finding),
+        std::slice::from_ref(&first_receipt),
         false,
         false,
         1700000001000,

@@ -85,7 +85,7 @@ pub struct PublicationReceipt {
     pub target: PublicationTarget,
     /// Publication timestamp in epoch milliseconds.
     pub published_at_millis: u64,
-    /// Cryptographic Blake3 digest covering run_id, target, timestamp, and all item content hashes.
+    /// Cryptographic Blake3 digest covering `run_id`, target, timestamp, and all item content hashes.
     pub receipt_digest: String,
     /// Total findings evaluated.
     pub total_findings: usize,
@@ -185,7 +185,7 @@ pub fn format_beads_create_command(finding: &DifferentialFinding) -> String {
         finding
             .targets
             .iter()
-            .map(|t| t.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ")
     };

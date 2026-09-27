@@ -44,10 +44,10 @@ impl SourceAccess for MemorySource {
 
 #[test]
 fn ingests_tsc_compiler_diagnostics() {
-    let tsc_output = r#"
+    let tsc_output = r"
 src/index.ts(15,9): error TS2322: Type 'string' is not assignable to type 'number'.
 src/service.ts(42,5): error TS2554: Expected 2 arguments, but got 1.
-"#;
+";
 
     let path1 = SourcePath::new("src/index.ts").unwrap();
     let path2 = SourcePath::new("src/service.ts").unwrap();

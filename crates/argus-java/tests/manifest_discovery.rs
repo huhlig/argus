@@ -90,7 +90,7 @@ fn maven_pom_manifest_inventory() {
 
 #[test]
 fn multi_module_maven_pom_inventory() {
-    let parent_pom = r#"<project>
+    let parent_pom = r"<project>
     <groupId>com.example</groupId>
     <artifactId>parent-project</artifactId>
     <version>1.0.0</version>
@@ -98,18 +98,18 @@ fn multi_module_maven_pom_inventory() {
         <module>mod-core</module>
         <module>mod-app</module>
     </modules>
-</project>"#;
+</project>";
 
-    let core_pom = r#"<project>
+    let core_pom = r"<project>
     <parent>
         <groupId>com.example</groupId>
         <artifactId>parent-project</artifactId>
         <version>1.0.0</version>
     </parent>
     <artifactId>mod-core</artifactId>
-</project>"#;
+</project>";
 
-    let app_pom = r#"<project>
+    let app_pom = r"<project>
     <parent>
         <groupId>com.example</groupId>
         <artifactId>parent-project</artifactId>
@@ -123,7 +123,7 @@ fn multi_module_maven_pom_inventory() {
             <version>1.0.0</version>
         </dependency>
     </dependencies>
-</project>"#;
+</project>";
 
     let source = MemorySource {
         snapshot: SnapshotId::derive([b"test-multi-module".as_slice()]),
@@ -176,12 +176,12 @@ fn multi_module_maven_pom_inventory() {
 
 #[test]
 fn gradle_build_and_settings_manifest_inventory() {
-    let settings = r#"
+    let settings = r"
 rootProject.name = 'my-gradle-app'
 include 'sub-core', 'sub-api'
-"#;
+";
 
-    let build = r#"
+    let build = r"
 plugins {
     id 'java'
 }
@@ -193,7 +193,7 @@ dependencies {
     implementation 'com.google.guava:guava:31.1-jre'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.9.2'
 }
-"#;
+";
 
     let source = MemorySource {
         snapshot: SnapshotId::derive([b"test-gradle-single".as_slice()]),
@@ -235,7 +235,7 @@ dependencies {
 
 #[test]
 fn direct_pom_parse_helper() {
-    let pom = r#"<project>
+    let pom = r"<project>
     <parent>
         <groupId>com.parent</groupId>
         <artifactId>parent-pom</artifactId>
@@ -246,7 +246,7 @@ fn direct_pom_parse_helper() {
         <module>mod-a</module>
         <module>mod-b</module>
     </modules>
-</project>"#;
+</project>";
 
     let parsed = JavaManifestAdapter::parse_pom(pom.as_bytes()).expect("pom should parse");
     assert_eq!(parsed.group_id.as_deref(), Some("com.parent"));

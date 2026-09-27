@@ -345,7 +345,7 @@ impl LanguageAdapter for PyprojectAdapter {
         let mut conflicts = Vec::new();
 
         let mut sorted_paths = self.manifest_paths.clone();
-        sorted_paths.sort_by(|a, b| manifest_priority(a).cmp(&manifest_priority(b)));
+        sorted_paths.sort_by_key(manifest_priority);
 
         let mut seen_dirs = BTreeSet::new();
 

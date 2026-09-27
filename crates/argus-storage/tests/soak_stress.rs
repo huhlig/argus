@@ -120,7 +120,7 @@ fn soak_concurrent_heartbeats_and_lease_renewal() {
 }
 
 /// Soak test: Fault injection simulating crashing workers, lease timeouts,
-/// retry tracking up to maximum_attempts, and eventual fail state.
+/// retry tracking up to `maximum_attempts`, and eventual fail state.
 #[test]
 fn soak_fault_injection_worker_crashes_and_recovery() {
     let temporary = tempfile::tempdir().unwrap();

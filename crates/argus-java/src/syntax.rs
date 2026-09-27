@@ -1374,7 +1374,7 @@ impl JavaSyntaxProvider {
     ) -> Result<(), argus_core::ArgusError> {
         match stmt {
             Stmt::Expr(expr_stmt) => {
-                self.scan_expr_for_calls(caller, &expr_stmt.expr, inventory)?
+                self.scan_expr_for_calls(caller, &expr_stmt.expr, inventory)?;
             }
             Stmt::LocalVarDecl(decl) => {
                 for d in &decl.declarators {

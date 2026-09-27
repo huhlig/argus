@@ -567,26 +567,28 @@ pub fn generate_runtime_profile(
             base_url: Some(endpoint.to_owned()),
         },
         DiscoveredProviderKind::Openai => ProviderTransportProfile::Openai {
-            api_key: api_key_env
-                .map(|k| {
+            api_key: api_key_env.map_or_else(
+                || "${OPENAI_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${OPENAI_API_KEY}".to_owned()),
+                },
+            ),
         },
         DiscoveredProviderKind::Anthropic => ProviderTransportProfile::Anthropic {
-            api_key: api_key_env
-                .map(|k| {
+            api_key: api_key_env.map_or_else(
+                || "${ANTHROPIC_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${ANTHROPIC_API_KEY}".to_owned()),
+                },
+            ),
         },
         DiscoveredProviderKind::LmStudio => ProviderTransportProfile::LmStudio {
             base_url: Some(endpoint.to_owned()),
@@ -595,7 +597,11 @@ pub fn generate_runtime_profile(
         DiscoveredProviderKind::Bedrock => {
             let region = if let Some(pos) = endpoint.find(".api.aws") {
                 let prefix = &endpoint[..pos];
-                prefix.split('.').last().unwrap_or("us-east-1").to_owned()
+                prefix
+                    .split('.')
+                    .next_back()
+                    .unwrap_or("us-east-1")
+                    .to_owned()
             } else if endpoint.contains("bedrock-runtime.") {
                 endpoint
                     .split("bedrock-runtime.")
@@ -637,15 +643,16 @@ pub fn generate_runtime_profile(
             } else {
                 endpoint.to_owned()
             };
-            let api_key_var = api_key_env
-                .map(|k| {
+            let api_key_var = api_key_env.map_or_else(
+                || "${WATSONX_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${WATSONX_API_KEY}".to_owned());
+                },
+            );
             ProviderTransportProfile::Watsonx {
                 service_url,
                 api_version: "2023-05-29".to_owned(),
@@ -707,7 +714,7 @@ pub fn slugify_model_alias(model_id: &str) -> String {
     slugify_profile_name(DiscoveredProviderKind::Openai, without_version).replace("openai-", "")
 }
 
-/// Generates a complete ProviderConfig containing all discovered models with aliases.
+/// Generates a complete `ProviderConfig` containing all discovered models with aliases.
 pub fn generate_provider_config(
     kind: DiscoveredProviderKind,
     endpoint: Option<&str>,
@@ -730,26 +737,28 @@ pub fn generate_provider_config(
             base_url: Some(endpoint.to_owned()),
         },
         DiscoveredProviderKind::Openai => ProviderTransportProfile::Openai {
-            api_key: api_key_env
-                .map(|k| {
+            api_key: api_key_env.map_or_else(
+                || "${OPENAI_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${OPENAI_API_KEY}".to_owned()),
+                },
+            ),
         },
         DiscoveredProviderKind::Anthropic => ProviderTransportProfile::Anthropic {
-            api_key: api_key_env
-                .map(|k| {
+            api_key: api_key_env.map_or_else(
+                || "${ANTHROPIC_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${ANTHROPIC_API_KEY}".to_owned()),
+                },
+            ),
         },
         DiscoveredProviderKind::LmStudio => ProviderTransportProfile::LmStudio {
             base_url: Some(endpoint.to_owned()),
@@ -758,7 +767,11 @@ pub fn generate_provider_config(
         DiscoveredProviderKind::Bedrock => {
             let region = if let Some(pos) = endpoint.find(".api.aws") {
                 let prefix = &endpoint[..pos];
-                prefix.split('.').last().unwrap_or("us-east-1").to_owned()
+                prefix
+                    .split('.')
+                    .next_back()
+                    .unwrap_or("us-east-1")
+                    .to_owned()
             } else if endpoint.contains("bedrock-runtime.") {
                 endpoint
                     .split("bedrock-runtime.")
@@ -800,15 +813,16 @@ pub fn generate_provider_config(
             } else {
                 endpoint.to_owned()
             };
-            let api_key_var = api_key_env
-                .map(|k| {
+            let api_key_var = api_key_env.map_or_else(
+                || "${WATSONX_API_KEY}".to_owned(),
+                |k| {
                     if k.starts_with('$') {
                         k
                     } else {
                         format!("${{{k}}}")
                     }
-                })
-                .unwrap_or_else(|| "${WATSONX_API_KEY}".to_owned());
+                },
+            );
             ProviderTransportProfile::Watsonx {
                 service_url,
                 api_version: "2023-05-29".to_owned(),

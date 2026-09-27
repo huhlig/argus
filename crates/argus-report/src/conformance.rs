@@ -374,7 +374,7 @@ impl ConformanceReport {
                 let _ = writeln!(
                     out,
                     "- **Confidence**: {:.2}%",
-                    rep.confidence.basis_points() as f64 / 100.0
+                    f64::from(rep.confidence.basis_points()) / 100.0
                 );
                 let _ = writeln!(
                     out,
@@ -386,7 +386,7 @@ impl ConformanceReport {
                     let arts = rep
                         .governing_artifacts
                         .iter()
-                        .map(|a| a.to_string())
+                        .map(std::string::ToString::to_string)
                         .collect::<Vec<_>>()
                         .join(", ");
                     let _ = writeln!(out, "- **Governing Artifacts**: {arts}");

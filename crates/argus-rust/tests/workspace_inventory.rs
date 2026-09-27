@@ -169,13 +169,13 @@ fn emits_conservative_native_calls_references_and_trait_implementations() {
     let mut source = source();
     source.files.insert(
         SourcePath::new("src/lib.rs").unwrap(),
-        br#"
+        br"
 pub trait Store {}
 pub struct Record;
 impl Store for Record {}
 pub fn helper() {}
 pub fn run() { helper(); let _record = Record; }
-"#
+"
         .to_vec(),
     );
     source

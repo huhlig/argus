@@ -104,7 +104,7 @@ impl BacklogItem {
             self.location,
             self.targets
                 .iter()
-                .map(|t| t.to_string())
+                .map(std::string::ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", "),
             self.cluster_id,
@@ -290,10 +290,10 @@ pub fn extract_documentation_backlog_items(report: &DocumentationReport) -> Vec<
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let location = if !locs.is_empty() {
-                locs.into_iter().collect::<Vec<_>>().join(", ")
-            } else {
+            let location = if locs.is_empty() {
                 "none".to_owned()
+            } else {
+                locs.into_iter().collect::<Vec<_>>().join(", ")
             };
             let targets = cluster
                 .occurrences
@@ -343,10 +343,10 @@ pub fn extract_correctness_backlog_items(report: &CorrectnessReport) -> Vec<Back
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let location = if !locs.is_empty() {
-                locs.into_iter().collect::<Vec<_>>().join(", ")
-            } else {
+            let location = if locs.is_empty() {
                 "none".to_owned()
+            } else {
+                locs.into_iter().collect::<Vec<_>>().join(", ")
             };
             let targets = cluster
                 .occurrences
@@ -395,10 +395,10 @@ pub fn extract_architecture_backlog_items(report: &ArchitectureReport) -> Vec<Ba
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let location = if !locs.is_empty() {
-                locs.into_iter().collect::<Vec<_>>().join(", ")
-            } else {
+            let location = if locs.is_empty() {
                 format!("{:?}", cluster.representative.scope)
+            } else {
+                locs.into_iter().collect::<Vec<_>>().join(", ")
             };
 
             items.push(BacklogItem {
@@ -441,10 +441,10 @@ pub fn extract_optimization_backlog_items(report: &OptimizationReport) -> Vec<Ba
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let location = if !locs.is_empty() {
-                locs.into_iter().collect::<Vec<_>>().join(", ")
-            } else {
+            let location = if locs.is_empty() {
                 "none".to_owned()
+            } else {
+                locs.into_iter().collect::<Vec<_>>().join(", ")
             };
             let targets = cluster
                 .occurrences
@@ -494,10 +494,10 @@ pub fn extract_maintainability_backlog_items(report: &MaintainabilityReport) -> 
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let location = if !locs.is_empty() {
-                locs.into_iter().collect::<Vec<_>>().join(", ")
-            } else {
+            let location = if locs.is_empty() {
                 "none".to_owned()
+            } else {
+                locs.into_iter().collect::<Vec<_>>().join(", ")
             };
             let targets = cluster
                 .occurrences
@@ -545,10 +545,10 @@ pub fn extract_testing_backlog_items(report: &TestingReport) -> Vec<BacklogItem>
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let location = if !locs.is_empty() {
-                locs.into_iter().collect::<Vec<_>>().join(", ")
-            } else {
+            let location = if locs.is_empty() {
                 "none".to_owned()
+            } else {
+                locs.into_iter().collect::<Vec<_>>().join(", ")
             };
             let targets = std::iter::once(cluster.representative.subject.clone())
                 .chain(cluster.occurrences.iter().map(|o| o.target.clone()))
@@ -596,10 +596,10 @@ pub fn extract_conformance_backlog_items(report: &ConformanceReport) -> Vec<Back
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let location = if !locs.is_empty() {
-                locs.into_iter().collect::<Vec<_>>().join(", ")
-            } else {
+            let location = if locs.is_empty() {
                 "none".to_owned()
+            } else {
+                locs.into_iter().collect::<Vec<_>>().join(", ")
             };
             let targets = cluster
                 .occurrences

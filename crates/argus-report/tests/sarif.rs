@@ -104,7 +104,7 @@ fn test_render_sarif_report_rules_and_results() {
         result
             .properties
             .get("confidenceBasisPoints")
-            .and_then(|v| v.as_u64()),
+            .and_then(serde_json::Value::as_u64),
         Some(9500)
     );
 

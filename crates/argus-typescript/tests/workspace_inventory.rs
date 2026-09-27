@@ -71,7 +71,7 @@ export class AppService {
 }
 "#;
 
-    let logger_ts = r#"
+    let logger_ts = r"
 /**
  * Application logger.
  */
@@ -80,7 +80,7 @@ export class Logger {
         console.log(msg);
     }
 }
-"#;
+";
 
     let pkg_path = SourcePath::new("package.json").unwrap();
     let index_path = SourcePath::new("src/index.ts").unwrap();

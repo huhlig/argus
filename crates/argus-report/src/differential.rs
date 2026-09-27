@@ -15,7 +15,7 @@
 //! Differential review reporting comparing a baseline review run against a current review run.
 //!
 //! Classifies findings into `new`, `resolved`, and `persistent` categories using a two-tier
-//! comparison strategy (exact FindingId match followed by semantic attribute matching), ensuring
+//! comparison strategy (exact `FindingId` match followed by semantic attribute matching), ensuring
 //! robust tracking across pull request code evolutions and preventing false positive churn
 //! when byte ranges shift.
 
@@ -151,7 +151,7 @@ pub struct DifferentialSummary {
 }
 
 /// Configurable thresholds governing differential CI gate enforcement.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
 pub struct DifferentialThresholds {
     /// Maximum allowable newly introduced Critical severity findings (default: 0).
     pub max_new_critical: usize,
@@ -163,18 +163,6 @@ pub struct DifferentialThresholds {
     pub max_new_total: Option<usize>,
     /// Whether to fail the gate if any new findings remain unadjudicated.
     pub fail_on_new_unadjudicated: bool,
-}
-
-impl Default for DifferentialThresholds {
-    fn default() -> Self {
-        Self {
-            max_new_critical: 0,
-            max_new_high: 0,
-            max_new_medium: None,
-            max_new_total: None,
-            fail_on_new_unadjudicated: false,
-        }
-    }
 }
 
 /// Outcome of a differential CI gate evaluation.
@@ -260,8 +248,7 @@ impl DifferentialReport {
         if let Some(max_med) = thresholds.max_new_medium {
             if new_medium > max_med {
                 violations.push(format!(
-                    "New medium findings ({}) exceeded maximum allowed ({})",
-                    new_medium, max_med
+                    "New medium findings ({new_medium}) exceeded maximum allowed ({max_med})"
                 ));
             }
         }
@@ -281,8 +268,7 @@ impl DifferentialReport {
                 .count();
             if unadjudicated_new > 0 {
                 violations.push(format!(
-                    "Unadjudicated new findings ({}) not permitted under strict gate policy",
-                    unadjudicated_new
+                    "Unadjudicated new findings ({unadjudicated_new}) not permitted under strict gate policy"
                 ));
             }
         }
@@ -367,7 +353,10 @@ impl DifferentialReport {
         let _ = writeln!(out);
 
         // Section: New Findings
-        if !self.new_findings.is_empty() {
+        if self.new_findings.is_empty() {
+            let _ = writeln!(out, "## 🔴 Newly Introduced Findings (0)\n");
+            let _ = writeln!(out, "No new findings introduced in this revision.\n");
+        } else {
             let _ = writeln!(
                 out,
                 "## 🔴 Newly Introduced Findings ({})\n",
@@ -395,9 +384,6 @@ impl DifferentialReport {
                 );
                 let _ = writeln!(out, "\n{}\n", finding.description.trim());
             }
-        } else {
-            let _ = writeln!(out, "## 🔴 Newly Introduced Findings (0)\n");
-            let _ = writeln!(out, "No new findings introduced in this revision.\n");
         }
 
         // Section: Resolved Findings
@@ -478,10 +464,10 @@ pub fn extract_documentation_findings(report: &DocumentationReport) -> Vec<Diffe
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -532,10 +518,10 @@ pub fn extract_correctness_findings(report: &CorrectnessReport) -> Vec<Different
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -575,10 +561,10 @@ pub fn extract_architecture_findings(report: &ArchitectureReport) -> Vec<Differe
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 Some(format!("{:?}", cluster.representative.scope))
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -625,10 +611,10 @@ pub fn extract_conformance_findings(report: &ConformanceReport) -> Vec<Different
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -676,10 +662,10 @@ pub fn extract_maintainability_findings(
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -723,10 +709,10 @@ pub fn extract_testing_findings(report: &TestingReport) -> Vec<DifferentialFindi
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative
@@ -772,10 +758,10 @@ pub fn extract_optimization_findings(report: &OptimizationReport) -> Vec<Differe
                 .iter()
                 .filter_map(|c| c.location.as_ref().map(format_loc))
                 .collect::<BTreeSet<_>>();
-            let primary_location = if !locs.is_empty() {
-                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
-            } else {
+            let primary_location = if locs.is_empty() {
                 None
+            } else {
+                Some(locs.into_iter().collect::<Vec<_>>().join(", "))
             };
             let dimensions = cluster
                 .representative

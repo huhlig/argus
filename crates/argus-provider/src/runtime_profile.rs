@@ -95,15 +95,14 @@ impl ProviderConfig {
     ) -> Result<ProviderRuntimeProfile, ProviderError> {
         let (model_id, model_cfg) = self.select_model(model_selector)?;
         let deployment = self.transport.infer_deployment_mode();
-        let structured_output =
-            model_cfg
-                .structured_output
-                .unwrap_or_else(|| match &self.transport {
-                    ProviderTransportProfile::Openai { .. } => {
-                        StructuredOutputSupport::SchemaConstrained
-                    }
-                    _ => StructuredOutputSupport::BestEffort,
-                });
+        let structured_output = model_cfg
+            .structured_output
+            .unwrap_or(match &self.transport {
+                ProviderTransportProfile::Openai { .. } => {
+                    StructuredOutputSupport::SchemaConstrained
+                }
+                _ => StructuredOutputSupport::BestEffort,
+            });
 
         let identity = ProviderIdentity {
             provider: self.provider.clone(),
@@ -145,7 +144,7 @@ impl ProviderConfig {
                 },
             });
 
-        let repair = self.default_repair.clone().unwrap_or(RepairPolicy {
+        let repair = self.default_repair.unwrap_or(RepairPolicy {
             max_repair_attempts: 1,
         });
 
@@ -236,7 +235,7 @@ pub enum ProviderTransportProfile {
         #[serde(alias = "api_key_env")]
         api_key: String,
     },
-    /// OpenAI Chat Completions API transport.
+    /// `OpenAI` Chat Completions API transport.
     Openai {
         /// API key or environment variable reference (`$ENV_VAR`).
         #[serde(alias = "api_key_env")]
@@ -337,11 +336,11 @@ pub enum WatsonxCredentialProfile {
     BearerToken(String),
 }
 
-/// Materialized provider instance and LangChart LLM adapter ready for execution.
+/// Materialized provider instance and `LangChart` LLM adapter ready for execution.
 pub struct BuiltProviderRuntime {
     /// Governed model provider adapter.
     pub provider: Arc<LangchartModelProvider>,
-    /// Underling LangChart LLM adapter.
+    /// Underling `LangChart` LLM adapter.
     pub adapter: Arc<dyn LlmAdapter>,
 }
 
@@ -518,6 +517,7 @@ impl ProviderRuntimeProfile {
 }
 
 impl ProviderTransportProfile {
+    #[must_use]
     pub const fn provider_name(&self) -> &'static str {
         match self {
             Self::Anthropic { .. } => "anthropic",
@@ -535,16 +535,13 @@ impl ProviderTransportProfile {
         match self {
             Self::Ollama { base_url } => base_url
                 .as_deref()
-                .map(crate::infer_deployment_mode)
-                .unwrap_or(DeploymentMode::Local),
+                .map_or(DeploymentMode::Local, crate::infer_deployment_mode),
             Self::Lemonade { base_url, .. } => base_url
                 .as_deref()
-                .map(crate::infer_deployment_mode)
-                .unwrap_or(DeploymentMode::Local),
+                .map_or(DeploymentMode::Local, crate::infer_deployment_mode),
             Self::LmStudio { base_url, .. } => base_url
                 .as_deref()
-                .map(crate::infer_deployment_mode)
-                .unwrap_or(DeploymentMode::Local),
+                .map_or(DeploymentMode::Local, crate::infer_deployment_mode),
             Self::Anthropic { .. }
             | Self::Openai { .. }
             | Self::Watsonx { .. }
@@ -583,7 +580,7 @@ impl WatsonxCredentialProfile {
 
 struct FnVariableMap<'a, F>(&'a std::cell::RefCell<&'a mut F>);
 
-impl<'a, F> subst::VariableMap<'_> for FnVariableMap<'a, F>
+impl<F> subst::VariableMap<'_> for FnVariableMap<'_, F>
 where
     F: FnMut(&str) -> Option<String>,
 {

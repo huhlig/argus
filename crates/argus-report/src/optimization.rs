@@ -487,16 +487,16 @@ impl OptimizationReport {
                     } => {
                         let _ = writeln!(out, "### Target `{target}`");
                         let _ = writeln!(out, "- **Status**: Unavailable");
-                        if !suggested_benchmarks.is_empty() {
+                        if suggested_benchmarks.is_empty() {
                             let _ = writeln!(
                                 out,
-                                "- **Suggested Benchmarks / Traces**: {}",
-                                suggested_benchmarks.join(", ")
+                                "- **Suggestion**: Add benchmark or profiling traces for this target."
                             );
                         } else {
                             let _ = writeln!(
                                 out,
-                                "- **Suggestion**: Add benchmark or profiling traces for this target."
+                                "- **Suggested Benchmarks / Traces**: {}",
+                                suggested_benchmarks.join(", ")
                             );
                         }
                         let _ = writeln!(out);

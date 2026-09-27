@@ -15,7 +15,7 @@
 use argus_core::{ConfigurationId, EvidenceKind, PortableTargetKind, SourcePath, TargetKind};
 use argus_java::JavaSyntaxProvider;
 
-const JAVA_SAMPLE: &str = r#"package com.example.model;
+const JAVA_SAMPLE: &str = r"package com.example.model;
 
 import java.util.List;
 import java.io.Serializable;
@@ -63,7 +63,7 @@ public enum AccountStatus {
     ACTIVE,
     SUSPENDED
 }
-"#;
+";
 
 #[test]
 fn syntax_provider_extracts_all_java_symbols() {
@@ -168,7 +168,7 @@ fn syntax_provider_extracts_all_java_symbols() {
     assert!(inv.imports.iter().any(|i| i.path == "java.io.Serializable"));
 }
 
-const JAVA_TESTS: &str = r#"package com.example;
+const JAVA_TESTS: &str = r"package com.example;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -194,7 +194,7 @@ public class CalculatorTest {
         return new Calculator();
     }
 }
-"#;
+";
 
 #[test]
 fn syntax_provider_emits_source_evidence_for_files_types_and_callables() {

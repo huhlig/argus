@@ -691,8 +691,8 @@ mod tests {
             run_id.clone(),
             "correctness@1",
             &[work_succeeded.clone()],
-            &[outcome_record.clone()],
-            &[artifact.clone()],
+            std::slice::from_ref(&outcome_record),
+            std::slice::from_ref(&artifact),
             &[],
         )
         .unwrap();

@@ -256,7 +256,7 @@ namespace LegacyApi {
 
 #[test]
 fn parses_jsx_and_tsx_components() {
-    let tsx_code = r#"
+    let tsx_code = r"
 import React from 'react';
 
 export interface ButtonProps {
@@ -267,7 +267,7 @@ export interface ButtonProps {
 export const Button: React.FC<ButtonProps> = ({ label, onClick }) => {
     return <button onClick={onClick}>{label}</button>;
 };
-"#;
+";
 
     let path = SourcePath::new("src/Button.tsx").unwrap();
     let source = MemorySource {

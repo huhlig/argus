@@ -422,7 +422,7 @@ fn execute_tool(root: &Path, tool_name: &str, arguments: &serde_json::Value) -> 
             let run_id = arguments
                 .get("run_id")
                 .and_then(|v| v.as_str())
-                .map(|s| s.parse::<RunId>())
+                .map(str::parse::<RunId>)
                 .transpose();
 
             let run_id = match run_id {
@@ -435,16 +435,14 @@ fn execute_tool(root: &Path, tool_name: &str, arguments: &serde_json::Value) -> 
             };
 
             let queue_res = crate::working_queue(root);
-            let findings = match queue_res {
-                Ok(queue) => argus_report::extract_all_findings_from_queue(&queue, &run_id)
-                    .or_else(|_| {
-                        let bundle_dir = root.join(".argus/reviews").join(run_id.as_str());
-                        argus_report::extract_all_findings_from_bundle(&bundle_dir, &run_id)
-                    }),
-                Err(_) => {
+            let findings = if let Ok(queue) = queue_res {
+                argus_report::extract_all_findings_from_queue(&queue, &run_id).or_else(|_| {
                     let bundle_dir = root.join(".argus/reviews").join(run_id.as_str());
                     argus_report::extract_all_findings_from_bundle(&bundle_dir, &run_id)
-                }
+                })
+            } else {
+                let bundle_dir = root.join(".argus/reviews").join(run_id.as_str());
+                argus_report::extract_all_findings_from_bundle(&bundle_dir, &run_id)
             };
 
             let findings = match findings {
@@ -469,7 +467,7 @@ fn execute_tool(root: &Path, tool_name: &str, arguments: &serde_json::Value) -> 
             let search_query = arguments
                 .get("query")
                 .and_then(|v| v.as_str())
-                .map(|q| q.to_lowercase());
+                .map(str::to_lowercase);
 
             let mut filtered = findings;
             if let Some(pol) = policy_filter {

@@ -372,26 +372,26 @@ pub fn documented_stub_missing_todo(key_type: &str) -> Vec<u8> {
             SeededDocumentationSource {
                 target: documented_gap_missing_todo,
                 logical_name: "documented_gap_missing_todo",
-                source: r#"/// Synchronizes state with the upstream coordinator.
+                source: r"/// Synchronizes state with the upstream coordinator.
 ///
 /// Sync retry on network timeout is unimplemented and dropped packets are ignored.
 #[must_use]
 pub fn documented_gap_missing_todo(state_id: u64) -> bool {
     state_id > 0
 }
-"#,
+",
             },
             SeededDocumentationSource {
                 target: known_clean_stub_with_todo,
                 logical_name: "known_clean_stub_with_todo",
-                source: r#"/// Computes message digest using the specified cipher suite.
+                source: r"/// Computes message digest using the specified cipher suite.
 ///
 /// TODO: Add hardware-accelerated SHA-3 implementation.
 #[must_use]
 pub fn known_clean_stub_with_todo(input: &[u8]) -> usize {
     input.len()
 }
-"#,
+",
             },
         ],
     }

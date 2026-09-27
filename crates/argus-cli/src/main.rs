@@ -2073,6 +2073,7 @@ impl PipelinePreset {
 
 /// Filters discovered inventory targets to only those that are directly changed or 1st-degree
 /// impacted via relations, preserving the top-level Workspace target if present.
+#[must_use]
 pub fn filter_changed_and_impacted_targets(
     targets: &[argus_core::Target],
     relations: &[argus_core::Relation],
@@ -3151,6 +3152,7 @@ pub struct TargetCatalogEntry {
 }
 
 impl TargetCatalog {
+    #[must_use]
     pub fn load(root: &std::path::Path, snapshot: Option<&str>) -> Self {
         let mut catalog = Self::default();
         let inv_dir = root.join(".argus/state/inventory");
@@ -3287,6 +3289,7 @@ impl TargetCatalog {
         }
     }
 
+    #[must_use]
     pub fn describe(
         &self,
         target_id: &str,
@@ -3553,14 +3556,14 @@ where
             let mut sigterm = signal(SignalKind::terminate()).ok();
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {}
-                _ = async {
+                () = async {
                     if let Some(s) = sigint.as_mut() {
                         s.recv().await;
                     } else {
                         std::future::pending::<()>().await;
                     }
                 } => {}
-                _ = async {
+                () = async {
                     if let Some(s) = sigterm.as_mut() {
                         s.recv().await;
                     } else {
@@ -6400,8 +6403,7 @@ pub(crate) fn publish_command(
 
     let now_millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis() as u64);
 
     let (receipt, script) = argus_report::prepare_publication(
         &id,
@@ -6428,7 +6430,7 @@ pub(crate) fn publish_command(
     }
 
     let receipt_path =
-        custom_receipt_path.unwrap_or_else(|| pub_dir.join(format!("{}-{}.json", id, target)));
+        custom_receipt_path.unwrap_or_else(|| pub_dir.join(format!("{id}-{target}.json")));
 
     if let Some(parent) = receipt_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -7007,8 +7009,7 @@ fn status_command_with_adapter(
             let elapsed_secs = (last - first) as f64 / 1000.0;
             let throughput = (status.succeeded - 1) as f64 / elapsed_secs;
             progress_line.push_str(&format!(
-                "\nThroughput: {:.2} items/s (over {:.1}s)",
-                throughput, elapsed_secs
+                "\nThroughput: {throughput:.2} items/s (over {elapsed_secs:.1}s)"
             ));
             if status.pending > 0 && throughput > 0.0 {
                 let remaining_secs = (status.pending as f64 / throughput).round() as u64;
@@ -7016,12 +7017,11 @@ fn status_command_with_adapter(
                 let seconds = remaining_secs % 60;
                 if minutes > 0 {
                     progress_line.push_str(&format!(
-                        "\nProjected completion: ~{}m {}s remaining",
-                        minutes, seconds
+                        "\nProjected completion: ~{minutes}m {seconds}s remaining"
                     ));
                 } else {
                     progress_line
-                        .push_str(&format!("\nProjected completion: ~{}s remaining", seconds));
+                        .push_str(&format!("\nProjected completion: ~{seconds}s remaining"));
                 }
             }
         }
@@ -7685,7 +7685,7 @@ fn provider_discover_command(
             "--prefix" => {
                 let _ = match inline_val {
                     Some(v) => v,
-                    None => iter.next().map(Clone::clone).unwrap_or_default(),
+                    None => iter.next().cloned().unwrap_or_default(),
                 };
             }
             "--timeout" => {
@@ -7969,8 +7969,7 @@ fn provider_discover_command(
         .models
         .iter()
         .find(|(_, c)| c.aliases.contains(&"default".to_owned()))
-        .map(|(m, _)| m.clone())
-        .unwrap_or_else(|| models[0].clone());
+        .map_or_else(|| models[0].clone(), |(m, _)| m.clone());
 
     let example_spec = format!(
         "{}:{}",
@@ -8911,9 +8910,8 @@ fn provider_test_command(
         })?;
         if all_passed {
             return Ok(json_str);
-        } else {
-            return Err(argus_core::ArgusError::invalid_input(json_str));
         }
+        return Err(argus_core::ArgusError::invalid_input(json_str));
     }
 
     let mut output = String::new();
@@ -12901,7 +12899,7 @@ public class App {
         )
         .unwrap();
         let parsed_index: serde_json::Value = serde_json::from_str(&index_json).unwrap();
-        assert!(parsed_index.as_array().unwrap().len() == 1);
+        assert_eq!(parsed_index.as_array().unwrap().len(), 1);
 
         // 3. argus design health
         let health_out = run(

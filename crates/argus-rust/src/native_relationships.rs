@@ -162,7 +162,7 @@ fn identifiers(source: &str) -> Vec<Identifier> {
     let tokens = parsed
         .syntax()
         .descendants_with_tokens()
-        .filter_map(|element| element.into_token())
+        .filter_map(ra_ap_syntax::NodeOrToken::into_token)
         .collect::<Vec<_>>();
     tokens
         .iter()

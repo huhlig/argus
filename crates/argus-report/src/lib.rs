@@ -402,9 +402,7 @@ impl DocumentationReport {
                 .collect();
             for cluster in &self.finding_clusters {
                 let rep_citations = citations(&cluster.representative.citations);
-                let location_str = if rep_citations != "none" {
-                    rep_citations
-                } else {
+                let location_str = if rep_citations == "none" {
                     let fallback_locs = cluster
                         .occurrences
                         .iter()
@@ -417,6 +415,8 @@ impl DocumentationReport {
                     } else {
                         fallback_locs.into_iter().collect::<Vec<_>>().join(", ")
                     }
+                } else {
+                    rep_citations
                 };
                 let target_ids = cluster
                     .occurrences
@@ -758,7 +758,7 @@ fn render_assessment(output: &mut String, item: &DocumentationReportAssessment) 
     let location_line = if target_loc.is_empty() {
         String::new()
     } else {
-        format!("Location: {}  \n", target_loc)
+        format!("Location: {target_loc}  \n")
     };
     write!(
         output,
@@ -1259,7 +1259,7 @@ mod tests {
             POLICY,
             &[work.clone()],
             &[outcome_rec.clone()],
-            &[artifact.clone()],
+            std::slice::from_ref(&artifact),
             &[],
         )
         .unwrap();
